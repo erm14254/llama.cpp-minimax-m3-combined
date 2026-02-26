@@ -198,6 +198,10 @@ struct llm_build_dots1 : public llm_graph_context {
     llm_build_dots1(const llama_model & model, const llm_graph_params & params);
 };
 
+struct llm_build_longcat_flash_ngram : public llm_graph_context {
+    llm_build_longcat_flash_ngram(const llama_model & model, const llm_graph_params & params);
+};
+
 struct llm_build_dream : public llm_graph_context {
     llm_build_dream(const llama_model & model, const llm_graph_params & params);
 };

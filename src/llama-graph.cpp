@@ -784,6 +784,79 @@ bool llm_graph_input_sampling::can_reuse(const llm_graph_params & params) {
     return true;
 }
 
+void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
+    if (!ubatch->token) {
+        return;
+    }
+
+    const int64_t n_tokens = ubatch->n_tokens;
+    const int32_t n = n_neighbor;   // e.g. 4 (looks back up to 3 tokens)
+    const int32_t k = n_split;      // e.g. 4
+
+    // Build context array: [history tokens..., current batch tokens...]
+    // history has at most (n-1) tokens from previous batches
+    const int32_t hist_len = (int32_t)token_history->size();
+
+    std::vector<llama_token> context(hist_len + n_tokens);
+    for (int32_t i = 0; i < hist_len; i++) {
+        context[i] = (*token_history)[i];
+    }
+    for (int64_t i = 0; i < n_tokens; i++) {
+        context[hist_len + i] = ubatch->token[i];
+    }
+
+    // For each embedder: compute hash IDs
+    for (int32_t ng = 2; ng <= n; ng++) {       // n-gram order: 2, 3, 4
+        for (int32_t j = 0; j < k; j++) {       // split index: 0, 1, 2, 3
+            const int32_t index = (ng - 2) * k + j;
+            if (index >= n_embedders || !ngram_ids[index]) {
+                continue;
+            }
+
+            const int64_t emb_vocab_dim = m + (int64_t)index * 2 + 1;
+
+            // Precompute power mods: power_mod[p] = vocab_size^(p+1) % emb_vocab_dim
+            std::vector<int64_t> power_mods;
+            int64_t power_mod = 1;
+            for (int32_t p = 0; p < ng - 1; p++) {
+                power_mod = (power_mod * (int64_t)vocab_size) % emb_vocab_dim;
+                power_mods.push_back(power_mod);
+            }
+
+            // Compute hash IDs for each token in the batch
+            std::vector<int32_t> hash_ids(n_tokens);
+            for (int64_t i = 0; i < n_tokens; i++) {
+                const int32_t ctx_pos = hist_len + (int32_t)i;
+
+                // Start with current token
+                int64_t hash = (int64_t)context[ctx_pos];
+
+                // Add contributions from previous tokens (polynomial rolling hash)
+                for (int32_t p = 0; p < ng - 1; p++) {
+                    const int32_t lookback_pos = ctx_pos - (p + 1);
+                    if (lookback_pos >= 0) {
+                        hash += (int64_t)context[lookback_pos] * power_mods[p];
+                    }
+                    // If lookback_pos < 0, the shifted token is 0 (matches HF _shift_right_ignore_eos)
+                }
+
+                hash_ids[i] = (int32_t)(hash % emb_vocab_dim);
+            }
+
+            ggml_backend_tensor_set(ngram_ids[index], hash_ids.data(), 0,
+                                    n_tokens * sizeof(int32_t));
+        }
+    }
+
+    // Update token history: keep the last (n-1) tokens for next batch
+    for (int64_t i = 0; i < n_tokens; i++) {
+        token_history->push_back(ubatch->token[i]);
+    }
+    while ((int32_t)token_history->size() > n - 1) {
+        token_history->pop_front();
+    }
+}
+
 //
 // llm_graph_result
 //

@@ -92,6 +92,14 @@ struct llama_hparams {
     uint32_t moe_latent_size      = 0;
     uint32_t nextn_predict_layers = 0;
 
+    // identity experts (LongCat-Flash)
+    uint32_t n_expert_zero        = 0;
+
+    // n-gram embeddings (LongCat-Flash-Ngram)
+    uint32_t ngram_neighbor_num     = 0;
+    uint32_t ngram_split_num        = 0;
+    uint32_t ngram_vocab_size_ratio = 0;
+
     float f_norm_eps;
     float f_norm_rms_eps;
     float f_norm_group_eps;

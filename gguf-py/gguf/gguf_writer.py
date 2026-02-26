@@ -847,6 +847,18 @@ class GGUFWriter:
     def add_expert_gating_func(self, value: ExpertGatingFuncType) -> None:
         self.add_uint32(Keys.LLM.EXPERT_GATING_FUNC.format(arch=self.arch), value.value)
 
+    def add_expert_zero_count(self, count: int) -> None:
+        self.add_uint32(Keys.LLM.EXPERT_ZERO_COUNT.format(arch=self.arch), count)
+
+    def add_ngram_neighbor_num(self, count: int) -> None:
+        self.add_uint32(Keys.LLM.NGRAM_NEIGHBOR_NUM.format(arch=self.arch), count)
+
+    def add_ngram_split_num(self, count: int) -> None:
+        self.add_uint32(Keys.LLM.NGRAM_SPLIT_NUM.format(arch=self.arch), count)
+
+    def add_ngram_vocab_size_ratio(self, ratio: int) -> None:
+        self.add_uint32(Keys.LLM.NGRAM_VOCAB_SIZE_RATIO.format(arch=self.arch), ratio)
+
     def add_swiglu_clamp_exp(self, values: Sequence[float]) -> None:
         self.add_array(Keys.LLM.SWIGLU_CLAMP_EXP.format(arch=self.arch), values)
 

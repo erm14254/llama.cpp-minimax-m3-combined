@@ -552,6 +552,11 @@ struct llama_model {
 
     std::vector<llama_layer> layers;
 
+    // n-gram embeddings (LongCat-Flash-Ngram)
+    static constexpr int NGRAM_MAX = 12;
+    struct ggml_tensor * ngram_embd[NGRAM_MAX] = {};
+    struct ggml_tensor * ngram_proj[NGRAM_MAX] = {};
+
     //Dense linear projections for SentenceTransformers models like embeddinggemma
     // For Sentence Transformers models structure see
     // https://sbert.net/docs/sentence_transformer/usage/custom_models.html#structure-of-sentence-transformer-models

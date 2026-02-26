@@ -6,6 +6,7 @@
 #include "llama-adapter.h"
 
 #include <cstdint>
+#include <deque>
 #include <vector>
 #include <memory>
 #include <set>
@@ -512,6 +513,41 @@ public:
     std::map<llama_seq_id, llama_sampler *> samplers;
 };
 
+// N-gram hash embedding input for LongCat-Flash-Ngram
+// Computes polynomial rolling hash IDs from token history and current batch,
+// then provides them as I32 input tensors for embedding table lookups.
+class llm_graph_input_ngram : public llm_graph_input_i {
+public:
+    llm_graph_input_ngram(
+            int32_t n_embedders,    // total embedders: emb_split_num * (emb_neighbor_num - 1)
+            int32_t n_neighbor,     // emb_neighbor_num (e.g. 4)
+            int32_t n_split,        // emb_split_num (e.g. 4)
+            int32_t vocab_size,     // model vocab size
+            int64_t m,              // ngram_vocab_size_ratio * vocab_size
+            std::deque<llama_token> * token_history) // persistent history (owned by llm_graph_result)
+        : n_embedders(n_embedders)
+        , n_neighbor(n_neighbor)
+        , n_split(n_split)
+        , vocab_size(vocab_size)
+        , m(m)
+        , token_history(token_history) {}
+    virtual ~llm_graph_input_ngram() = default;
+
+    void set_input(const llama_ubatch * ubatch) override;
+
+    // one I32 [n_tokens] tensor per embedder
+    static constexpr int NGRAM_MAX_EMBEDDERS = 12;
+    ggml_tensor * ngram_ids[NGRAM_MAX_EMBEDDERS] = {};
+
+    const int32_t n_embedders;
+    const int32_t n_neighbor;
+    const int32_t n_split;
+    const int32_t vocab_size;
+    const int64_t m;
+
+    std::deque<llama_token> * token_history;
+};
+
 //
 // llm_graph_result
 //
@@ -679,6 +715,10 @@ public:
     std::map<llama_seq_id, ggml_tensor*> t_sampled_probs;
 
     std::vector<llm_graph_input_ptr> inputs;
+
+    // N-gram token history for LongCat-Flash-Ngram (persists across graph rebuilds via reset())
+    // Stores the last (emb_neighbor_num - 1) token IDs for n-gram hash computation during decode
+    std::deque<llama_token> ngram_token_history;
 
     ggml_context_ptr ctx_compute;
 
