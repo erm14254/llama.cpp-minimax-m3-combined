@@ -16,12 +16,12 @@ cd llama.cpp-longcat-flash</code>
 
 ## How to Load GGUF Model with MTPs for the llama-ui server:
 
-.\build\bin\Release\llama-server.exe `
+<code>.\build\bin\Release\llama-server.exe `
   --model D:\models\LongCat-Flash-Lite-Native-MTP-bf16-00001-of-00007.gguf `
   --spec-type draft-mtp `
   --spec-draft-n-max 1 `
   --spec-draft-n-min 1 `
-  --spec-draft-p-min 0
+  --spec-draft-p-min 0</code
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Release](https://img.shields.io/github/v/release/ggml-org/llama.cpp)](https://github.com/ggml-org/llama.cpp/releases)
