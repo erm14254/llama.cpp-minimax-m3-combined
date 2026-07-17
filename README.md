@@ -9,6 +9,20 @@ Implementation branch: longcat-mtp
 
 ![llama](https://github.com/user-attachments/assets/68cd2497-6e54-4c23-b133-3ef318b6056b)
 
+## How to Install This Fork
+
+git clone https://github.com/erm14254/llama.cpp-longcat-flash.git
+cd llama.cpp-longcat-flash
+
+## How to Load GGUF Model with MTPs for the llama-ui server:
+
+.\build\bin\Release\llama-server.exe `
+  --model D:\models\LongCat-Flash-Lite-Native-MTP-bf16-00001-of-00007.gguf `
+  --spec-type draft-mtp `
+  --spec-draft-n-max 1 `
+  --spec-draft-n-min 1 `
+  --spec-draft-p-min 0
+
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Release](https://img.shields.io/github/v/release/ggml-org/llama.cpp)](https://github.com/ggml-org/llama.cpp/releases)
 [![Server](https://github.com/ggml-org/llama.cpp/actions/workflows/server.yml/badge.svg)](https://github.com/ggml-org/llama.cpp/actions/workflows/server.yml)
