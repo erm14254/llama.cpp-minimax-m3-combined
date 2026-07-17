@@ -127,6 +127,10 @@ class Keys:
         MOE_EVERY_N_LAYERS                = "{arch}.moe_every_n_layers"
         MOE_LATENT_SIZE                   = "{arch}.moe_latent_size"
         NEXTN_PREDICT_LAYERS              = "{arch}.nextn_predict_layers"
+        EXPERT_ZERO_COUNT                 = "{arch}.expert_zero_count"
+        NGRAM_NEIGHBOR_NUM                = "{arch}.ngram.neighbor_num"
+        NGRAM_SPLIT_NUM                   = "{arch}.ngram.split_num"
+        NGRAM_VOCAB_SIZE_RATIO            = "{arch}.ngram.vocab_size_ratio"
         NUM_DEEPSTACK_LAYERS              = "{arch}.n_deepstack_layers"
         DEEPSTACK_MAPPING                 = "{arch}.deepstack_mapping"
         POOLING_TYPE                      = "{arch}.pooling_type"
@@ -3273,6 +3277,13 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.FFN_EXP_PROBS_B,
         MODEL_TENSOR.NGRAM_EMBD,
         MODEL_TENSOR.NGRAM_PROJ,
+        # NextN/MTP tensors
+        MODEL_TENSOR.NEXTN_EH_PROJ,
+        MODEL_TENSOR.NEXTN_EMBED_TOKENS,
+        MODEL_TENSOR.NEXTN_ENORM,
+        MODEL_TENSOR.NEXTN_HNORM,
+        MODEL_TENSOR.NEXTN_SHARED_HEAD_HEAD,
+        MODEL_TENSOR.NEXTN_SHARED_HEAD_NORM,
     ],
     MODEL_ARCH.ERNIE4_5_MOE: [
         MODEL_TENSOR.TOKEN_EMBD,

@@ -1173,75 +1173,141 @@ bool llm_graph_input_sampling::can_reuse(const llm_graph_params & params) {
 }
 
 void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
+    // LONGCAT_NGRAM_POSITION_AWARE_HISTORY
     if (!ubatch->token) {
         return;
     }
 
+    GGML_ASSERT(token_history);
+    GGML_ASSERT(ubatch->pos);
+    GGML_ASSERT(ubatch->seq_id);
+    GGML_ASSERT(ubatch->n_seq_id);
+
     const int64_t n_tokens = ubatch->n_tokens;
-    const int32_t n = n_neighbor;   // e.g. 4 (looks back up to 3 tokens)
-    const int32_t k = n_split;      // e.g. 4
+    const int32_t n = n_neighbor;
+    const int32_t k = n_split;
 
-    // Build context array: [history tokens..., current batch tokens...]
-    // history has at most (n-1) tokens from previous batches
-    const int32_t hist_len = (int32_t)token_history->size();
+    // Reconcile speculative rollback before computing hashes. Target
+    // verification evaluates sampled + draft tokens together. Rejected draft
+    // KV is removed later, so the next decode starts again at the rejected
+    // token's position. Removing stored entries at and after that position
+    // makes this history follow the same rollback.
+    std::map<llama_seq_id, llama_pos> first_pos;
+    for (int64_t i = 0; i < n_tokens; ++i) {
+        GGML_ASSERT(ubatch->n_seq_id[i] > 0);
+        for (int32_t s = 0; s < ubatch->n_seq_id[i]; ++s) {
+            const llama_seq_id seq_id = ubatch->seq_id[i][s];
+            const llama_pos pos = ubatch->pos[i];
 
-    std::vector<llama_token> context(hist_len + n_tokens);
-    for (int32_t i = 0; i < hist_len; i++) {
-        context[i] = (*token_history)[i];
+            auto it = first_pos.find(seq_id);
+            if (it == first_pos.end()) {
+                first_pos.emplace(seq_id, pos);
+            } else {
+                it->second = std::min(it->second, pos);
+            }
+        }
     }
-    for (int64_t i = 0; i < n_tokens; i++) {
-        context[hist_len + i] = ubatch->token[i];
+
+    for (const auto & [seq_id, pos_first] : first_pos) {
+        auto & hist = (*token_history)[seq_id];
+        while (!hist.empty() && hist.back().first >= pos_first) {
+            hist.pop_back();
+        }
     }
 
-    // For each embedder: compute hash IDs
-    for (int32_t ng = 2; ng <= n; ng++) {       // n-gram order: 2, 3, 4
-        for (int32_t j = 0; j < k; j++) {       // split index: 0, 1, 2, 3
+    auto row_has_seq = [&](int64_t row, llama_seq_id seq_id) {
+        for (int32_t s = 0; s < ubatch->n_seq_id[row]; ++s) {
+            if (ubatch->seq_id[row][s] == seq_id) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    auto token_at = [&](int64_t row, llama_seq_id seq_id, llama_pos pos) {
+        // Earlier rows in this same decode take precedence over persistent
+        // history. This preserves ordinary multi-token prompt processing.
+        for (int64_t r = row - 1; r >= 0; --r) {
+            if (ubatch->pos[r] == pos && row_has_seq(r, seq_id)) {
+                return ubatch->token[r];
+            }
+        }
+
+        const auto hist_it = token_history->find(seq_id);
+        if (hist_it != token_history->end()) {
+            const auto & hist = hist_it->second;
+            for (auto it = hist.rbegin(); it != hist.rend(); ++it) {
+                if (it->first == pos) {
+                    return it->second;
+                }
+                if (it->first < pos) {
+                    break;
+                }
+            }
+        }
+
+        // Missing lookback positions are zero, matching the previous
+        // _shift_right_ignore_eos behavior.
+        return (llama_token) 0;
+    };
+
+    for (int32_t ng = 2; ng <= n; ++ng) {
+        for (int32_t j = 0; j < k; ++j) {
             const int32_t index = (ng - 2) * k + j;
             if (index >= n_embedders || !ngram_ids[index]) {
                 continue;
             }
 
-            const int64_t emb_vocab_dim = m + (int64_t)index * 2 + 1;
+            const int64_t emb_vocab_dim = m + (int64_t) index * 2 + 1;
 
-            // Precompute power mods: power_mod[p] = vocab_size^(p+1) % emb_vocab_dim
             std::vector<int64_t> power_mods;
             int64_t power_mod = 1;
-            for (int32_t p = 0; p < ng - 1; p++) {
-                power_mod = (power_mod * (int64_t)vocab_size) % emb_vocab_dim;
+            for (int32_t p = 0; p < ng - 1; ++p) {
+                power_mod = (power_mod * (int64_t) vocab_size) % emb_vocab_dim;
                 power_mods.push_back(power_mod);
             }
 
-            // Compute hash IDs for each token in the batch
             std::vector<int32_t> hash_ids(n_tokens);
-            for (int64_t i = 0; i < n_tokens; i++) {
-                const int32_t ctx_pos = hist_len + (int32_t)i;
+            for (int64_t i = 0; i < n_tokens; ++i) {
+                GGML_ASSERT(ubatch->n_seq_id[i] > 0);
 
-                // Start with current token
-                int64_t hash = (int64_t)context[ctx_pos];
+                // A graph row has one set of n-gram IDs. Shared-sequence rows
+                // are expected to have identical token histories; use the
+                // first sequence as the canonical history for that row.
+                const llama_seq_id seq_id = ubatch->seq_id[i][0];
+                const llama_pos pos = ubatch->pos[i];
 
-                // Add contributions from previous tokens (polynomial rolling hash)
-                for (int32_t p = 0; p < ng - 1; p++) {
-                    const int32_t lookback_pos = ctx_pos - (p + 1);
-                    if (lookback_pos >= 0) {
-                        hash += (int64_t)context[lookback_pos] * power_mods[p];
-                    }
-                    // If lookback_pos < 0, the shifted token is 0 (matches HF _shift_right_ignore_eos)
+                int64_t hash = (int64_t) ubatch->token[i];
+                for (int32_t p = 0; p < ng - 1; ++p) {
+                    const llama_token prev = token_at(i, seq_id, pos - (p + 1));
+                    hash += (int64_t) prev * power_mods[p];
                 }
 
-                hash_ids[i] = (int32_t)(hash % emb_vocab_dim);
+                hash_ids[i] = (int32_t) (hash % emb_vocab_dim);
             }
 
-            ggml_backend_tensor_set(ngram_ids[index], hash_ids.data(), 0,
-                                    n_tokens * sizeof(int32_t));
+            ggml_backend_tensor_set(
+                ngram_ids[index],
+                hash_ids.data(),
+                0,
+                n_tokens * sizeof(int32_t));
         }
     }
 
-    // Update token history: keep the last (n-1) tokens for next batch
-    for (int64_t i = 0; i < n_tokens; i++) {
-        token_history->push_back(ubatch->token[i]);
-    }
-    while ((int32_t)token_history->size() > n - 1) {
-        token_history->pop_front();
+    // Tentatively record this decode by absolute position. Accepted drafts
+    // remain valid. Rejected drafts are removed automatically when the next
+    // decode rewinds to their position.
+    for (int64_t i = 0; i < n_tokens; ++i) {
+        for (int32_t s = 0; s < ubatch->n_seq_id[i]; ++s) {
+            const llama_seq_id seq_id = ubatch->seq_id[i][s];
+            const llama_pos pos = ubatch->pos[i];
+            auto & hist = (*token_history)[seq_id];
+
+            while (!hist.empty() && hist.back().first >= pos) {
+                hist.pop_back();
+            }
+            hist.emplace_back(pos, ubatch->token[i]);
+        }
     }
 }
 

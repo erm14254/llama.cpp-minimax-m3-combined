@@ -1683,6 +1683,9 @@ class TextModel(ModelBase):
             # ref: https://huggingface.co/JetBrains/Mellum2-12B-A2.5B-Base
             res = "mellum2"
 
+        if chkhsh == "27d87c17bcffe5262a1e80b2ceb9a5e002c4f8a17d796fd5afac9180dd8bd96e":
+            # ref: https://huggingface.co/meituan-longcat/LongCat-Flash-Lite
+            res = "longcat"
         if res is None:
             logger.warning("\n")
             logger.warning("**************************************************************************************")

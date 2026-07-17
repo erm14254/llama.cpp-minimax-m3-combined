@@ -10,6 +10,7 @@
 #include <vector>
 #include <memory>
 #include <set>
+#include <utility>
 #include <functional>
 #include <map>
 
@@ -656,6 +657,9 @@ public:
     std::map<llama_seq_id, llama_sampler *> samplers;
 };
 
+// LONGCAT_NGRAM_POSITION_AWARE_HISTORY
+using llm_ngram_token_history = std::map<llama_seq_id, std::deque<std::pair<llama_pos, llama_token>>>;
+
 // N-gram hash embedding input for LongCat-Flash-Ngram
 // Computes polynomial rolling hash IDs from token history and current batch,
 // then provides them as I32 input tensors for embedding table lookups.
@@ -667,7 +671,7 @@ public:
             int32_t n_split,        // emb_split_num (e.g. 4)
             int32_t vocab_size,     // model vocab size
             int64_t m,              // ngram_vocab_size_ratio * vocab_size
-            std::deque<llama_token> * token_history) // persistent history (owned by llm_graph_result)
+            llm_ngram_token_history * token_history) // persistent history (owned by llm_graph_result)
         : n_embedders(n_embedders)
         , n_neighbor(n_neighbor)
         , n_split(n_split)
@@ -688,7 +692,7 @@ public:
     const int32_t vocab_size;
     const int64_t m;
 
-    std::deque<llama_token> * token_history;
+    llm_ngram_token_history * token_history;
 };
 
 //
@@ -886,7 +890,7 @@ public:
 
     // N-gram token history for LongCat-Flash-Ngram (persists across graph rebuilds via reset())
     // Stores the last (emb_neighbor_num - 1) token IDs for n-gram hash computation during decode
-    std::deque<llama_token> ngram_token_history;
+    llm_ngram_token_history ngram_token_history;
 
     ggml_context_ptr ctx_compute;
 
