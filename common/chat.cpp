@@ -2540,6 +2540,293 @@ static common_chat_params common_chat_params_init_minicpm5(const common_chat_tem
     return data;
 }
 
+// LongCat format:
+// - Optional reasoning continuation after a generation prompt ending in
+//   <longcat_think>\n, closed by </longcat_think>.
+// - Tool calls:
+//     <longcat_tool_call>tool_name
+//     <longcat_arg_key>arg_name</longcat_arg_key>
+//     <longcat_arg_value>arg_value</longcat_arg_value>
+//     </longcat_tool_call>
+//
+// The parser tolerates the observed short aliases <argkey>/<argvalue>, but the
+// grammar generated for inference permits only the canonical LongCat markers.
+static common_chat_params common_chat_params_init_longcat(
+        const common_chat_template &          tmpl,
+        const autoparser::generation_params & inputs) {
+    common_chat_params data;
+
+    data.prompt             = common_chat_template_direct_apply_impl(tmpl, inputs);
+    data.generation_prompt  = common_chat_template_generation_prompt_impl(tmpl, inputs);
+    data.format             = COMMON_CHAT_FORMAT_PEG_NATIVE;
+    data.supports_thinking  = true;
+    data.thinking_start_tag = "<longcat_think>";
+    data.thinking_end_tag   = "</longcat_think>";
+
+    data.preserved_tokens = {
+        "<longcat_assistant>",
+        "<longcat_think>",
+        "</longcat_think>",
+        "<longcat_tool_call>",
+        "</longcat_tool_call>",
+        "<longcat_arg_key>",
+        "</longcat_arg_key>",
+        "<longcat_arg_value>",
+        "</longcat_arg_value>",
+        "</longcat_s>",
+    };
+
+    data.message_delimiters = {
+        { COMMON_CHAT_ROLE_ASSISTANT, "<longcat_assistant>"   },
+        { COMMON_CHAT_ROLE_TOOL,      "<longcat_observation>" },
+        { COMMON_CHAT_ROLE_USER,      "<longcat_user>"        },
+        { COMMON_CHAT_ROLE_SYSTEM,    "<longcat_system>"      },
+    };
+
+    const bool has_tools =
+        inputs.tools.is_array() &&
+        !inputs.tools.empty() &&
+        inputs.tool_choice != COMMON_CHAT_TOOL_CHOICE_NONE;
+    const bool has_response_format =
+        inputs.json_schema.is_object() &&
+        !inputs.json_schema.empty();
+    const bool extract_reasoning =
+        inputs.reasoning_format != COMMON_REASONING_FORMAT_NONE;
+    const bool include_grammar = has_response_format || has_tools;
+
+    auto make_parser = [&](bool accept_short_aliases) {
+        return build_chat_peg_parser([&](common_chat_peg_builder & p) {
+            auto generation_prompt = p.literal(data.generation_prompt);
+            auto end = p.optional(p.literal("</longcat_s>")) + p.end();
+
+            // With enable_thinking=true the LongCat Jinja generation prompt ends
+            // immediately after "<longcat_think>\n", so generated text begins
+            // inside that block.
+            auto reasoning = p.eps();
+            if (inputs.enable_thinking) {
+                if (extract_reasoning) {
+                    reasoning =
+                        p.reasoning(p.until("</longcat_think>")) +
+                        p.literal("</longcat_think>") +
+                        p.space();
+                } else {
+                    reasoning =
+                        p.content(p.until("</longcat_think>")) +
+                        p.literal("</longcat_think>") +
+                        p.space();
+                }
+            }
+
+            if (has_response_format) {
+                return generation_prompt +
+                       reasoning +
+                       p.content(p.schema(
+                           p.json(),
+                           "response-format",
+                           inputs.json_schema)) +
+                       end;
+            }
+
+            if (!has_tools) {
+                return generation_prompt +
+                       reasoning +
+                       p.content(p.until("</longcat_s>")) +
+                       end;
+            }
+
+            auto tool_choice = p.choice();
+
+            foreach_function(inputs.tools, [&](const json & tool) {
+                const auto & function = tool.at("function");
+                const std::string name = function.at("name");
+                auto params = function.contains("parameters")
+                    ? function.at("parameters")
+                    : json::object();
+
+                const auto & props =
+                    params.contains("properties") &&
+                    params.at("properties").is_object()
+                        ? params.at("properties")
+                        : json::object();
+
+                auto schema_info = common_schema_info();
+                schema_info.resolve_refs(params);
+
+                auto arg_choice = p.choice();
+
+                for (const auto & [prop_name, prop_schema] : props.items()) {
+                    auto make_arg = [&](const std::string & key_open,
+                                        const std::string & key_close,
+                                        const std::string & value_open,
+                                        const std::string & value_close,
+                                        const std::string & rule_suffix) {
+                        auto value_parser = p.eps();
+
+                        if (schema_info.resolves_to_string(prop_schema)) {
+                            value_parser =
+                                p.tool_arg_string_value(
+                                    p.until(value_close)) +
+                                p.tool_arg_close(
+                                    p.literal(value_close));
+                        } else {
+                            value_parser =
+                                p.tool_arg_json_value(
+                                    p.schema(
+                                        p.json(),
+                                        "tool-" + name +
+                                            "-arg-" + prop_name +
+                                            "-" + rule_suffix,
+                                        prop_schema,
+                                        false)) +
+                                p.tool_arg_close(
+                                    p.literal(value_close));
+                        }
+
+                        return p.tool_arg(
+                            p.tool_arg_open(p.literal(key_open)) +
+                            p.tool_arg_name(p.literal(prop_name)) +
+                            p.literal(key_close) +
+                            p.space() +
+                            p.literal(value_open) +
+                            value_parser);
+                    };
+
+                    auto canonical_arg = make_arg(
+                        "<longcat_arg_key>",
+                        "</longcat_arg_key>",
+                        "<longcat_arg_value>",
+                        "</longcat_arg_value>",
+                        "canonical");
+
+                    arg_choice |= p.rule(
+                        "tool-" + name + "-arg-" + prop_name + "-canonical",
+                        canonical_arg);
+
+                    if (accept_short_aliases) {
+                        auto short_arg = make_arg(
+                            "<argkey>",
+                            "</argkey>",
+                            "<argvalue>",
+                            "</argvalue>",
+                            "short");
+
+                        arg_choice |= p.rule(
+                            "tool-" + name + "-arg-" + prop_name + "-short",
+                            short_arg);
+                    }
+                }
+
+                auto args = p.eps();
+                if (!props.empty()) {
+                    const bool has_required =
+                        params.contains("required") &&
+                        params.at("required").is_array() &&
+                        !params.at("required").empty();
+
+                    args = has_required
+                        ? p.one_or_more(arg_choice + p.space())
+                        : p.zero_or_more(arg_choice + p.space());
+                }
+
+                auto tool_parser = p.tool(
+                    p.tool_open(
+                        p.literal("<longcat_tool_call>") +
+                        p.tool_name(p.literal(name))) +
+                    p.space() +
+                    p.tool_args(args) +
+                    p.space() +
+                    p.tool_close(
+                        p.literal("</longcat_tool_call>")));
+
+                tool_choice |= p.rule(
+                    "tool-" + name,
+                    tool_parser);
+            });
+
+            // LongCat's template does not support parallel calls reliably.
+            auto tool_calls = p.trigger_rule(
+                "tool-call",
+                p.repeat(
+                    tool_choice + p.space(),
+                    1,
+                    1));
+
+            const bool require_tools =
+                inputs.tool_choice == COMMON_CHAT_TOOL_CHOICE_REQUIRED;
+
+            if (require_tools) {
+                // No ordinary answer is permitted on a required-tool turn.
+                // This prevents "I searched..." responses with no real call.
+                return generation_prompt +
+                       reasoning +
+                       p.space() +
+                       tool_calls +
+                       end;
+            }
+
+            auto content_before_tools =
+                p.content(p.until_one_of({
+                "<longcat_tool_call>",
+                "</longcat_s>",
+            }));
+
+            return generation_prompt +
+                   reasoning +
+                   content_before_tools +
+                   p.optional(tool_calls) +
+                   end;
+        });
+    };
+
+    auto parser = make_parser(/* accept_short_aliases = */ true);
+    data.parser = parser.save();
+
+    if (include_grammar) {
+        // Use a canonical-only parser to generate the inference grammar. The
+        // tolerant aliases above are parsing fallbacks, not formats we want the
+        // model to generate.
+        auto grammar_parser =
+            make_parser(/* accept_short_aliases = */ false);
+
+        data.grammar_lazy =
+            !has_response_format &&
+            inputs.tool_choice == COMMON_CHAT_TOOL_CHOICE_AUTO;
+
+        data.grammar = build_grammar(
+            [&](const common_grammar_builder & builder) {
+                foreach_function(
+                    inputs.tools,
+                    [&](const json & tool) {
+                        const auto & function =
+                            tool.at("function");
+                        auto schema =
+                            function.contains("parameters")
+                                ? function.at("parameters")
+                                : json::object();
+                        builder.resolve_refs(schema);
+                    });
+
+                if (has_response_format) {
+                    auto schema = inputs.json_schema;
+                    builder.resolve_refs(schema);
+                }
+
+                grammar_parser.build_grammar(
+                    builder,
+                    data.grammar_lazy);
+            });
+
+        data.grammar_triggers = {
+            {
+                COMMON_GRAMMAR_TRIGGER_TYPE_WORD,
+                "<longcat_tool_call>"
+            },
+        };
+    }
+
+    return data;
+}
+
 static json common_chat_extra_context() {
     json ctx = json::object();
     std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
@@ -2630,6 +2917,15 @@ std::optional<common_chat_params> common_chat_try_specialized_template(
             workaround::convert_tool_responses_gemma4(params.messages);
         }
         return common_chat_params_init_gemma4(tmpl, params);
+    }
+
+    // LongCat - XML-like tool calls with explicit key/value tags.
+    if (src.find("<longcat_tool_declare>") != std::string::npos &&
+        src.find("<longcat_tool_call>") != std::string::npos &&
+        src.find("<longcat_arg_key>") != std::string::npos &&
+        src.find("<longcat_arg_value>") != std::string::npos) {
+        LOG_DBG("Using specialized template: LongCat\n");
+        return common_chat_params_init_longcat(tmpl, params);
     }
 
     // MiniCPM5 - XML tool calls with <function name="..."><param name="...">...</param></function>

@@ -15,6 +15,7 @@ import type { DatabaseMessage, DatabaseMessageExtra, McpServerOverride } from '.
 export interface AgenticConfig {
 	enabled: boolean;
 	maxTurns: number;
+	requireFirstTool: boolean;
 }
 
 /**

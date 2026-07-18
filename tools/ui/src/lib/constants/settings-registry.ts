@@ -629,6 +629,19 @@ const SETTINGS_REGISTRY: Record<string, SettingsSectionEntry> = {
 		icon: ListRestart,
 		settings: [
 			{
+				key: SETTINGS_KEYS.AGENTIC_REQUIRE_FIRST_TOOL,
+				label: 'Require one tool call',
+				help: 'Force a tool call on the first agentic turn, then disable further tool calls for the answer turn. Useful for one-shot web research and models that otherwise answer from memory or repeatedly call the same tool.',
+				defaultValue: false,
+				type: SettingsFieldType.CHECKBOX,
+				section: SETTINGS_SECTION_SLUGS.AGENTIC,
+				isExperimental: true,
+				sync: {
+					serverKey: SETTINGS_KEYS.AGENTIC_REQUIRE_FIRST_TOOL,
+					paramType: SyncableParameterType.BOOLEAN
+				}
+			},
+			{
 				key: SETTINGS_KEYS.AGENTIC_MAX_TURNS,
 				label: 'Agentic turns',
 				help: 'Maximum number of tool execution cycles before stopping (prevents infinite loops).',

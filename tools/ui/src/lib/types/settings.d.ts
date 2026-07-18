@@ -78,6 +78,7 @@ export interface SettingsChatServiceOptions {
 	// Reasoning effort level (low/medium/high/max) for thinking models
 	reasoningEffort?: ReasoningEffort;
 	tools?: OpenAIToolDefinition[];
+	tool_choice?: 'auto' | 'none' | 'required';
 	// Generation parameters
 	temperature?: number;
 	max_tokens?: number;

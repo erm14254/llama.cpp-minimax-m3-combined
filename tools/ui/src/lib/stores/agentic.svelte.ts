@@ -285,13 +285,15 @@ class AgenticStore {
 
 	getConfig(settings: SettingsConfigType, perChatOverrides?: McpServerOverride[]): AgenticConfig {
 		const maxTurns = Number(settings.agenticMaxTurns) || DEFAULT_AGENTIC_CONFIG.maxTurns;
+		const requireFirstTool = settings.agenticRequireFirstTool === true;
 		const hasTools =
 			mcpStore.hasEnabledServers(perChatOverrides) ||
 			toolsStore.builtinTools.length > 0 ||
 			toolsStore.customTools.length > 0;
 		return {
 			enabled: hasTools && DEFAULT_AGENTIC_CONFIG.enabled,
-			maxTurns
+			maxTurns,
+			requireFirstTool
 		};
 	}
 
@@ -563,12 +565,20 @@ class AgenticStore {
 			};
 
 			try {
+				const toolChoice =
+					agenticConfig.requireFirstTool
+						? turn === 0
+							? 'required'
+							: 'none'
+						: 'auto';
+
 				await ChatService.sendMessage(
 					sessionMessages as ApiChatMessageData[],
 					{
 						...options,
 						stream: true,
 						tools: tools.length > 0 ? tools : undefined,
+						tool_choice: toolChoice,
 						onChunk: (chunk: string) => {
 							turnContent += chunk;
 							onChunk?.(chunk);

@@ -267,6 +267,7 @@ export interface ApiChatCompletionRequest {
 	return_progress?: boolean;
 	sse_ping_interval?: number;
 	tools?: ApiChatCompletionTool[];
+	tool_choice?: 'auto' | 'none' | 'required';
 	// Reasoning parameters
 	reasoning_format?: string;
 	// Generation parameters

@@ -155,6 +155,7 @@ export class ChatService {
 			onTimings,
 			// Tools for function calling
 			tools,
+			tool_choice,
 			// Generation parameters
 			temperature,
 			max_tokens,
@@ -256,7 +257,8 @@ export class ChatService {
 			stream,
 			return_progress: stream ? true : undefined,
 			sse_ping_interval: stream ? 1 : undefined,
-			tools: tools && tools.length > 0 ? tools : undefined
+			tools: tools && tools.length > 0 ? tools : undefined,
+			tool_choice: tools && tools.length > 0 ? tool_choice : undefined
 		};
 
 		// Include model in request if provided (required in ROUTER mode)
