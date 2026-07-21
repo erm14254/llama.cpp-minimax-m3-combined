@@ -1,0 +1,51 @@
+name: Apply MiniMax-M3 unified integration
+
+on:
+  push:
+    branches:
+      - minimax-m3-unified
+    paths:
+      - .github/scripts/apply_minimax_m3_unified.py
+      - .github/workflows/apply-minimax-m3-unified.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          ref: minimax-m3-unified
+          fetch-depth: 0
+
+      - name: Apply targeted MiniMax-M3 changes
+        run: python .github/scripts/apply_minimax_m3_unified.py
+
+      - name: Verify scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          changed="$(git status --short | awk '{print $2}')"
+          printf '%s\n' "$changed"
+          unexpected="$(printf '%s\n' "$changed" | grep -Ev '^(common/chat.cpp|src/llama-vocab.cpp|\.github/scripts/apply_minimax_m3_unified.py|\.github/workflows/apply-minimax-m3-unified.yml)$' || true)"
+          if [ -n "$unexpected" ]; then
+            echo "Unexpected changed paths:"
+            echo "$unexpected"
+            exit 1
+          fi
+          grep -q 'common_chat_params_init_minimax_m3' common/chat.cpp
+          grep -q 'Using specialized template: MiniMax-M3' common/chat.cpp
+          grep -Fq 't.first == "[e~["' src/llama-vocab.cpp
+
+      - name: Commit integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "minimax-m3: unify vision, sparse attention, and tool calling"
+          git push origin HEAD:minimax-m3-unified
