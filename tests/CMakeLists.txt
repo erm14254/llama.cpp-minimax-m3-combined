@@ -161,6 +161,7 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-chat.cpp WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
     llama_build_and_test(test-longcat-router.cpp)
     llama_build_and_test(test-longcat-ngram.cpp)
+    target_include_directories(test-longcat-ngram PRIVATE ${PROJECT_SOURCE_DIR}/src)
     target_include_directories(test-chat PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
     target_link_libraries(test-chat PRIVATE server-context)
     # TODO: disabled on loongarch64 because the ggml-ci node lacks Python 3.8
