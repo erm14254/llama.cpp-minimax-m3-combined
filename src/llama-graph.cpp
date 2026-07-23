@@ -1251,6 +1251,24 @@ void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
         return (llama_token) 0;
     };
 
+    auto shifted_token_at = [&](int64_t row, llama_seq_id seq_id, llama_pos pos, int32_t shift) {
+        const llama_pos prev_pos = pos - shift;
+        if (prev_pos < 0) {
+            return (llama_token) 0;
+        }
+
+        // HF LongCat _shift_right_ignore_eos shifts within EOS-delimited
+        // segments. The EOS token itself can see earlier tokens in its segment,
+        // but tokens after EOS cannot see the EOS or anything before it.
+        for (llama_pos p = prev_pos; p < pos; ++p) {
+            if (token_at(row, seq_id, p) == eos_token_id) {
+                return (llama_token) 0;
+            }
+        }
+
+        return token_at(row, seq_id, prev_pos);
+    };
+
     for (int32_t ng = 2; ng <= n; ++ng) {
         for (int32_t j = 0; j < k; ++j) {
             const int32_t index = (ng - 2) * k + j;
@@ -1279,7 +1297,7 @@ void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
 
                 int64_t hash = (int64_t) ubatch->token[i];
                 for (int32_t p = 0; p < ng - 1; ++p) {
-                    const llama_token prev = token_at(i, seq_id, pos - (p + 1));
+                    const llama_token prev = shifted_token_at(i, seq_id, pos, p + 1);
                     hash += (int64_t) prev * power_mods[p];
                 }
 
@@ -1307,6 +1325,9 @@ void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
                 hist.pop_back();
             }
             hist.emplace_back(pos, ubatch->token[i]);
+            while ((int32_t) hist.size() > n - 1) {
+                hist.pop_front();
+            }
         }
     }
 }

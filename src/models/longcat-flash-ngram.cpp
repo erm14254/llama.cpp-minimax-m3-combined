@@ -342,7 +342,7 @@ llama_model_longcat_flash_ngram::graph::graph(
         // Create n-gram input: 12 I32 tensors of hash IDs, computed on CPU in set_input()
         auto inp = std::make_unique<llm_graph_input_ngram>(
             (int32_t)n_ngram, (int32_t)n_neighbor, (int32_t)n_split,
-            (int32_t)vocab_size, m,
+            (int32_t)vocab_size, m, /* eos_token_id = */ 2,
             &res->ngram_token_history);
 
         for (uint32_t j = 0; j < n_ngram; j++) {

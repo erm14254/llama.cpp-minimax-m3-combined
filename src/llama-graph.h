@@ -671,12 +671,14 @@ public:
             int32_t n_split,        // emb_split_num (e.g. 4)
             int32_t vocab_size,     // model vocab size
             int64_t m,              // ngram_vocab_size_ratio * vocab_size
+            int32_t eos_token_id,   // EOS token that terminates n-gram history segments
             llm_ngram_token_history * token_history) // persistent history (owned by llm_graph_result)
         : n_embedders(n_embedders)
         , n_neighbor(n_neighbor)
         , n_split(n_split)
         , vocab_size(vocab_size)
         , m(m)
+        , eos_token_id(eos_token_id)
         , token_history(token_history) {}
     virtual ~llm_graph_input_ngram() = default;
 
@@ -691,6 +693,7 @@ public:
     const int32_t n_split;
     const int32_t vocab_size;
     const int64_t m;
+    const int32_t eos_token_id;
 
     llm_ngram_token_history * token_history;
 };
