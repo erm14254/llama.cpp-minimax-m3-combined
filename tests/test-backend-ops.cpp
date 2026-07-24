@@ -4481,14 +4481,16 @@ struct test_mul_mat_id_duplicate_ids : public test_case {
     const ggml_type type_a;
     const int64_t m;
     const int64_t n;
+    const bool all_slots_same_expert;
     static constexpr int n_mats  = 4;
     static constexpr int n_used  = 12;
     static constexpr int64_t k   = 64;
 
-    test_mul_mat_id_duplicate_ids(ggml_type type_a, int64_t m, int64_t n) : type_a(type_a), m(m), n(n) {}
+    test_mul_mat_id_duplicate_ids(ggml_type type_a, int64_t m, int64_t n, bool all_slots_same_expert = false)
+        : type_a(type_a), m(m), n(n), all_slots_same_expert(all_slots_same_expert) {}
 
     std::string vars() override {
-        return VARS_TO_STR5(type_a, n_mats, n_used, m, n);
+        return VARS_TO_STR6(type_a, n_mats, n_used, m, n, all_slots_same_expert);
     }
 
     double max_nmse_err() override {
@@ -4537,7 +4539,11 @@ struct test_mul_mat_id_duplicate_ids : public test_case {
         for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx, t)) {
             if (strcmp(ggml_get_name(t), "ids") == 0) {
                 for (int64_t r = 0; r < t->ne[1]; ++r) {
-                    ggml_backend_tensor_set(t, ids_data[r % ids_data.size()].data(), r*t->nb[1], t->ne[0]*sizeof(int32_t));
+                    std::array<int32_t, n_used> row = ids_data[r % ids_data.size()];
+                    if (all_slots_same_expert) {
+                        row.fill(0);
+                    }
+                    ggml_backend_tensor_set(t, row.data(), r*t->nb[1], t->ne[0]*sizeof(int32_t));
                 }
             } else {
                 init_tensor_uniform(t);
@@ -9066,8 +9072,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     for (ggml_type type_a : all_types) {
         test_cases.emplace_back(new test_mul_mat_id(type_a, GGML_TYPE_F32, 4, 2, false, 64, 16, 3*ggml_blck_size(type_a)));
     }
-    test_cases.emplace_back(new test_mul_mat_id_duplicate_ids(GGML_TYPE_Q8_0, 16, 9));
-    test_cases.emplace_back(new test_mul_mat_id_duplicate_ids(GGML_TYPE_BF16, 32, 17));
+    test_cases.emplace_back(new test_mul_mat_id_duplicate_ids(GGML_TYPE_Q8_0, 16, 9, true));
+    test_cases.emplace_back(new test_mul_mat_id_duplicate_ids(GGML_TYPE_BF16, 32, 17, true));
     test_cases.emplace_back(new test_mul_mat_id_duplicate_ids(GGML_TYPE_BF16, 33, 17));
 
     for (ggml_type type_a : base_types) {
