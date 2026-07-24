@@ -14,59 +14,35 @@ static __global__ void mm_ids_helper(
     const int n_expert_used = n_expert_used_template == 0 ? n_expert_used_var : n_expert_used_template;
     const int expert = blockIdx.x;
 
-    extern __shared__ int data_mm_ids_helper[];
-    int * const nex_prev_shared   = &data_mm_ids_helper[0];
-    int * const it_compact_shared = &data_mm_ids_helper[1];
-
     if (threadIdx.x == 0) {
-        *nex_prev_shared   = 0;
-        *it_compact_shared = 0;
-    }
-    __syncthreads();
+        int nex_prev   = 0; // Number of columns for experts with a lower index.
+        int it_compact = 0; // Running index for the compact slice of this expert.
 
-    int nex_prev_local = 0;
-    for (int idx = threadIdx.x; idx < n_tokens*n_expert_used; idx += warp_size) {
-        const int it  = idx / n_expert_used;
-        const int iex = idx % n_expert_used;
-        const int expert_used = ids[it*si1 + iex];
-        nex_prev_local += expert_used < expert;
-    }
-    atomicAdd(nex_prev_shared, nex_prev_local);
-    __syncthreads();
-
-    const int nex_prev = *nex_prev_shared;
-
-    for (int idx = threadIdx.x; idx < n_tokens*n_expert_used; idx += warp_size) {
-        const int it  = idx / n_expert_used;
-        const int iex = idx % n_expert_used;
-        const int expert_used = ids[it*si1 + iex];
-        if (expert_used == expert) {
-            const int itc = atomicAdd(it_compact_shared, 1);
-            const int compact = nex_prev + itc;
-            ids_dst[compact] = it*n_expert_used + iex;
-            // ids_src1 holds the forward map, or the inverse map (token slot -> compact row) for quant dedup
-            if (write_inverse) {
-                ids_src1[it*n_expert_used + iex] = compact;
-            } else {
-                ids_src1[compact] = it*sis1 + iex % nchannels_y;
+        for (int it = 0; it < n_tokens; ++it) {
+            for (int iex = 0; iex < n_expert_used; ++iex) {
+                const int expert_used = ids[it*si1 + iex];
+                nex_prev += expert_used < expert;
+                if (expert_used == expert) {
+                    const int compact = nex_prev + it_compact;
+                    ids_dst[compact] = it*n_expert_used + iex;
+                    // ids_src1 holds the forward map, or the inverse map (token slot -> compact row) for quant dedup
+                    if (write_inverse) {
+                        ids_src1[it*n_expert_used + iex] = compact;
+                    } else {
+                        ids_src1[compact] = it*sis1 + iex % nchannels_y;
+                    }
+                    ++it_compact;
+                }
             }
         }
-    }
-    __syncthreads();
 
-    if (threadIdx.x != 0) {
-        return;
-    }
+        expert_bounds[expert] = nex_prev;
 
-    const int it_compact = *it_compact_shared;
-
-    expert_bounds[expert] = nex_prev;
-
-    if (expert < static_cast<int>(gridDim.x) - 1) {
-        return;
+        if (expert == static_cast<int>(gridDim.x) - 1) {
+            expert_bounds[gridDim.x] = nex_prev + it_compact;
+        }
     }
 
-    expert_bounds[gridDim.x] = nex_prev + it_compact;
 }
 
 template <int n_expert_used_template>
@@ -78,14 +54,10 @@ static void launch_mm_ids_helper(
 
     const int id = ggml_cuda_get_device();
     const int warp_size = ggml_cuda_info().devices[id].warp_size;
-    const size_t smpbo = ggml_cuda_info().devices[id].smpbo;
-    CUDA_SET_SHARED_MEMORY_LIMIT(mm_ids_helper<n_expert_used_template>, smpbo);
 
     const dim3 num_blocks(n_experts, 1, 1);
     const dim3 block_size(warp_size, 1, 1);
-    const size_t nbytes_shared = 2*sizeof(int);
-    GGML_ASSERT(nbytes_shared <= smpbo);
-    mm_ids_helper<n_expert_used_template><<<num_blocks, block_size, nbytes_shared, stream>>>
+    mm_ids_helper<n_expert_used_template><<<num_blocks, block_size, 0, stream>>>
         (ids, ids_src1, ids_dst, expert_bounds, n_tokens, n_expert_used_var, nchannels_y, si1, sis1, write_inverse);
 }
 
