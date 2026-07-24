@@ -4478,19 +4478,28 @@ struct test_mul_mat_id : public test_case {
 };
 
 struct test_mul_mat_id_duplicate_ids : public test_case {
+    enum class pattern {
+        mixed_duplicates,
+        all_slots_one_expert,
+        four_expert_round_robin,
+        identity_remap_expert_zero,
+        uniform_experts,
+        no_duplicates,
+    };
+
     const ggml_type type_a;
     const int64_t m;
     const int64_t n;
-    const bool all_slots_same_expert;
-    static constexpr int n_mats  = 4;
+    const int n_mats;
+    const pattern ids_pattern;
     static constexpr int n_used  = 12;
     static constexpr int64_t k   = 64;
 
-    test_mul_mat_id_duplicate_ids(ggml_type type_a, int64_t m, int64_t n, bool all_slots_same_expert = false)
-        : type_a(type_a), m(m), n(n), all_slots_same_expert(all_slots_same_expert) {}
+    test_mul_mat_id_duplicate_ids(ggml_type type_a, int64_t m, int64_t n, pattern ids_pattern = pattern::mixed_duplicates, int n_mats = 4)
+        : type_a(type_a), m(m), n(n), n_mats(n_mats), ids_pattern(ids_pattern) {}
 
     std::string vars() override {
-        return VARS_TO_STR6(type_a, n_mats, n_used, m, n, all_slots_same_expert);
+        return VARS_TO_STR6(type_a, n_mats, n_used, m, n, static_cast<int>(ids_pattern));
     }
 
     double max_nmse_err() override {
@@ -4540,8 +4549,32 @@ struct test_mul_mat_id_duplicate_ids : public test_case {
             if (strcmp(ggml_get_name(t), "ids") == 0) {
                 for (int64_t r = 0; r < t->ne[1]; ++r) {
                     std::array<int32_t, n_used> row = ids_data[r % ids_data.size()];
-                    if (all_slots_same_expert) {
-                        row.fill(0);
+                    switch (ids_pattern) {
+                        case pattern::mixed_duplicates:
+                            break;
+                        case pattern::all_slots_one_expert:
+                            row.fill(0);
+                            break;
+                        case pattern::four_expert_round_robin:
+                            for (int64_t i = 0; i < n_used; ++i) {
+                                row[i] = (r + i) % 4;
+                            }
+                            break;
+                        case pattern::identity_remap_expert_zero:
+                            for (int64_t i = 0; i < n_used; ++i) {
+                                row[i] = i < 8 ? 0 : 1 + ((r + i) % (n_mats - 1));
+                            }
+                            break;
+                        case pattern::uniform_experts:
+                            for (int64_t i = 0; i < n_used; ++i) {
+                                row[i] = (r*n_used + i) % n_mats;
+                            }
+                            break;
+                        case pattern::no_duplicates:
+                            for (int64_t i = 0; i < n_used; ++i) {
+                                row[i] = (r + i) % n_mats;
+                            }
+                            break;
                     }
                     ggml_backend_tensor_set(t, row.data(), r*t->nb[1], t->ne[0]*sizeof(int32_t));
                 }
@@ -9072,9 +9105,17 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     for (ggml_type type_a : all_types) {
         test_cases.emplace_back(new test_mul_mat_id(type_a, GGML_TYPE_F32, 4, 2, false, 64, 16, 3*ggml_blck_size(type_a)));
     }
-    test_cases.emplace_back(new test_mul_mat_id_duplicate_ids(GGML_TYPE_Q8_0, 16, 9, true));
-    test_cases.emplace_back(new test_mul_mat_id_duplicate_ids(GGML_TYPE_BF16, 32, 17, true));
+    test_cases.emplace_back(new test_mul_mat_id_duplicate_ids(GGML_TYPE_Q8_0, 16, 9, test_mul_mat_id_duplicate_ids::pattern::all_slots_one_expert));
+    test_cases.emplace_back(new test_mul_mat_id_duplicate_ids(GGML_TYPE_BF16, 32, 17, test_mul_mat_id_duplicate_ids::pattern::all_slots_one_expert));
     test_cases.emplace_back(new test_mul_mat_id_duplicate_ids(GGML_TYPE_BF16, 33, 17));
+
+    for (int64_t n_tokens : {9, 17, 64, 128, 374}) {
+        test_cases.emplace_back(new test_mul_mat_id_duplicate_ids(GGML_TYPE_Q8_0, 16, n_tokens, test_mul_mat_id_duplicate_ids::pattern::all_slots_one_expert, 16));
+        test_cases.emplace_back(new test_mul_mat_id_duplicate_ids(GGML_TYPE_Q8_0, 16, n_tokens, test_mul_mat_id_duplicate_ids::pattern::four_expert_round_robin, 16));
+        test_cases.emplace_back(new test_mul_mat_id_duplicate_ids(GGML_TYPE_Q8_0, 16, n_tokens, test_mul_mat_id_duplicate_ids::pattern::identity_remap_expert_zero, 16));
+        test_cases.emplace_back(new test_mul_mat_id_duplicate_ids(GGML_TYPE_Q8_0, 16, n_tokens, test_mul_mat_id_duplicate_ids::pattern::uniform_experts, 16));
+        test_cases.emplace_back(new test_mul_mat_id_duplicate_ids(GGML_TYPE_Q8_0, 16, n_tokens, test_mul_mat_id_duplicate_ids::pattern::no_duplicates, 16));
+    }
 
     for (ggml_type type_a : base_types) {
         for (ggml_type type_b : {GGML_TYPE_F32 /*, GGML_TYPE_F16 */}) {
