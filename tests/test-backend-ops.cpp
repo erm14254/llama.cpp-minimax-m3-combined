@@ -9800,6 +9800,17 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
 static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     std::vector<std::unique_ptr<test_case>> test_cases;
 
+    // Launch-overhead-focused MUL_MAT_ID duplicate-ID fixtures. These intentionally keep the matrix
+    // dimensions small while varying token count and duplicate distribution. Larger model-sized MoE
+    // dimensions should be benchmarked separately with representative model data.
+    for (int64_t n_tokens : {9, 17, 64, 128, 374}) {
+        test_cases.emplace_back(new test_mul_mat_id_duplicate_ids(GGML_TYPE_Q8_0, 16, n_tokens, test_mul_mat_id_duplicate_ids::pattern::all_slots_one_expert, 16));
+        test_cases.emplace_back(new test_mul_mat_id_duplicate_ids(GGML_TYPE_Q8_0, 16, n_tokens, test_mul_mat_id_duplicate_ids::pattern::four_expert_round_robin, 16));
+        test_cases.emplace_back(new test_mul_mat_id_duplicate_ids(GGML_TYPE_Q8_0, 16, n_tokens, test_mul_mat_id_duplicate_ids::pattern::identity_remap_expert_zero, 16));
+        test_cases.emplace_back(new test_mul_mat_id_duplicate_ids(GGML_TYPE_Q8_0, 16, n_tokens, test_mul_mat_id_duplicate_ids::pattern::uniform_experts, 16));
+        test_cases.emplace_back(new test_mul_mat_id_duplicate_ids(GGML_TYPE_Q8_0, 16, n_tokens, test_mul_mat_id_duplicate_ids::pattern::no_duplicates, 16));
+    }
+
     // Conv2d: K=CRS=NPQ=4096 matmul performance
     uint32_t                        iwh_idx  = 0;
     uint32_t                        kwh_idx  = 1;
