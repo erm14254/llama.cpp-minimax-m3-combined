@@ -4479,13 +4479,13 @@ struct test_mul_mat_id : public test_case {
 
 struct test_mul_mat_id_duplicate_ids : public test_case {
     const ggml_type type_a;
+    const int64_t m;
     const int64_t n;
     static constexpr int n_mats  = 4;
     static constexpr int n_used  = 12;
-    static constexpr int64_t m   = 16;
     static constexpr int64_t k   = 64;
 
-    test_mul_mat_id_duplicate_ids(ggml_type type_a, int64_t n) : type_a(type_a), n(n) {}
+    test_mul_mat_id_duplicate_ids(ggml_type type_a, int64_t m, int64_t n) : type_a(type_a), m(m), n(n) {}
 
     std::string vars() override {
         return VARS_TO_STR5(type_a, n_mats, n_used, m, n);
@@ -9064,8 +9064,9 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     for (ggml_type type_a : all_types) {
         test_cases.emplace_back(new test_mul_mat_id(type_a, GGML_TYPE_F32, 4, 2, false, 64, 16, 3*ggml_blck_size(type_a)));
     }
-    test_cases.emplace_back(new test_mul_mat_id_duplicate_ids(GGML_TYPE_Q8_0, 9));
-    test_cases.emplace_back(new test_mul_mat_id_duplicate_ids(GGML_TYPE_BF16, 17));
+    test_cases.emplace_back(new test_mul_mat_id_duplicate_ids(GGML_TYPE_Q8_0, 16, 9));
+    test_cases.emplace_back(new test_mul_mat_id_duplicate_ids(GGML_TYPE_BF16, 32, 17));
+    test_cases.emplace_back(new test_mul_mat_id_duplicate_ids(GGML_TYPE_BF16, 33, 17));
 
     for (ggml_type type_a : base_types) {
         for (ggml_type type_b : {GGML_TYPE_F32 /*, GGML_TYPE_F16 */}) {
