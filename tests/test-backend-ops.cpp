@@ -4477,6 +4477,72 @@ struct test_mul_mat_id : public test_case {
     }
 };
 
+struct test_mul_mat_id_duplicate_ids : public test_case {
+    static constexpr int n_mats = 4;
+    static constexpr int n_used = 12;
+    static constexpr int64_t m = 16;
+    static constexpr int64_t n = 9;
+    static constexpr int64_t k = 64;
+
+    std::string vars() override {
+        return VARS_TO_STR4(n_mats, n_used, m, n);
+    }
+
+    double max_nmse_err() override {
+        return 5e-4;
+    }
+
+    uint64_t op_flops(ggml_tensor * t) override {
+        GGML_UNUSED(t);
+        return 2 * m * k * n * n_used;
+    }
+
+    std::string op_desc(ggml_tensor * t) override {
+        GGML_UNUSED(t);
+        return "MUL_MAT_ID_DUPLICATE_IDS";
+    }
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * as = ggml_new_tensor_3d(ctx, GGML_TYPE_Q8_0, k, m, n_mats);
+        ggml_set_name(as, "as");
+
+        ggml_tensor * ids = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_used, n);
+        ggml_set_name(ids, "ids");
+
+        ggml_tensor * b = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, k, n_used, n);
+        ggml_set_name(b, "b");
+
+        ggml_tensor * out = ggml_mul_mat_id(ctx, as, b, ids);
+        ggml_set_name(out, "out");
+
+        return out;
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        static const std::array<std::array<int32_t, n_used>, n> ids_data = {{
+            {{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+            {{0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1}},
+            {{2, 0, 1, 0, 3, 0, 1, 0, 2, 0, 3, 0}},
+            {{3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3}},
+            {{0, 2, 2, 2, 1, 1, 1, 0, 0, 3, 3, 3}},
+            {{1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+            {{0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3}},
+            {{2, 2, 0, 0, 2, 2, 0, 0, 1, 1, 3, 3}},
+            {{3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0}},
+        }};
+
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx, t)) {
+            if (strcmp(ggml_get_name(t), "ids") == 0) {
+                for (int64_t r = 0; r < t->ne[1]; ++r) {
+                    ggml_backend_tensor_set(t, ids_data[r].data(), r*t->nb[1], t->ne[0]*sizeof(int32_t));
+                }
+            } else {
+                init_tensor_uniform(t);
+            }
+        }
+    }
+};
+
 // GGML_OP_MUL_MAT_ID + GGML_OP_ADD or GGML_OP_MUL
 struct test_mul_mat_id_fusion : public test_case {
     const ggml_type type_a;
@@ -8997,6 +9063,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     for (ggml_type type_a : all_types) {
         test_cases.emplace_back(new test_mul_mat_id(type_a, GGML_TYPE_F32, 4, 2, false, 64, 16, 3*ggml_blck_size(type_a)));
     }
+    test_cases.emplace_back(new test_mul_mat_id_duplicate_ids());
 
     for (ggml_type type_a : base_types) {
         for (ggml_type type_b : {GGML_TYPE_F32 /*, GGML_TYPE_F16 */}) {
