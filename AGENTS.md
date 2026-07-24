@@ -167,13 +167,11 @@ Commands:
 
 ```sh
 # GOOD: all commands that allow you to get the context
-
 gh search issues # better to check if anyone has the same issue
 gh search prs # avoid duplicated efforts
 grep ... # search the code base
 
 # BAD: act on the user's behalf
-
 git commit -m "..."
 git push
 gh pr create
