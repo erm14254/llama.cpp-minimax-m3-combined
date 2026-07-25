@@ -203,14 +203,38 @@ accept GB, GiB, MB, or MiB strings. Increase the output ceiling only after revie
 which derived arrays require it; the hard ceiling is 256 MiB. Use --hash-shards on a
 core run to include all 15 shard hashes, at the cost of reading the full 150 GB first.
 
+The pinned checkpoint is `model_type=longcat_next` with `BloomTokenizer`; it is not a
+Mistral tokenizer. The harness passes `fix_mistral_regex=False` to Transformers 4.57.6
+so its large-local-tokenizer false-positive path cannot rewrite the pinned
+tokenizer.json pre-tokenizer. Metadata records the tokenizer class, source directory,
+tokenizer.json hash, backend pre-tokenizer state hash, exact prompts, and input IDs;
+direct-forward and greedy tokenization must match exactly.
+
+Model loading uses the Transformers 4.57.6 `dtype` argument rather than deprecated
+`torch_dtype`. Before capture, the requested BF16/F16 dtype must match both the
+effective model dtype and base embedding weight dtype. Greedy generation uses a copy
+of the model generation configuration with sampling disabled, sampling-only values
+cleared, caching and return dictionaries enabled, and the CLI token limit recorded.
+The model's original generation configuration is never mutated.
+
+### Expected workstation messages
+
+The tokenizer `fix_mistral_regex` warning, deprecated `torch_dtype` warning, missing
+FlashAttention dtype warning, and ignored `temperature`/`top_p`/`top_k` warning would
+indicate a harness regression and should no longer appear. The audio autocast and
+diffusers `LoRACompatibleLinear` FutureWarnings, visual/audio offset diagnostic
+prints, and Accelerate messages about parameters on the meta device due to CPU
+offload are non-blocking for this text-core fixture run; do not edit official
+checkpoint code merely to suppress them.
+
 ## Captured official anchors
 
 For ordinary text-only inputs, hooks resolve these exact official module boundaries:
 
 * model.model.embed_tokens output: base token embeddings;
 * model.model.ngram_embeddings.post_projs[0..11] outputs: twelve raw projected
-  n-gram outputs, plus separately recorded effective contributions after the
-  official conditional division by 13;
+  n-gram outputs, plus separately recorded float32 analytical contributions that
+  are not official captured intermediates;
 * input to model.model.layers[0]: fused pre-trunk embedding;
 * input to logical layer 0 input_layernorm[1]: physical block 0 output;
 * logical layer 0 output: physical block 1 output;

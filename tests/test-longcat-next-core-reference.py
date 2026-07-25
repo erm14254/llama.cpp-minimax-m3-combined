@@ -223,6 +223,72 @@ class CoreHelperTests(unittest.TestCase):
         self.assertEqual(os.environ["TRANSFORMERS_OFFLINE"], "1")
         self.assertEqual(kwargs["device_map"], "auto")
         self.assertEqual(kwargs["max_memory"], {"cpu": "220GiB", 0: "88GiB"})
+        self.assertEqual(kwargs["dtype"], "bf16")
+        self.assertNotIn("torch_dtype", kwargs)
+
+    def test_loading_precision_maps_to_non_deprecated_dtype(self):
+        fake_torch = types.SimpleNamespace(bfloat16="bf16", float16="f16")
+        with mock.patch.dict("sys.modules", {"torch": fake_torch}):
+            self.assertEqual(core.loading_kwargs("bf16", "cpu")["dtype"], "bf16")
+            self.assertEqual(core.loading_kwargs("f16", "cpu")["dtype"], "f16")
+
+    def test_effective_embedding_dtype_provenance_and_mismatch(self):
+        fake_torch = types.SimpleNamespace(bfloat16="bf16", float16="f16")
+        embedding = types.SimpleNamespace(weight=types.SimpleNamespace(dtype="bf16"))
+        model = types.SimpleNamespace(dtype="bf16")
+        with mock.patch.object(core, "resolve_capture_modules",
+                               return_value={"base_embedding": embedding}):
+            report = core.effective_dtype_provenance(model, "bf16", fake_torch)
+            self.assertEqual(report, {
+                "requested_precision": "bf16", "requested_torch_dtype": "bf16",
+                "effective_model_dtype": "bf16", "base_embedding_weight_dtype": "bf16"})
+            embedding.weight.dtype = "f16"
+            with self.assertRaisesRegex(core.CoreFixtureError, "base embedding"):
+                core.effective_dtype_provenance(model, "bf16", fake_torch)
+
+    def test_tokenizer_loading_preserves_backend_and_rejects_regex_patch(self):
+        kwargs = core.tokenizer_loading_kwargs(False)
+        self.assertIs(kwargs["fix_mistral_regex"], False)
+        with self.assertRaisesRegex(core.CoreFixtureError, "forbids fix_mistral_regex=True"):
+            core.tokenizer_loading_kwargs(True)
+        state = b'{"type":"ByteLevel","add_prefix_space":false}'
+        pretokenizer = types.SimpleNamespace(__getstate__=lambda: state)
+        backend = types.SimpleNamespace(pre_tokenizer=pretokenizer)
+        BloomTokenizer = type("BloomTokenizer", (), {})
+        tokenizer = BloomTokenizer()
+        tokenizer.backend_tokenizer = backend
+        before = core.tokenizer_backend_pretokenizer_sha256(tokenizer)
+        after = core.tokenizer_backend_pretokenizer_sha256(tokenizer)
+        self.assertEqual(before, after)
+        with tempfile.TemporaryDirectory() as temp:
+            Path(temp, "tokenizer.json").write_text("{}", encoding="ascii")
+            provenance = core.tokenizer_provenance(tokenizer, temp)
+        self.assertEqual(provenance["tokenizer_class"], "BloomTokenizer")
+        self.assertIs(provenance["fix_mistral_regex"], False)
+        self.assertEqual(provenance["backend_pre_tokenizer_state_sha256"], before)
+
+    def test_direct_and_greedy_prompt_ids_must_match(self):
+        for name, ids in (("prompt_0", [1, 7, 9]), ("prompt_1", [1, 8, 10])):
+            self.assertEqual(core.require_prompt_ids_match(name, ids, ids), ids)
+        with self.assertRaisesRegex(core.CoreFixtureError, "tokenization differ"):
+            core.require_prompt_ids_match("prompt_0", [1, 7], [1, 8])
+
+    def test_explicit_greedy_policy_is_copied_and_clears_sampling(self):
+        original = types.SimpleNamespace(do_sample=True, temperature=0.7,
+                                         top_p=0.8, top_k=40, use_cache=False,
+                                         return_dict_in_generate=False)
+        config, settings = core.fixture_greedy_generation_config(original, 3)
+        self.assertIsNot(config, original)
+        self.assertTrue(original.do_sample)
+        self.assertEqual(original.temperature, 0.7)
+        self.assertEqual(settings, {
+            "do_sample": False, "temperature": None, "top_p": None, "top_k": None,
+            "max_new_tokens": 3, "use_cache": True,
+            "return_dict_in_generate": True})
+        for name, value in settings.items():
+            self.assertEqual(getattr(config, name), value)
+        prompt_configs = [config, config]
+        self.assertIs(prompt_configs[0], prompt_configs[1])
 
     def test_precision_option_validation(self):
         for precision in ("bf16", "f16"):

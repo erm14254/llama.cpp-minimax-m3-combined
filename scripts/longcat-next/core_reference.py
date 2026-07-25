@@ -12,6 +12,7 @@ import random
 import re
 import sys
 import zipfile
+from copy import deepcopy
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -480,7 +481,7 @@ def loading_kwargs(precision, placement, offload_dir=None, cpu_memory=None, gpu_
     import torch
     dtype = torch.bfloat16 if precision == "bf16" else torch.float16
     kwargs = {"local_files_only": True, "trust_remote_code": True,
-              "use_safetensors": True, "low_cpu_mem_usage": True, "torch_dtype": dtype}
+              "use_safetensors": True, "low_cpu_mem_usage": True, "dtype": dtype}
     if placement == "auto":
         kwargs["device_map"] = "auto"
     elif placement == "cpu":
@@ -498,6 +499,73 @@ def loading_kwargs(precision, placement, offload_dir=None, cpu_memory=None, gpu_
         kwargs["offload_folder"] = str(Path(offload_dir))
         kwargs["offload_state_dict"] = True
     return kwargs
+
+
+def tokenizer_loading_kwargs(fix_mistral_regex=False):
+    require(fix_mistral_regex is False,
+            "LongCat fixture generation forbids fix_mistral_regex=True; preserve tokenizer.json")
+    return {"local_files_only": True, "trust_remote_code": True,
+            "fix_mistral_regex": False}
+
+
+def tokenizer_backend_pretokenizer_sha256(tokenizer):
+    try:
+        state = tokenizer.backend_tokenizer.pre_tokenizer.__getstate__()
+    except (AttributeError, TypeError) as exc:
+        raise CoreFixtureError(f"cannot serialize tokenizer backend pre-tokenizer state: {exc}") from exc
+    if isinstance(state, bytes):
+        payload = state
+    elif isinstance(state, str):
+        payload = state.encode("utf-8")
+    else:
+        payload = json.dumps(state, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def tokenizer_provenance(tokenizer, model_dir):
+    tokenizer_class = tokenizer.__class__.__name__
+    require(tokenizer_class == "BloomTokenizer",
+            f"pinned LongCat tokenizer class must be BloomTokenizer, got {tokenizer_class}")
+    return {"tokenizer_class": tokenizer_class,
+            "tokenizer_source_directory": str(Path(model_dir).resolve()),
+            "fix_mistral_regex": False,
+            "tokenizer_json_sha256": file_sha256(Path(model_dir) / "tokenizer.json"),
+            "backend_pre_tokenizer_state_sha256":
+                tokenizer_backend_pretokenizer_sha256(tokenizer)}
+
+
+def effective_dtype_provenance(model, precision, torch):
+    requested = torch.bfloat16 if precision == "bf16" else torch.float16
+    modules = resolve_capture_modules(model)
+    embedding_dtype = modules["base_embedding"].weight.dtype
+    effective = getattr(model, "dtype", embedding_dtype)
+    require(embedding_dtype == requested,
+            f"requested {requested} core dtype but base embedding weight uses {embedding_dtype}")
+    require(effective == requested,
+            f"requested {requested} core dtype but model reports effective dtype {effective}")
+    return {"requested_precision": precision, "requested_torch_dtype": str(requested),
+            "effective_model_dtype": str(effective),
+            "base_embedding_weight_dtype": str(embedding_dtype)}
+
+
+def fixture_greedy_generation_config(original, max_new_tokens):
+    require(isinstance(max_new_tokens, int) and max_new_tokens >= 1,
+            "greedy max_new_tokens must be at least 1")
+    config = deepcopy(original)
+    settings = {"do_sample": False, "temperature": None, "top_p": None,
+                "top_k": None, "max_new_tokens": max_new_tokens,
+                "use_cache": True, "return_dict_in_generate": True}
+    for name, value in settings.items():
+        setattr(config, name, value)
+    return config, settings
+
+
+def require_prompt_ids_match(prompt_name, direct_ids, greedy_ids):
+    direct = list(direct_ids)
+    greedy = list(greedy_ids)
+    require(greedy == direct,
+            f"direct-forward and greedy tokenization differ for {prompt_name}")
+    return greedy
 
 
 def ensure_transformers_version():
@@ -693,11 +761,14 @@ def load_case_ids(weight_free_fixture, tokenizer):
         if "input_ids" in case and case["name"] != "all_ignored_ids":
             cases.append((case["name"], list(case["input_ids"])))
     prompts = ["The capital of France is", "Write one short sentence about a cat."]
+    prompt_input_ids = {}
     for index, prompt in enumerate(prompts):
         encoded = tokenizer(prompt, add_special_tokens=True, return_attention_mask=False)
-        cases.append((f"tokenizer_prompt_{index}", list(encoded["input_ids"])))
+        ids = list(encoded["input_ids"])
+        prompt_input_ids[f"prompt_{index}"] = ids
+        cases.append((f"tokenizer_prompt_{index}", ids))
     require(cases, "no explicit token-ID cases were found")
-    return cases, prompts
+    return cases, prompts, prompt_input_ids
 
 
 def prepare_case_inputs(case_name, input_ids):
@@ -852,13 +923,21 @@ def run_core_generation(args, weight_free_fixture):
                           args.cpu_memory, args.gpu_memory)
     try:
         tokenizer = AutoTokenizer.from_pretrained(
-            str(args.model_dir), local_files_only=True, trust_remote_code=True)
+            str(args.model_dir), **tokenizer_loading_kwargs(False))
         model = AutoModelForCausalLM.from_pretrained(str(args.model_dir), **load)
     except (OSError, RuntimeError, ValueError) as exc:
         raise CoreFixtureError(f"local official model loading failed without network fallback: {exc}") from exc
     model.eval()
-    resolve_capture_modules(model)
-    cases, prompts = load_case_ids(weight_free_fixture, tokenizer)
+    dtype_provenance = effective_dtype_provenance(model, args.precision, torch)
+    tokenizer_metadata = tokenizer_provenance(tokenizer, args.model_dir)
+    initial_pretokenizer_sha256 = tokenizer_metadata["backend_pre_tokenizer_state_sha256"]
+    cases, prompts, prompt_input_ids = load_case_ids(weight_free_fixture, tokenizer)
+    tokenizer_metadata["prompts"] = [
+        {"name": f"prompt_{index}", "text": prompt,
+         "input_ids": prompt_input_ids[f"prompt_{index}"]}
+        for index, prompt in enumerate(prompts)]
+    greedy_generation_config, greedy_settings = fixture_greedy_generation_config(
+        model.generation_config, args.max_new_tokens)
     selected_logit_ids = sorted({0, 1, 2, 131071, *range(131072, 131125)})
     runs = []
     source_dtypes = {}
@@ -875,13 +954,15 @@ def run_core_generation(args, weight_free_fixture):
                 repeat_sources[f"{case_name}/{name}"] = case_sources[name]
         greedy = {}
         for index, prompt in enumerate(prompts):
-            encoded = tokenizer(prompt, return_tensors="pt")
+            encoded = tokenizer(prompt, add_special_tokens=True, return_tensors="pt")
+            greedy_input_ids = encoded["input_ids"].detach().cpu().tolist()[0]
+            require_prompt_ids_match(
+                f"prompt_{index}", prompt_input_ids[f"prompt_{index}"], greedy_input_ids)
             device = resolve_capture_modules(model)["base_embedding"].weight.device
             encoded = {key: value.to(device) for key, value in encoded.items()}
             with torch.inference_mode():
-                generated = model.generate(**encoded, do_sample=False,
-                                           max_new_tokens=args.max_new_tokens, use_cache=True,
-                                           return_dict_in_generate=True)
+                generated = model.generate(
+                    **encoded, generation_config=greedy_generation_config)
             result = extract_greedy_sequences(generated).detach().cpu().numpy()
             arrays[f"greedy_ids/prompt_{index}"] = result
             repeat_sources[f"greedy_ids/prompt_{index}"] = "int64"
@@ -890,6 +971,8 @@ def run_core_generation(args, weight_free_fixture):
         greedy_by_run.append(greedy)
         if repeat == 0:
             source_dtypes = repeat_sources
+    require(tokenizer_backend_pretokenizer_sha256(tokenizer) == initial_pretokenizer_sha256,
+            "tokenizer backend pre-tokenizer changed during fixture generation")
     reproducibility = {"schema_version": CORE_SCHEMA_VERSION, "repeat_count": args.repeat_count,
                        "arrays": compare_runs(runs), "greedy_continuations": greedy_by_run,
                        "comparison_tolerances": {"bf16": None, "f16": None},
@@ -920,6 +1003,9 @@ def run_core_generation(args, weight_free_fixture):
                 "software_versions": {"transformers": EXPECTED_TRANSFORMERS,
                                       "torch": torch.__version__},
                 "dependency_preflight": dependency_report,
+                "tokenizer": tokenizer_metadata,
+                "dtype_provenance": dtype_provenance,
+                "fixture_generation_settings": greedy_settings,
                 "seeds": {"python": 20260725, "torch": 20260725},
                 "selected_logit_token_ids": selected_logit_ids,
                 "ngram_analytical_reconstruction_reports": reconstruction_reports,
