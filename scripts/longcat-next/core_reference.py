@@ -568,12 +568,52 @@ def fixture_greedy_generation_config(original, max_new_tokens):
     require(isinstance(max_new_tokens, int) and max_new_tokens >= 1,
             "greedy max_new_tokens must be at least 1")
     config = deepcopy(original)
-    settings = {"do_sample": False, "temperature": None, "top_p": None,
-                "top_k": None, "max_new_tokens": max_new_tokens,
-                "use_cache": True, "return_dict_in_generate": True}
-    for name, value in settings.items():
+    fields = ("do_sample", "temperature", "top_p", "top_k", "max_new_tokens",
+              "use_cache", "return_dict_in_generate")
+    base = {name: getattr(original, name, None) for name in fields}
+    overrides = {"use_model_defaults": False, "do_sample": False,
+                 "temperature": None, "top_p": None, "top_k": None,
+                 "max_new_tokens": max_new_tokens, "use_cache": True,
+                 "return_dict_in_generate": True}
+    for name, value in overrides.items():
+        if name == "use_model_defaults":
+            continue
         setattr(config, name, value)
-    return config, settings
+    return config, {"copied_base_generation_configuration": base,
+                    "explicit_call_overrides": overrides}
+
+
+def resolve_effective_greedy_policy(model, generation_config, overrides):
+    prepare = getattr(model, "_prepare_generation_config", None)
+    require(callable(prepare),
+            "official model does not expose _prepare_generation_config for greedy-policy validation")
+    effective, _ = prepare(deepcopy(generation_config), **dict(overrides))
+    fields = ("do_sample", "temperature", "top_p", "top_k", "max_new_tokens",
+              "use_cache", "return_dict_in_generate")
+    resolved = {name: getattr(effective, name, None) for name in fields}
+    resolved["use_model_defaults"] = overrides.get("use_model_defaults")
+    require(resolved == overrides,
+            "effective generation policy is not the requested greedy policy: " +
+            json.dumps(resolved, sort_keys=True))
+    return resolved
+
+
+def generate_with_greedy_policy(model, encoded, generation_config, policy,
+                                prompt_name, repeat_index):
+    overrides = policy["explicit_call_overrides"]
+    effective = resolve_effective_greedy_policy(model, generation_config, overrides)
+    mode = "sampling" if effective["do_sample"] else "greedy"
+    require(mode == "greedy", f"effective decoding method for {prompt_name} is {mode}, not greedy")
+    try:
+        generated = model.generate(
+            **encoded, generation_config=generation_config, **overrides)
+    except Exception as exc:
+        raise CoreFixtureError(
+            "generation failed; no fixture was written; "
+            f"prompt={prompt_name}; repeat_index={repeat_index}; "
+            f"requested_policy={json.dumps(overrides, sort_keys=True)}; "
+            f"effective_decoding_mode={mode}; {type(exc).__name__}: {exc}") from exc
+    return generated, effective
 
 
 def require_prompt_ids_match(prompt_name, direct_ids, greedy_ids):
@@ -952,7 +992,7 @@ def run_core_generation(args, weight_free_fixture):
         {"name": f"prompt_{index}", "text": prompt,
          "input_ids": prompt_input_ids[f"prompt_{index}"]}
         for index, prompt in enumerate(prompts)]
-    greedy_generation_config, greedy_settings = fixture_greedy_generation_config(
+    greedy_generation_config, greedy_policy = fixture_greedy_generation_config(
         model.generation_config, args.max_new_tokens)
     selected_logit_ids = sorted({0, 1, 2, 131071, *range(131072, 131125)})
     runs = []
@@ -977,8 +1017,14 @@ def run_core_generation(args, weight_free_fixture):
             device = resolve_capture_modules(model)["base_embedding"].weight.device
             encoded = {key: value.to(device) for key, value in encoded.items()}
             with torch.inference_mode():
-                generated = model.generate(
-                    **encoded, generation_config=greedy_generation_config)
+                generated, effective_policy = generate_with_greedy_policy(
+                    model, encoded, greedy_generation_config, greedy_policy,
+                    f"prompt_{index}", repeat)
+            if "effective_resolved_greedy_policy" not in greedy_policy:
+                greedy_policy["effective_resolved_greedy_policy"] = effective_policy
+            else:
+                require(greedy_policy["effective_resolved_greedy_policy"] == effective_policy,
+                        "effective greedy policy changed between prompts or repeats")
             result = extract_greedy_sequences(generated).detach().cpu().numpy()
             arrays[f"greedy_ids/prompt_{index}"] = result
             repeat_sources[f"greedy_ids/prompt_{index}"] = "int64"
@@ -1021,7 +1067,7 @@ def run_core_generation(args, weight_free_fixture):
                 "dependency_preflight": dependency_report,
                 "tokenizer": tokenizer_metadata,
                 "dtype_provenance": dtype_provenance,
-                "fixture_generation_settings": greedy_settings,
+                "fixture_generation_settings": greedy_policy,
                 "seeds": {"python": 20260725, "torch": 20260725},
                 "selected_logit_token_ids": selected_logit_ids,
                 "ngram_analytical_reconstruction_reports": reconstruction_reports,

@@ -307,18 +307,100 @@ class CoreHelperTests(unittest.TestCase):
         original = types.SimpleNamespace(do_sample=True, temperature=0.7,
                                          top_p=0.8, top_k=40, use_cache=False,
                                          return_dict_in_generate=False)
-        config, settings = core.fixture_greedy_generation_config(original, 3)
+        config, policy = core.fixture_greedy_generation_config(original, 3)
+        settings = policy["explicit_call_overrides"]
         self.assertIsNot(config, original)
         self.assertTrue(original.do_sample)
         self.assertEqual(original.temperature, 0.7)
         self.assertEqual(settings, {
-            "do_sample": False, "temperature": None, "top_p": None, "top_k": None,
+            "use_model_defaults": False, "do_sample": False,
+            "temperature": None, "top_p": None, "top_k": None,
             "max_new_tokens": 3, "use_cache": True,
             "return_dict_in_generate": True})
         for name, value in settings.items():
-            self.assertEqual(getattr(config, name), value)
+            if name != "use_model_defaults":
+                self.assertEqual(getattr(config, name), value)
+        self.assertEqual(policy["copied_base_generation_configuration"]["do_sample"], True)
         prompt_configs = [config, config]
         self.assertIs(prompt_configs[0], prompt_configs[1])
+
+    def test_generation_mixin_default_fallback_is_overridden_directly(self):
+        class GenerationModel:
+            def __init__(self):
+                self.generation_config = types.SimpleNamespace(
+                    do_sample=True, temperature=0.6, top_p=0.9, top_k=50,
+                    max_new_tokens=20, use_cache=False, return_dict_in_generate=False)
+                self.calls = []
+                self.branches = []
+            def _prepare_generation_config(self, generation_config,
+                                           use_model_defaults=None, **kwargs):
+                prepared = __import__("copy").deepcopy(generation_config)
+                # Reproduce the 4.57.6 model-default fallback when a value equals
+                # the global default and use_model_defaults was not disabled.
+                if use_model_defaults is not False and prepared.do_sample is False:
+                    prepared.do_sample = self.generation_config.do_sample
+                for name, value in kwargs.items():
+                    setattr(prepared, name, value)
+                return prepared, {}
+            def generate(self, **kwargs):
+                self.calls.append(dict(kwargs))
+                generation_config = kwargs.pop("generation_config")
+                prepared, _ = self._prepare_generation_config(generation_config, **kwargs)
+                if prepared.do_sample:
+                    self.branches.append("sampling")
+                    import torch
+                    torch.multinomial(None, num_samples=1)
+                else:
+                    self.branches.append("argmax")
+                return "generated"
+
+        model = GenerationModel()
+        before = dict(vars(model.generation_config))
+        copied, policy = core.fixture_greedy_generation_config(model.generation_config, 1)
+        fallback, _ = model._prepare_generation_config(copied)
+        self.assertTrue(fallback.do_sample)
+        fake_torch = types.ModuleType("torch")
+        fake_torch.multinomial = mock.Mock(side_effect=AssertionError("sampling forbidden"))
+        effective_results = []
+        with mock.patch.dict("sys.modules", {"torch": fake_torch}):
+            for index in range(2):
+                result, effective = core.generate_with_greedy_policy(
+                    model, {"input_ids": index}, copied, policy, f"prompt_{index}", 0)
+                self.assertEqual(result, "generated")
+                effective_results.append(effective)
+        self.assertEqual(model.branches, ["argmax", "argmax"])
+        fake_torch.multinomial.assert_not_called()
+        self.assertEqual(effective_results[0], effective_results[1])
+        expected = policy["explicit_call_overrides"]
+        self.assertEqual(effective_results[0], expected)
+        for call in model.calls:
+            self.assertIs(call["use_model_defaults"], False)
+            self.assertEqual({name: call[name] for name in expected}, expected)
+        self.assertEqual(vars(model.generation_config), before)
+
+    def test_generation_failure_reports_policy_without_retry(self):
+        class FailingModel:
+            def __init__(self):
+                self.calls = 0
+            def _prepare_generation_config(self, generation_config,
+                                           use_model_defaults=None, **kwargs):
+                prepared = __import__("copy").deepcopy(generation_config)
+                for name, value in kwargs.items():
+                    setattr(prepared, name, value)
+                return prepared, {}
+            def generate(self, **kwargs):
+                self.calls += 1
+                raise RuntimeError("CUDA device-side assert triggered")
+        original = types.SimpleNamespace(
+            do_sample=True, temperature=0.6, top_p=0.9, top_k=50,
+            max_new_tokens=20, use_cache=False, return_dict_in_generate=False)
+        copied, policy = core.fixture_greedy_generation_config(original, 1)
+        model = FailingModel()
+        with self.assertRaisesRegex(core.CoreFixtureError,
+                                   "no fixture was written.*prompt=prompt_1.*repeat_index=2.*greedy"):
+            core.generate_with_greedy_policy(
+                model, {"input_ids": 1}, copied, policy, "prompt_1", 2)
+        self.assertEqual(model.calls, 1)
 
     def test_precision_option_validation(self):
         for precision in ("bf16", "f16"):

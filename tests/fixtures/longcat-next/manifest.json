@@ -83,7 +83,7 @@
   },
   "local_core_fixture_schemas": {
     "core-fixture-schema.json": {
-      "sha256": "43c25d24bab2887d7f289a05ee9a81763d7fdaab2a1cfc7dce7c9f543fb610dc",
+      "sha256": "c4fae91c797ebd6257f86b83a0e2c0cd7f02dbfec7a1b1e59bcf3f42c3d0aeb0",
       "contains_generated_activations": false
     },
     "core-reproducibility-schema.json": {

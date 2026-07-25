@@ -221,6 +221,20 @@ of the model generation configuration with sampling disabled, sampling-only valu
 cleared, caching and return dictionaries enabled, and the CLI token limit recorded.
 The model's original generation configuration is never mutated.
 
+Transformers 4.57.6 can replace a copied `do_sample=False` value with LongCat's
+model-specific `do_sample=True` default. The harness therefore also passes one shared
+set of direct `generate()` keyword overrides to both prompts: `use_model_defaults=False`,
+`do_sample=False`, null `temperature`/`top_p`/`top_k`, the CLI `max_new_tokens`,
+`use_cache=True`, and `return_dict_in_generate=True`. Before every call it resolves
+the policy through the model's GenerationMixin preparation path and requires the
+effective policy to remain greedy. Metadata separates the copied base configuration,
+direct call overrides, and resolved effective policy.
+
+Any generation exception is fatal and writes no fixture. Its error identifies the
+prompt, repeat index, requested policy, and known effective decoding mode. In
+particular, a CUDA device-side assertion is never caught for retry in the same Python
+process.
+
 ### Expected workstation messages
 
 The tokenizer `fix_mistral_regex` warning, deprecated `torch_dtype` warning, and

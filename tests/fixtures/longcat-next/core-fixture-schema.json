@@ -23,7 +23,15 @@
       }
     },
     "dtype_provenance": {"type": "object"},
-    "fixture_generation_settings": {"type": "object"},
+    "fixture_generation_settings": {
+      "type": "object",
+      "required": ["copied_base_generation_configuration", "explicit_call_overrides", "effective_resolved_greedy_policy"],
+      "properties": {
+        "copied_base_generation_configuration": {"type": "object"},
+        "explicit_call_overrides": {"type": "object"},
+        "effective_resolved_greedy_policy": {"type": "object"}
+      }
+    },
     "software_versions": {"type": "object"},
     "seeds": {"type": "object"},
     "selected_logit_token_ids": {"type": "array", "items": {"type": "integer"}},
