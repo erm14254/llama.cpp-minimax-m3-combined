@@ -30,10 +30,11 @@ python tests\test-longcat-next-local-parity.py --model D:\LongCat-Next\longcat-n
 ```
 
 The accepted reference contract is 433 arrays per precision, two byte-identical
-official repeats, identical greedy continuations, zero repeat differences, and null
-cross-implementation tolerances. This repository does not choose or widen those
-tolerances. Numerical parity cannot be claimed until locally converted BF16 and F16
-GGUF results are compared with the accepted fixtures after tolerance review.
+official repeats, identical greedy continuations, and zero repeat differences. The
+Stage-0 reference metadata retains its historical null tolerance fields; the checked
+Stage-1 policy below now supplies the pre-execution cross-implementation thresholds.
+Numerical parity cannot be claimed until locally converted BF16 and F16 GGUF results
+are compared with the accepted fixtures.
 
 The callback mapping is stable and explicit: `inp_embd` is the base embedding,
 `ngram_proj-0..11` are the masked raw projections, `inp_embd_ngram` is the fused
