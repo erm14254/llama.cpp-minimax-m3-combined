@@ -152,6 +152,65 @@ class CoreHelperTests(unittest.TestCase):
         self.assertTrue(report["packages"]["available"]["import_ok"])
         self.assertIn("import failed", report["packages"]["missing"]["error"])
 
+    def test_runtime_profile_records_official_departure(self):
+        expected = core.EXPECTED_DEPENDENCIES
+        core.EXPECTED_DEPENDENCIES = {"torch": ("torch", "2.6.0")}
+        fake_torch = types.SimpleNamespace(__version__="2.7.1", version=types.SimpleNamespace(cuda=None))
+        try:
+            with mock.patch.object(core.importlib.metadata, "version", return_value="2.7.1"), \
+                 mock.patch.object(core.importlib, "import_module", return_value=fake_torch):
+                report = core.dependency_preflight("blackwell-compatible", "cpu")
+        finally:
+            core.EXPECTED_DEPENDENCIES = expected
+        self.assertTrue(report["packages"]["torch"]["runtime_profile_allows_departure"])
+        self.assertEqual(report["packages"]["torch"]["official_pinned_version"], "2.6.0")
+
+    def test_sm120_rejects_official_pinned_torch(self):
+        cuda = types.SimpleNamespace(
+            is_available=lambda: True, get_device_capability=lambda index: (12, 0),
+            get_arch_list=lambda: ["sm_120"], get_device_name=lambda index: "Blackwell",
+            is_bf16_supported=lambda: True)
+        fake_torch = types.SimpleNamespace(
+            __version__="2.6.0", version=types.SimpleNamespace(cuda="12.6"), cuda=cuda)
+        packages = {"torch": {"installed_version": "2.6.0"},
+                    "torchaudio": {"installed_version": "2.6.0"},
+                    "torchvision": {"installed_version": "0.21.0"}}
+        with mock.patch.object(core.importlib, "import_module", return_value=fake_torch):
+            report = core.runtime_probe(packages, "official-pinned", "cuda")
+        self.assertFalse(report["ok"])
+        self.assertIn("Blackwell", report["error"])
+
+    def test_blackwell_profile_rejects_non_sm120_architecture(self):
+        cuda = types.SimpleNamespace(
+            is_available=lambda: True, get_device_capability=lambda index: (12, 0),
+            get_arch_list=lambda: ["sm_90"], get_device_name=lambda index: "Blackwell",
+            is_bf16_supported=lambda: True)
+        fake_torch = types.SimpleNamespace(
+            __version__="2.7.1", version=types.SimpleNamespace(cuda="12.8"), cuda=cuda)
+        packages = {"torch": {"installed_version": "2.7.1"},
+                    "torchaudio": {"installed_version": "2.7.1"},
+                    "torchvision": {"installed_version": "0.22.1"}}
+        with mock.patch.object(core.importlib, "import_module", return_value=fake_torch):
+            report = core.runtime_probe(packages, "blackwell-compatible", "cuda")
+        self.assertFalse(report["ok"])
+        self.assertIn("sm_120", report["error"])
+
+    def test_local_custom_code_preflight_uses_dynamic_loader(self):
+        dynamic_utils = types.ModuleType("transformers.dynamic_module_utils")
+        calls = []
+        def loader(reference, path, **kwargs):
+            calls.append((reference, path, kwargs))
+            return type(reference.rsplit(".", 1)[-1], (), {})
+        dynamic_utils.get_class_from_dynamic_module = loader
+        transformers = types.ModuleType("transformers")
+        with mock.patch.dict("sys.modules", {
+                "transformers": transformers,
+                "transformers.dynamic_module_utils": dynamic_utils}):
+            report = core.import_local_custom_classes("checkpoint")
+        self.assertTrue(report["ok"])
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(all(row[2]["local_files_only"] for row in calls))
+
     def test_network_disabled_loading_arguments(self):
         fake_torch = types.SimpleNamespace(bfloat16="bf16", float16="f16")
         with mock.patch.dict("sys.modules", {"torch": fake_torch}):
@@ -233,6 +292,40 @@ class CoreHelperTests(unittest.TestCase):
         rank_one.ndim = 1
         with self.assertRaisesRegex(core.CoreFixtureError, "shape"):
             core.extract_greedy_sequences(types.SimpleNamespace(sequences=rank_one))
+
+    def test_case_specific_padding_and_official_positions(self):
+        padded = core.prepare_case_inputs("bos_left_zero", [0, 0, 1, 17])
+        literal = core.prepare_case_inputs("literal_zero", [19, 0, 29])
+        ordinary = core.prepare_case_inputs("maximum_text_token", [7, 11, 131071])
+        self.assertEqual(padded["attention_mask"].tolist(), [[0, 0, 1, 1]])
+        self.assertEqual(padded["position_ids"].tolist(), [[1, 1, 0, 1]])
+        self.assertEqual(padded["cache_position"].tolist(), [0, 1, 2, 3])
+        self.assertEqual(literal["attention_mask"].tolist(), [[1, 1, 1]])
+        self.assertEqual(literal["position_ids"].tolist(), [[0, 1, 2]])
+        self.assertEqual(ordinary["attention_mask"].tolist(), [[1, 1, 1]])
+
+    def test_prompt_and_incremental_history_inputs_remain_visible(self):
+        prompt = core.prepare_case_inputs("prompt_at_once_vs_token_at_a_time", [1, 101, 103, 107])
+        for end in range(1, 5):
+            incremental = core.prepare_case_inputs("prompt_incremental", [1, 101, 103, 107][:end])
+            self.assertTrue((incremental["attention_mask"] == 1).all())
+            self.assertEqual(incremental["input_ids"].tolist()[0], [1, 101, 103, 107][:end])
+        self.assertTrue((prompt["attention_mask"] == 1).all())
+
+    def test_analytical_ngram_report_exposes_rounding_and_ignored_tokens(self):
+        base = np.array([[[1.0], [2.0]]], dtype=np.float32)
+        raw = [np.array([[[0.1], [0.25]]], dtype=np.float32) for _ in range(12)]
+        ignored = np.array([False, True])
+        analytical_expected = (1.0 + 1.2) / 13.0
+        official = np.array([[[np.float32(0.169921875)], [5.0]]], dtype=np.float32)
+        contributions, reconstructed, error, report = core.analytical_ngram_decomposition(
+            base, raw, ignored, official)
+        self.assertAlmostEqual(float(reconstructed[0, 0, 0]), analytical_expected, places=6)
+        self.assertAlmostEqual(float(reconstructed[0, 1, 0]), 5.0, places=6)
+        self.assertAlmostEqual(float(contributions[0][0, 1, 0]), 0.25, places=6)
+        self.assertGreater(report["max_absolute_error"], 0)
+        self.assertFalse(report["is_official_captured_intermediate"])
+        self.assertAlmostEqual(float(error[0, 1, 0]), 0.0, places=6)
 
     def test_no_weight_end_to_end_contract(self):
         class Status:

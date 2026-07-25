@@ -56,6 +56,7 @@ EXPECTED_DEPENDENCIES = {
     "safetensors": ("safetensors", None),
     "numpy": ("numpy", None),
 }
+RUNTIME_PROFILES = ("official-pinned", "blackwell-compatible")
 
 class CoreFixtureError(ValueError):
     pass
@@ -158,7 +159,110 @@ def validate_checkpoint(model_dir, hash_shards=False):
             "tokenizer_sha256": file_sha256(root / "tokenizer.json")}
 
 
-def dependency_preflight():
+def version_pair(value):
+    match = __import__("re").match(r"^(\d+)\.(\d+)", value or "")
+    return tuple(map(int, match.groups())) if match else None
+
+
+def runtime_probe(packages, runtime_profile, placement):
+    report = {"ok": True, "operating_system": os.name,
+              "platform": __import__("platform").platform(),
+              "cuda_selected": placement in ("auto", "cuda")}
+    try:
+        torch = importlib.import_module("torch")
+        report.update({"torch_version": getattr(torch, "__version__", None),
+                       "torch_cuda_build": getattr(torch.version, "cuda", None)})
+        if runtime_profile == "official-pinned":
+            report["ok"] &= packages["torch"]["version_ok"]
+        if report["cuda_selected"]:
+            require(torch.cuda.is_available(), "CUDA placement was selected but torch.cuda.is_available() is false")
+            capability = tuple(torch.cuda.get_device_capability(0))
+            arch_list = list(torch.cuda.get_arch_list()) if hasattr(torch.cuda, "get_arch_list") else []
+            report.update({"gpu_name": torch.cuda.get_device_name(0),
+                           "gpu_compute_capability": list(capability),
+                           "torch_cuda_arch_list": arch_list,
+                           "sm_120_listed": "sm_120" in arch_list or "compute_120" in arch_list,
+                           "bf16_supported": bool(torch.cuda.is_bf16_supported())})
+            if capability == (12, 0) and runtime_profile == "official-pinned":
+                raise CoreFixtureError(
+                    "sm_120 Blackwell cannot use the official-pinned torch 2.6.0 runtime; use blackwell-compatible")
+            if runtime_profile == "blackwell-compatible":
+                require(capability == (12, 0),
+                        f"blackwell-compatible requires an sm_120 GPU, got compute capability {capability}")
+                require(version_pair(report["torch_version"]) >= (2, 7),
+                        f"sm_120 requires torch 2.7 or newer, got {report['torch_version']}")
+                require(version_pair(report["torch_cuda_build"]) >= (12, 8),
+                        f"sm_120 requires a CUDA 12.8+ torch build, got {report['torch_cuda_build']}")
+                require(report["sm_120_listed"],
+                        f"installed torch architecture list does not include sm_120: {arch_list}")
+            require(report["bf16_supported"], "selected CUDA device does not report BF16 support")
+            left = torch.tensor([1.0, 2.0], device="cuda")
+            right = (left * left + 1).sum()
+            torch.cuda.synchronize()
+            require(float(right.cpu()) == 7.0, "small CUDA tensor operation returned an unexpected value")
+            report["cuda_tensor_operation"] = "passed"
+        if runtime_profile == "blackwell-compatible":
+            torch_pair = version_pair(packages["torch"]["installed_version"])
+            audio_pair = version_pair(packages["torchaudio"]["installed_version"])
+            vision_pair = version_pair(packages["torchvision"]["installed_version"])
+            require(audio_pair == torch_pair,
+                    f"torchaudio {audio_pair} does not match torch {torch_pair}")
+            require(vision_pair is not None and torch_pair is not None and
+                    vision_pair[0] == 0 and vision_pair[1] == torch_pair[1] + 15,
+                    f"torchvision {vision_pair} does not match torch {torch_pair}")
+    except Exception as exc:
+        report["ok"] = False
+        report["error"] = f"{type(exc).__name__}: {exc}"
+    return report
+
+
+def import_local_custom_classes(model_dir):
+    report = {"ok": False, "classes": {}, "error": None}
+    try:
+        from transformers.dynamic_module_utils import get_class_from_dynamic_module
+        for reference in ("configuration_longcat_next.LongcatNextConfig",
+                          "modeling_longcat_next.LongcatNextModel",
+                          "modeling_longcat_next.LongcatNextForCausalLM"):
+            cls = get_class_from_dynamic_module(
+                reference, str(model_dir), local_files_only=True, trust_remote_code=True)
+            report["classes"][reference] = f"{cls.__module__}.{cls.__name__}"
+        report["ok"] = True
+    except Exception as exc:
+        report["error"] = f"{type(exc).__name__}: {exc}"
+    return report
+
+
+def flash_attention_probe(runtime, placement):
+    report = {"ok": True, "platform": __import__("platform").platform(), "operation": "not requested"}
+    if placement not in ("auto", "cuda"):
+        return report
+    try:
+        torch = importlib.import_module("torch")
+        flash_attn = importlib.import_module("flash_attn")
+        function = getattr(flash_attn, "flash_attn_func")
+        query = torch.randn((1, 4, 2, 16), device="cuda", dtype=torch.bfloat16)
+        output = function(query, query, query, dropout_p=0.0, causal=True)
+        require(tuple(output.shape) == tuple(query.shape),
+                f"FlashAttention output shape {tuple(output.shape)} does not match input {tuple(query.shape)}")
+        require(bool(torch.isfinite(output).all()), "FlashAttention tiny forward produced non-finite values")
+        torch.cuda.synchronize()
+        report.update({"operation": "passed", "version": packages_version("flash-attn")})
+    except Exception as exc:
+        report["ok"] = False
+        report["error"] = f"{type(exc).__name__}: {exc}"
+    return report
+
+
+def packages_version(distribution):
+    try:
+        return importlib.metadata.version(distribution)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def dependency_preflight(runtime_profile="official-pinned", placement="cpu", model_dir=None):
+    require(runtime_profile in RUNTIME_PROFILES,
+            f"runtime profile must be one of {RUNTIME_PROFILES}")
     packages = {}
     for module_name, (distribution, expected) in EXPECTED_DEPENDENCIES.items():
         row = {"distribution": distribution, "required_version": expected,
@@ -172,16 +276,25 @@ def dependency_preflight():
             row["import_ok"] = True
         except Exception as exc:
             row["error"] = f"import failed: {type(exc).__name__}: {exc}"
-        row["version_ok"] = expected is None or row["installed_version"] == expected
+        exact_runtime = not (runtime_profile == "blackwell-compatible" and
+                             module_name in ("torch", "torchvision", "torchaudio", "flash_attn"))
+        row["version_ok"] = expected is None or not exact_runtime or row["installed_version"] == expected
+        row["official_pinned_version"] = expected
+        row["runtime_profile_allows_departure"] = not exact_runtime
         if not row["version_ok"] and row["error"] is None:
             row["error"] = (f"expected {expected}, installed {row['installed_version']}")
         packages[module_name] = row
-    ok = all(row["import_ok"] and row["version_ok"] for row in packages.values())
-    return {"ok": ok, "packages": packages}
+    runtime = runtime_probe(packages, runtime_profile, placement)
+    custom_code = import_local_custom_classes(model_dir) if model_dir is not None else None
+    flash = flash_attention_probe(runtime, placement)
+    ok = (all(row["import_ok"] and row["version_ok"] for row in packages.values()) and
+          runtime["ok"] and flash["ok"] and (custom_code is None or custom_code["ok"]))
+    return {"ok": ok, "runtime_profile": runtime_profile, "packages": packages,
+            "runtime": runtime, "flash_attention": flash, "custom_code": custom_code}
 
 
-def require_dependency_preflight():
-    report = dependency_preflight()
+def require_dependency_preflight(runtime_profile="official-pinned", placement="cpu", model_dir=None):
+    report = dependency_preflight(runtime_profile, placement, model_dir)
     require(report["ok"], "dependency preflight failed; do not load model weights:\n" +
             json.dumps(report, indent=2, sort_keys=True))
     return report
@@ -436,6 +549,50 @@ def load_case_ids(weight_free_fixture, tokenizer):
     return cases, prompts
 
 
+def prepare_case_inputs(case_name, input_ids):
+    import numpy as np
+    ids = np.asarray([input_ids], dtype=np.int64)
+    attention = np.ones_like(ids)
+    if case_name == "bos_left_zero":
+        for index, token in enumerate(input_ids):
+            if token != 0:
+                break
+            attention[0, index] = 0
+    positions = attention.cumsum(axis=-1) - 1
+    positions[attention == 0] = 1
+    cache_position = np.arange(ids.shape[1], dtype=np.int64)
+    return {"input_ids": ids, "attention_mask": attention,
+            "position_ids": positions, "cache_position": cache_position,
+            "position_id_provenance":
+                "Transformers 4.57.6 GenerationMixin.prepare_inputs_for_generation cumsum-minus-one; masked positions set to 1"}
+
+
+def analytical_ngram_decomposition(base, raw_projections, ignored_mask, official_fused):
+    import numpy as np
+    base = np.asarray(base, dtype=np.float32)
+    raw = [np.asarray(value, dtype=np.float32) for value in raw_projections]
+    ignored = np.asarray(ignored_mask, dtype=bool)
+    reconstructed = base.copy()
+    for value in raw:
+        reconstructed = reconstructed + value
+    reconstructed[:, ~ignored, :] /= 13.0
+    contributions = []
+    for value in raw:
+        analytical = value.copy()
+        analytical[:, ~ignored, :] /= 13.0
+        contributions.append(analytical)
+    official = np.asarray(official_fused, dtype=np.float32)
+    error = reconstructed - official
+    absolute = np.abs(error)
+    denominator = np.maximum(np.abs(official), np.finfo(np.float32).tiny)
+    report = {"max_absolute_error": float(absolute.max(initial=0.0)),
+              "max_relative_error": float((absolute / denominator).max(initial=0.0)),
+              "authority": "official fused_pre_trunk_embedding",
+              "analytical_dtype": "float32",
+              "is_official_captured_intermediate": False}
+    return contributions, reconstructed, error, report
+
+
 def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_context):
     import numpy as np
     import torch
@@ -467,10 +624,12 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_
     handles.append(modules["final_norm"].register_forward_hook(
         lambda module, args, output: save("final_normalized_hidden_state", output)))
 
+    prepared = prepare_case_inputs(case_name, input_ids)
     device = modules["base_embedding"].weight.device
-    ids = torch.tensor([input_ids], dtype=torch.long, device=device)
-    attention = torch.ones_like(ids)
-    positions = torch.arange(ids.shape[1], dtype=torch.long, device=device).unsqueeze(0)
+    ids = torch.tensor(prepared["input_ids"], dtype=torch.long, device=device)
+    attention = torch.tensor(prepared["attention_mask"], dtype=torch.long, device=device)
+    positions = torch.tensor(prepared["position_ids"], dtype=torch.long, device=device)
+    cache_position = torch.tensor(prepared["cache_position"], dtype=torch.long, device=device)
     status, visual_generation_config, audio_generation_config = generation_context
     require(getattr(status, "mode", None) == "text",
             "direct forward requires official multimodal generation status in text mode")
@@ -478,7 +637,7 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_
         with torch.inference_mode():
             output = call_text_forward(model, {
                 "input_ids": ids.clone(), "attention_mask": attention,
-                "position_ids": positions, "use_cache": False,
+                "position_ids": positions, "cache_position": cache_position, "use_cache": False,
                 "logits_to_keep": 1, "return_dict": True}, generation_context)
     finally:
         for handle in handles:
@@ -486,13 +645,24 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_
     require(len([name for name in captured if name.startswith("ngram_projection_raw_")]) == 12,
             f"official module hooks did not capture all twelve n-gram contributions for {case_name}")
     ignored = np.asarray([(131072 <= token < 131125) for token in input_ids], dtype=bool)
-    for index in range(12):
-        raw_name = f"ngram_projection_raw_{index:02d}"
-        effective = captured[raw_name].copy()
-        effective[:, ~ignored, :] /= 13.0
-        name = f"ngram_contribution_{index:02d}"
-        captured[name] = effective
-        source_dtypes[name] = source_dtypes[raw_name]
+    raw = [captured[f"ngram_projection_raw_{index:02d}"] for index in range(12)]
+    analytical, reconstructed, error, reconstruction_report = analytical_ngram_decomposition(
+        captured["base_embedding"], raw, ignored, captured["fused_pre_trunk_embedding"])
+    for index, value in enumerate(analytical):
+        name = f"ngram_analytical_f32_contribution_{index:02d}"
+        captured[name] = value
+        source_dtypes[name] = "analytical_float32_not_official_intermediate"
+    captured["ngram_analytical_f32_reconstruction"] = reconstructed
+    captured["ngram_analytical_f32_reconstruction_error"] = error
+    captured["ngram_analytical_f32_max_absolute_error"] = np.asarray(
+        [reconstruction_report["max_absolute_error"]], dtype=np.float32)
+    captured["ngram_analytical_f32_max_relative_error"] = np.asarray(
+        [reconstruction_report["max_relative_error"]], dtype=np.float32)
+    source_dtypes.update({
+        "ngram_analytical_f32_reconstruction": "analytical_float32_not_official_intermediate",
+        "ngram_analytical_f32_reconstruction_error": "analytical_float32_not_official_intermediate",
+        "ngram_analytical_f32_max_absolute_error": "analytical_float32_not_official_intermediate",
+        "ngram_analytical_f32_max_relative_error": "analytical_float32_not_official_intermediate"})
     for block in (0, 1, 2, 27):
         require(f"physical_block_{block:02d}" in captured,
                 f"official module hook for physical block {block} did not fire")
@@ -503,7 +673,9 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_
     captured["input_ids"] = ids.cpu().numpy()
     captured["attention_mask"] = attention.cpu().numpy()
     captured["position_ids"] = positions.cpu().numpy()
-    source_dtypes.update({"input_ids": "int64", "attention_mask": "int64", "position_ids": "int64"})
+    captured["cache_position"] = cache_position.cpu().numpy()
+    source_dtypes.update({"input_ids": "int64", "attention_mask": "int64",
+                          "position_ids": "int64", "cache_position": "int64"})
     return captured, source_dtypes
 
 
@@ -511,7 +683,8 @@ def run_core_generation(args, weight_free_fixture):
     validate_core_options(args.precision, args.placement, args.repeat_count, args.max_output_bytes)
     inspection = validate_checkpoint(args.model_dir, args.hash_shards)
     enforce_offline_environment()
-    dependency_report = require_dependency_preflight()
+    dependency_report = require_dependency_preflight(
+        args.runtime_profile, args.placement, args.model_dir)
     try:
         ensure_transformers_version()
         import torch
@@ -569,15 +742,36 @@ def run_core_generation(args, weight_free_fixture):
     reproducibility = {"schema_version": CORE_SCHEMA_VERSION, "repeat_count": args.repeat_count,
                        "arrays": compare_runs(runs), "greedy_continuations": greedy_by_run,
                        "comparison_tolerances": {"bf16": None, "f16": None},
-                       "tolerances_selected_automatically": False}
+                       "tolerances_selected_automatically": False,
+                       "runtime_profile": args.runtime_profile,
+                       "runtime_departures_from_official": [
+                           {"package": name, "official": row["official_pinned_version"],
+                            "installed": row["installed_version"]}
+                           for name, row in dependency_report["packages"].items()
+                           if row["official_pinned_version"] is not None and
+                           row["installed_version"] != row["official_pinned_version"]]}
+    reconstruction_reports = {}
+    for name, value in runs[0].items():
+        suffix = "/ngram_analytical_f32_max_absolute_error"
+        if name.endswith(suffix):
+            case = name[:-len(suffix)]
+            relative = runs[0][case + "/ngram_analytical_f32_max_relative_error"]
+            reconstruction_reports[case] = {
+                "max_absolute_error": float(value.reshape(-1)[0]),
+                "max_relative_error": float(relative.reshape(-1)[0]),
+                "authority": case + "/fused_pre_trunk_embedding",
+                "analytical_dtype": "float32",
+                "is_official_captured_intermediate": False}
     metadata = {"schema_version": CORE_SCHEMA_VERSION, "kind": "longcat-next-core-reference",
                 "precision": args.precision, "serialized_activation_dtype": "float32 except integer arrays",
+                "runtime_profile": args.runtime_profile,
                 "source_dtypes": source_dtypes, "checkpoint": inspection,
                 "software_versions": {"transformers": EXPECTED_TRANSFORMERS,
                                       "torch": torch.__version__},
                 "dependency_preflight": dependency_report,
                 "seeds": {"python": 20260725, "torch": 20260725},
                 "selected_logit_token_ids": selected_logit_ids,
+                "ngram_analytical_reconstruction_reports": reconstruction_reports,
                 "module_anchors": {
                     "base_embedding": "model.model.embed_tokens forward output",
                     "ngram_projection_raw": "model.model.ngram_embeddings.post_projs[0..11] outputs",

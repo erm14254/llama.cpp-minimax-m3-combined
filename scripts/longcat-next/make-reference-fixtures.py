@@ -245,6 +245,8 @@ def parse_args(argv=None):
     parser.add_argument("--max-output-bytes", type=int)
     parser.add_argument("--precision", choices=("bf16", "f16"), default="bf16")
     parser.add_argument("--placement", choices=("auto", "cpu", "cuda"), default="auto")
+    parser.add_argument("--runtime-profile", choices=("official-pinned", "blackwell-compatible"),
+                        default="blackwell-compatible")
     parser.add_argument("--offload-dir", type=Path)
     parser.add_argument("--cpu-memory", default="220GiB")
     parser.add_argument("--gpu-memory", default="88GiB")
@@ -266,7 +268,8 @@ def run(args):
             if args.mode == "preflight":
                 inspection = core.validate_checkpoint(args.model_dir, args.hash_shards)
                 core.enforce_offline_environment()
-                dependencies = core.require_dependency_preflight()
+                dependencies = core.require_dependency_preflight(
+                    args.runtime_profile, args.placement, args.model_dir)
                 return {"checkpoint": inspection, "dependencies": dependencies}, 0
             return core.run_core_generation(args, Path(__file__).resolve().parents[2] /
                                             "tests/fixtures/longcat-next/ngram-cases.json"), 0

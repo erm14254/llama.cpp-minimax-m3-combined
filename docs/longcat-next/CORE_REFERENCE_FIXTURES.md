@@ -23,7 +23,14 @@ Inspection enforces 13,450 names, 150,825,367,872 tensor payload bytes, 15 shard
 names, no missing or unreferenced model shards, and pinned custom-code/config/tokenizer
 SHA-256 identities.
 
-Use a dedicated 64-bit Python 3.10 environment. The official requirements pin torch
+Use a dedicated 64-bit Python 3.10 environment. Two runtime profiles are explicit:
+
+* official-pinned enforces the published package versions on hardware where they
+  actually execute;
+* blackwell-compatible retains those versions as provenance but requires an actual
+  sm_120-capable torch 2.7+ CUDA 12.8+ runtime and records every departure.
+
+The official requirements pin torch
 2.6.0, torchvision 0.21.0, torchaudio 2.6.0, Accelerate 1.10.0, Transformers
 4.57.6, librosa 0.11.0, diffusers 0.34.0, and flash-attn 2.7.4.post1. Safetensors
 and NumPy are also required but are not exactly pinned by the published requirements.
@@ -54,6 +61,9 @@ requirements together using the official PyTorch selector for the workstation be
 the two verification commands. The official post-requirement
 is flash-attn 2.7.4.post1; install it only through a supported official package/build
 workflow. This project does not claim a working native-Windows installation method.
+Native Windows FlashAttention support is not assured by the official project; WSL2
+or Linux may be required for the GPU reference run. Do not use an unofficial wheel
+to bypass preflight.
 Keep the three offline
 variables set for inspection and generation. The loader also sets them internally
 and passes local_files_only=True, trust_remote_code=True, use_safetensors=True, and
@@ -91,12 +101,19 @@ required versions, import failures, and mismatches without constructing the mode
 ```bat
 python scripts\longcat-next\make-reference-fixtures.py ^
   --mode preflight ^
-  --model-dir D:\LongCat-Next
+  --model-dir D:\LongCat-Next ^
+  --runtime-profile blackwell-compatible ^
+  --placement cuda
 ```
 
 Do not run BF16 or F16 generation until this command finishes successfully. In
 particular, do not treat a package being listed by pip as sufficient when its import
 fails because a DLL, CUDA runtime, or compiled extension is unavailable.
+For CUDA it also records the OS/platform, torch and torch-CUDA versions, GPU name,
+compute capability, torch architecture list, sm_120 availability, BF16 support, a
+real synchronized CUDA tensor operation, torchvision/torchaudio compatibility, and
+a tiny FlashAttention forward. It dynamically imports the pinned local config/model
+classes through Transformers' own remote-code loader before any shard is loaded.
 
 ## BF16 generation
 
@@ -112,6 +129,7 @@ python scripts\longcat-next\make-reference-fixtures.py ^
   --mode core ^
   --model-dir D:\LongCat-Next ^
   --precision bf16 ^
+  --runtime-profile blackwell-compatible ^
   --placement auto ^
   --gpu-memory 88GiB ^
   --cpu-memory 220GiB ^
@@ -131,6 +149,7 @@ python scripts\longcat-next\make-reference-fixtures.py ^
   --mode core ^
   --model-dir D:\LongCat-Next ^
   --precision f16 ^
+  --runtime-profile blackwell-compatible ^
   --placement auto ^
   --gpu-memory 88GiB ^
   --cpu-memory 220GiB ^
@@ -174,6 +193,12 @@ the status plus both GenerationConfig objects. Greedy generation requests the
 official return-dictionary contract and validates its two-dimensional sequences;
 the guarded four-item official tuple contract is also understood.
 
+The bos_left_zero case masks only its leading zero padding. The literal_zero case
+keeps token zero visible, and all other explicit cases use attended tokens unless a
+future case declares otherwise. Position IDs follow the pinned Transformers 4.57.6
+GenerationMixin preparation exactly: attention-mask cumulative sum minus one, with
+masked positions set to one. Cache positions remain the ordinary sequential range.
+
 The corpus combines explicit checked token-ID cases with two prompts rendered by the
 local pinned official tokenizer. It records input, attention, and position arrays;
 all captured activation families; selected logits; one complete 131,125-entry
@@ -182,6 +207,13 @@ Metadata records shapes, source and serialized dtypes, per-array hashes, softwar
 seeds, checkpoint facts, and hook anchors. BF16 arrays are serialized as float32
 because NumPy has no portable BF16 storage; the original torch dtype remains explicit.
 No model parameters are serialized.
+
+The twelve ngram_projection_raw_XX arrays are direct official hook outputs. Arrays
+named ngram_analytical_f32_* are explicitly derived float32 diagnostics, not official
+intermediates. Their reconstruction and absolute/relative error are compared with
+the directly captured fused_pre_trunk_embedding, which remains the parity authority.
+This exposes BF16/F16 accumulation and rounding differences rather than relabeling a
+float32 division as official execution.
 
 ## Expected local outputs
 
