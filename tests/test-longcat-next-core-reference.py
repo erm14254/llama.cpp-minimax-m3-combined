@@ -31,6 +31,13 @@ class CheckpointValidationTests(unittest.TestCase):
                   "text_vocab_plus_multimodal_special_token_size": 131125,
                   "vocab_size": 282624}
         (self.root / "config.json").write_text(json.dumps(config), encoding="ascii")
+        generation = {"bos_token_id": 1, "eos_token_id": 2, "pad_token_id": 3,
+                      "transformers_version": "4.57.6",
+                      "visual_generation_config": {"custom_params": {
+                          "token_h": 37, "token_w": 37,
+                          "anyres_prefix": "<longcat_img_token_size>{h} {w}</longcat_img_token_size>"}},
+                      "audio_generation_config": {"audio_parallel_decoding": False}}
+        (self.root / "generation_config.json").write_text(json.dumps(generation), encoding="ascii")
         self.shards = [f"model-{i:05d}-of-00015.safetensors" for i in range(1, 16)]
         base = core.EXPECTED_SHARD_BYTES // 15
         for index, name in enumerate(self.shards):
@@ -105,8 +112,46 @@ class CheckpointValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(core.CoreFixtureError, "vocab_size"):
             core.validate_checkpoint(self.root)
 
+    def test_missing_generation_config(self):
+        (self.root / "generation_config.json").unlink()
+        with self.assertRaisesRegex(core.CoreFixtureError, "generation_config.json"):
+            core.validate_checkpoint(self.root)
+
+    def test_wrong_generation_config(self):
+        generation = json.loads((self.root / "generation_config.json").read_text())
+        generation["visual_generation_config"]["custom_params"]["token_h"] = 36
+        (self.root / "generation_config.json").write_text(json.dumps(generation), encoding="ascii")
+        core.EXPECTED_IDENTITIES["generation_config.json"] = hashlib.sha256(
+            (self.root / "generation_config.json").read_bytes()).hexdigest()
+        with self.assertRaisesRegex(core.CoreFixtureError, "token_h"):
+            core.validate_checkpoint(self.root)
+
 
 class CoreHelperTests(unittest.TestCase):
+    def test_dependency_preflight_reports_versions_and_missing_imports(self):
+        expected = core.EXPECTED_DEPENDENCIES
+        core.EXPECTED_DEPENDENCIES = {
+            "available": ("available-dist", "1.0"),
+            "missing": ("missing-dist", None),
+        }
+        def version(name):
+            if name == "available-dist":
+                return "1.0"
+            raise importlib.metadata.PackageNotFoundError(name)
+        def importer(name):
+            if name == "available":
+                return object()
+            raise ImportError("not installed")
+        try:
+            with mock.patch.object(core.importlib.metadata, "version", side_effect=version), \
+                 mock.patch.object(core.importlib, "import_module", side_effect=importer):
+                report = core.dependency_preflight()
+        finally:
+            core.EXPECTED_DEPENDENCIES = expected
+        self.assertFalse(report["ok"])
+        self.assertTrue(report["packages"]["available"]["import_ok"])
+        self.assertIn("import failed", report["packages"]["missing"]["error"])
+
     def test_network_disabled_loading_arguments(self):
         fake_torch = types.SimpleNamespace(bfloat16="bf16", float16="f16")
         with mock.patch.dict("sys.modules", {"torch": fake_torch}):
@@ -173,6 +218,82 @@ class CoreHelperTests(unittest.TestCase):
     def test_hook_resolution_failure(self):
         with self.assertRaisesRegex(core.CoreFixtureError, "module hook"):
             core.resolve_capture_modules(types.SimpleNamespace())
+
+    def test_greedy_result_contracts(self):
+        class Tensor:
+            ndim = 2
+            def detach(self):
+                return self
+        sequences = Tensor()
+        self.assertIs(core.extract_greedy_sequences(types.SimpleNamespace(sequences=sequences)), sequences)
+        self.assertIs(core.extract_greedy_sequences((sequences, None, None, None)), sequences)
+        with self.assertRaisesRegex(core.CoreFixtureError, "neither"):
+            core.extract_greedy_sequences(sequences)
+        rank_one = Tensor()
+        rank_one.ndim = 1
+        with self.assertRaisesRegex(core.CoreFixtureError, "shape"):
+            core.extract_greedy_sequences(types.SimpleNamespace(sequences=rank_one))
+
+    def test_no_weight_end_to_end_contract(self):
+        class Status:
+            mode = "text"
+            def __init__(self, visual, audio):
+                self.visual_generation_config = visual
+                self.audio_generation_config = audio
+            def switch_to(self, mode):
+                self.mode = mode
+        class GenerationConfig:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+            @classmethod
+            def from_pretrained(cls, path, **kwargs):
+                return cls(visual_generation_config={"custom_params": {
+                               "token_h": 37, "token_w": 37, "anyres_prefix": "x"}},
+                           audio_generation_config={"audio_parallel_decoding": False})
+        dynamic = types.ModuleType("mock_longcat_official")
+        dynamic.LongcatNextForCausalLMGenerationStatus = Status
+        transformers = types.ModuleType("transformers")
+        transformers.GenerationConfig = GenerationConfig
+
+        class Model:
+            def __call__(self, input_ids, multimodal_generation_status=None, **kwargs):
+                if multimodal_generation_status is None or multimodal_generation_status.mode != "text":
+                    raise RuntimeError("official text status required")
+                logits = np.arange(131125, dtype=np.float32).reshape(1, 1, -1)
+                self.last_logits_shape = tuple(logits.shape)
+                return types.SimpleNamespace(logits=logits)
+        Model.__module__ = dynamic.__name__
+        model = Model()
+        with self.assertRaisesRegex(RuntimeError, "status required"):
+            model(input_ids=np.array([[1]]))
+        with mock.patch.dict("sys.modules", {dynamic.__name__: dynamic, "transformers": transformers}):
+            context = core.build_text_generation_context(model, "unused")
+            output = core.call_text_forward(model, {"input_ids": np.array([[1, 5, 7]])}, context)
+            first, _ = core.summarize_forward_logits(output, [0, 2, 131124], True)
+            second, _ = core.summarize_forward_logits(output, [0, 2, 131124], True)
+        self.assertEqual(model.last_logits_shape, (1, 1, 131125))
+        self.assertEqual(first["complete_final_position_logits"].shape, (1, 131125))
+        self.assertEqual(first["selected_logits"].shape, (1, 3))
+        self.assertEqual(first["argmax_token_id"].item(), 131124)
+        class GreedyTensor:
+            ndim = 2
+            def __init__(self):
+                self.value = np.array([[1, 5, 7, 9]], dtype=np.int64)
+            def detach(self):
+                return self
+            def cpu(self):
+                return self
+            def numpy(self):
+                return self.value
+        greedy = core.extract_greedy_sequences(
+            types.SimpleNamespace(sequences=GreedyTensor())).cpu().numpy()
+        first["greedy_ids/case"] = greedy
+        second["greedy_ids/case"] = greedy.copy()
+        report = core.compare_runs([first, second])
+        self.assertTrue(report["greedy_ids/case"]["byte_identical"])
+        with tempfile.TemporaryDirectory() as temp:
+            outputs = core.write_core_outputs(temp, "mini", first, {}, report, 10 * 1024 * 1024)
+            self.assertTrue(outputs["npz"].is_file())
 
 
 if __name__ == "__main__":

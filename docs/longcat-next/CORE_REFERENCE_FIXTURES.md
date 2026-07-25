@@ -16,18 +16,21 @@ points, not a demonstrated 96 GiB deployment profile.
 ## Local prerequisites
 
 The checkpoint directory must contain the official pinned files, including
-config/tokenizer files, 15 referenced safetensors shards, and all custom Python code.
+config/tokenizer files, pinned generation_config.json, 15 referenced safetensors
+shards, and all custom Python code.
 Inspection enforces 13,450 names, 150,825,367,872 tensor payload bytes, 15 shards,
 150,827,115,056 aggregate shard-file bytes, the three vocabulary extents, zero MTP
 names, no missing or unreferenced model shards, and pinned custom-code/config/tokenizer
 SHA-256 identities.
 
-Use a dedicated 64-bit Python 3.10 environment. Transformers must be exactly 4.57.6.
-Install numpy, safetensors, Accelerate, and the official model's other Python
-requirements. Install a PyTorch build appropriate for the local NVIDIA driver and
-CUDA environment using the current official PyTorch instructions; this document
-deliberately does not invent or pin an unverified torch build. Verify torch and CUDA
-before loading 150 GB of weights.
+Use a dedicated 64-bit Python 3.10 environment. The official requirements pin torch
+2.6.0, torchvision 0.21.0, torchaudio 2.6.0, Accelerate 1.10.0, Transformers
+4.57.6, librosa 0.11.0, diffusers 0.34.0, and flash-attn 2.7.4.post1. Safetensors
+and NumPy are also required but are not exactly pinned by the published requirements.
+Install a PyTorch build appropriate for the local NVIDIA driver and CUDA environment
+using current official PyTorch instructions; this document does not invent a wheel
+index, CUDA build, or unofficial Windows flash-attn method. Core generation must not
+begin until the preflight below reports every distribution version and import as OK.
 
 ### Windows cmd.exe environment setup
 
@@ -38,7 +41,7 @@ not PowerShell syntax.
 py -3.10 -m venv D:\LongCat-Next-fixture-env
 call D:\LongCat-Next-fixture-env\Scripts\activate.bat
 python -m pip install --upgrade pip
-python -m pip install transformers==4.57.6 accelerate safetensors numpy
+python -m pip install transformers==4.57.6 accelerate==1.10.0 safetensors numpy librosa==0.11.0 diffusers==0.34.0
 python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
 python -c "import transformers; assert transformers.__version__ == '4.57.6'"
 set HF_HUB_OFFLINE=1
@@ -46,7 +49,12 @@ set TRANSFORMERS_OFFLINE=1
 set HF_DATASETS_OFFLINE=1
 ```
 
-Install PyTorch before the two verification commands. Keep the three offline
+Install the official torch 2.6.0, torchvision 0.21.0, and torchaudio 2.6.0
+requirements together using the official PyTorch selector for the workstation before
+the two verification commands. The official post-requirement
+is flash-attn 2.7.4.post1; install it only through a supported official package/build
+workflow. This project does not claim a working native-Windows installation method.
+Keep the three offline
 variables set for inspection and generation. The loader also sets them internally
 and passes local_files_only=True, trust_remote_code=True, use_safetensors=True, and
 low_cpu_mem_usage=True.
@@ -72,6 +80,23 @@ python scripts\longcat-next\make-reference-fixtures.py ^
 ```
 
 Any mismatch is fatal and is reported before model construction.
+
+## Exact dependency preflight
+
+After inspection, run the local import/version preflight. It validates the checkpoint
+again and then checks torch, torchvision, torchaudio, Accelerate, Transformers,
+librosa, diffusers, flash_attn, safetensors, and NumPy. It reports installed versions,
+required versions, import failures, and mismatches without constructing the model.
+
+```bat
+python scripts\longcat-next\make-reference-fixtures.py ^
+  --mode preflight ^
+  --model-dir D:\LongCat-Next
+```
+
+Do not run BF16 or F16 generation until this command finishes successfully. In
+particular, do not treat a package being listed by pip as sufficient when its import
+fails because a DLL, CUDA runtime, or compiled extension is unavailable.
 
 ## BF16 generation
 
@@ -141,6 +166,13 @@ The physical mapping follows the pinned Transformers 4.57.6
 LongcatFlashDecoderLayer.forward implementation: each logical layer executes two
 physical attention/MLP sublayers. Hook resolution fails closed if this structure,
 the 14 logical layers, or twelve post projections is absent.
+
+Every direct forward constructs the exact dynamically loaded official
+LongcatNextForCausalLMGenerationStatus from the pinned generation_config.json visual
+and audio generation dictionaries, explicitly switches it to text mode, and passes
+the status plus both GenerationConfig objects. Greedy generation requests the
+official return-dictionary contract and validates its two-dimensional sequences;
+the guarded four-item official tuple contract is also understood.
 
 The corpus combines explicit checked token-ID cases with two prompts rendered by the
 local pinned official tokenizer. It records input, attention, and position arrays;

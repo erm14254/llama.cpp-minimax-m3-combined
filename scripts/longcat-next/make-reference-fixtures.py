@@ -239,7 +239,7 @@ def parse_args(argv=None):
     parser.add_argument("--config", type=Path)
     parser.add_argument("--tokenizer-config", type=Path)
     parser.add_argument("--output-dir", type=Path, default=Path("longcat-next-reference-output"))
-    parser.add_argument("--mode", choices=("ngram", "inspect", "core"), default="ngram")
+    parser.add_argument("--mode", choices=("ngram", "inspect", "preflight", "core"), default="ngram")
     parser.add_argument("--model-dir", type=Path,
                         help="local official checkpoint for inspection/core fixtures; never downloaded")
     parser.add_argument("--max-output-bytes", type=int)
@@ -255,7 +255,7 @@ def parse_args(argv=None):
 
 
 def run(args):
-    if args.mode in ("inspect", "core"):
+    if args.mode in ("inspect", "preflight", "core"):
         require(args.model_dir is not None, f"{args.mode} mode requires --model-dir")
         core = load_core_reference()
         if args.max_output_bytes is None:
@@ -263,6 +263,11 @@ def run(args):
         try:
             if args.mode == "inspect":
                 return core.validate_checkpoint(args.model_dir, args.hash_shards), 0
+            if args.mode == "preflight":
+                inspection = core.validate_checkpoint(args.model_dir, args.hash_shards)
+                core.enforce_offline_environment()
+                dependencies = core.require_dependency_preflight()
+                return {"checkpoint": inspection, "dependencies": dependencies}, 0
             return core.run_core_generation(args, Path(__file__).resolve().parents[2] /
                                             "tests/fixtures/longcat-next/ngram-cases.json"), 0
         except core.CoreFixtureError as exc:
@@ -316,7 +321,7 @@ def main(argv=None):
     except (FixtureError, subprocess.CalledProcessError) as exc:
         print(f"fixture error: {exc}", file=sys.stderr)
         return 1
-    if args.mode == "inspect":
+    if args.mode in ("inspect", "preflight"):
         print(json.dumps(result, indent=2, sort_keys=True))
     elif args.mode == "core":
         print(json.dumps({name: str(path) for name, path in result.items()}, sort_keys=True))

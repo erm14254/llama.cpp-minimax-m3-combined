@@ -2,6 +2,8 @@
 """Local-only LongCat-Next checkpoint inspection and core fixture helpers."""
 
 import hashlib
+import importlib
+import importlib.metadata
 import io
 import json
 import math
@@ -18,6 +20,7 @@ EXPECTED_TRANSFORMERS = "4.57.6"
 CORE_SCHEMA_VERSION = 1
 REQUIRED_FILES = (
     "config.json", "tokenizer_config.json", "tokenizer.json",
+    "generation_config.json",
     "model.safetensors.index.json", "configuration_longcat_next.py",
     "configuration_longcat_ngram.py", "modeling_longcat_ngram.py",
     "modeling_longcat_next.py", "modular_longcat_next.py",
@@ -28,6 +31,7 @@ EXPECTED_IDENTITIES = {
     "config.json": "9115e9785603b04382a45ebece9092235281f309f56f35eb4e43bcf53150b2a2",
     "tokenizer_config.json": "22dddd0eb59965adf6e4861a7c8a9ed803595cd16bc86ed6e2d4ed915b9718d4",
     "tokenizer.json": "9a378321656d995996c9b7db751b628ca2cf1f8c4c26832c5acea872fec6c835",
+    "generation_config.json": "a253caa8a57fbf3782ca2db5ecbc02e1f208b2ebdda056ef501f98a35b1d02cf",
     "configuration_longcat_next.py": "bce3c8fc8bc0f4e6f3d0eb39e7a3a0415b4d66a8778f90435fb6849342c41f6c",
     "configuration_longcat_ngram.py": "96a646608a90ae4d42e6b4c8f712b01f1f9033241af97c0b3f7307dc1887d191",
     "modeling_longcat_ngram.py": "f7c6fb4de561e3311a67adea22b8a9467044d3c503d59afe0dde542e55b17e09",
@@ -40,6 +44,18 @@ EXPECTED_IDENTITIES = {
     "refiner_modules.py": "0b77854c6c1ad020879a176bc9f923e4759336133e7684b36db411db01454f75",
 }
 WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".ckpt")
+EXPECTED_DEPENDENCIES = {
+    "torch": ("torch", "2.6.0"),
+    "torchvision": ("torchvision", "0.21.0"),
+    "torchaudio": ("torchaudio", "2.6.0"),
+    "accelerate": ("accelerate", "1.10.0"),
+    "transformers": ("transformers", "4.57.6"),
+    "librosa": ("librosa", "0.11.0"),
+    "diffusers": ("diffusers", "0.34.0"),
+    "flash_attn": ("flash-attn", "2.7.4.post1"),
+    "safetensors": ("safetensors", None),
+    "numpy": ("numpy", None),
+}
 
 class CoreFixtureError(ValueError):
     pass
@@ -79,6 +95,7 @@ def validate_checkpoint(model_dir, hash_shards=False):
             "checkpoint files do not match the pinned official revision: " + ", ".join(wrong_identities))
     index = read_json(root / "model.safetensors.index.json", "checkpoint index")
     config = read_json(root / "config.json", "checkpoint config")
+    generation = read_json(root / "generation_config.json", "generation config")
     require(isinstance(index.get("weight_map"), dict), "checkpoint index is missing weight_map")
     require(isinstance(index.get("metadata"), dict), "checkpoint index is missing metadata")
     names = index["weight_map"]
@@ -93,6 +110,24 @@ def validate_checkpoint(model_dir, hash_shards=False):
                             ("vocab_size", 282624)):
         require(config.get(field) == expected,
                 f"config {field} must be {expected}, got {config.get(field)!r}")
+    for field, expected in (("bos_token_id", 1), ("eos_token_id", 2),
+                            ("pad_token_id", 3), ("transformers_version", "4.57.6")):
+        require(generation.get(field) == expected,
+                f"generation_config {field} must be {expected!r}, got {generation.get(field)!r}")
+    visual = generation.get("visual_generation_config")
+    audio = generation.get("audio_generation_config")
+    require(isinstance(visual, dict), "generation_config must contain visual_generation_config")
+    require(isinstance(audio, dict), "generation_config must contain audio_generation_config")
+    visual_custom = visual.get("custom_params")
+    require(isinstance(visual_custom, dict),
+            "visual_generation_config must contain custom_params")
+    require(visual_custom.get("token_h") == 37 and visual_custom.get("token_w") == 37,
+            "visual token_h and token_w must both be 37")
+    require(visual_custom.get("anyres_prefix") ==
+            "<longcat_img_token_size>{h} {w}</longcat_img_token_size>",
+            "visual anyres_prefix does not match the pinned official value")
+    require(audio.get("audio_parallel_decoding") is False,
+            "audio_parallel_decoding must be false")
     shards = sorted(set(names.values()))
     require(len(shards) == EXPECTED_SHARDS,
             f"checkpoint must reference exactly {EXPECTED_SHARDS} unique shards, got {len(shards)}")
@@ -118,8 +153,38 @@ def validate_checkpoint(model_dir, hash_shards=False):
                 ("text_vocab_size", "text_vocab_plus_multimodal_special_token_size", "vocab_size")},
             "mtp_tensor_count": 0, "custom_code_sha256": code_hashes,
             "config_sha256": file_sha256(root / "config.json"),
+            "generation_config_sha256": identities["generation_config.json"],
             "tokenizer_config_sha256": file_sha256(root / "tokenizer_config.json"),
             "tokenizer_sha256": file_sha256(root / "tokenizer.json")}
+
+
+def dependency_preflight():
+    packages = {}
+    for module_name, (distribution, expected) in EXPECTED_DEPENDENCIES.items():
+        row = {"distribution": distribution, "required_version": expected,
+               "installed_version": None, "import_ok": False, "error": None}
+        try:
+            row["installed_version"] = importlib.metadata.version(distribution)
+        except importlib.metadata.PackageNotFoundError:
+            row["error"] = "distribution is not installed"
+        try:
+            importlib.import_module(module_name)
+            row["import_ok"] = True
+        except Exception as exc:
+            row["error"] = f"import failed: {type(exc).__name__}: {exc}"
+        row["version_ok"] = expected is None or row["installed_version"] == expected
+        if not row["version_ok"] and row["error"] is None:
+            row["error"] = (f"expected {expected}, installed {row['installed_version']}")
+        packages[module_name] = row
+    ok = all(row["import_ok"] and row["version_ok"] for row in packages.values())
+    return {"ok": ok, "packages": packages}
+
+
+def require_dependency_preflight():
+    report = dependency_preflight()
+    require(report["ok"], "dependency preflight failed; do not load model weights:\n" +
+            json.dumps(report, indent=2, sort_keys=True))
+    return report
 
 
 def parse_memory_limit(value, label):
@@ -197,6 +262,73 @@ def resolve_capture_modules(model):
         if isinstance(exc, CoreFixtureError):
             raise
         raise CoreFixtureError(f"cannot resolve required official module hook: {exc}") from exc
+
+
+def build_text_generation_context(model, model_dir):
+    try:
+        from transformers import GenerationConfig
+        generation = GenerationConfig.from_pretrained(
+            str(model_dir), local_files_only=True, trust_remote_code=True)
+        visual = GenerationConfig(**generation.visual_generation_config)
+        audio = GenerationConfig(**generation.audio_generation_config)
+        dynamic_module = importlib.import_module(model.__class__.__module__)
+        status_class = getattr(dynamic_module, "LongcatNextForCausalLMGenerationStatus")
+        status = status_class(visual, audio)
+        status.switch_to("text")
+    except (AttributeError, ImportError, OSError, TypeError, ValueError) as exc:
+        raise CoreFixtureError(
+            f"cannot construct official text-mode multimodal generation status: {exc}") from exc
+    require(getattr(status, "mode", None) == "text",
+            "official multimodal generation status did not remain in text mode")
+    return status, visual, audio
+
+
+def extract_greedy_sequences(result):
+    sequences = None
+    if hasattr(result, "sequences"):
+        sequences = result.sequences
+    elif isinstance(result, tuple) and len(result) == 4:
+        sequences = result[0]
+    else:
+        raise CoreFixtureError(
+            "official generate returned neither a return-dictionary with .sequences nor a four-item tuple")
+    require(hasattr(sequences, "detach") and hasattr(sequences, "ndim"),
+            "official greedy sequences are not a tensor")
+    require(sequences.ndim == 2,
+            f"official greedy sequences must have shape [batch, sequence], got rank {sequences.ndim}")
+    return sequences
+
+
+def call_text_forward(model, forward_kwargs, generation_context):
+    status, visual_generation_config, audio_generation_config = generation_context
+    require(getattr(status, "mode", None) == "text",
+            "direct forward requires official multimodal generation status in text mode")
+    return model(**forward_kwargs,
+                 multimodal_generation_status=status,
+                 visual_generation_config=visual_generation_config,
+                 audio_generation_config=audio_generation_config)
+
+
+def summarize_forward_logits(output, selected_logit_ids, include_complete=False, top_k=10):
+    import numpy as np
+    require(hasattr(output, "logits") and output.logits is not None,
+            "official direct forward did not return logits")
+    logits, source_dtype = tensor_array(output.logits)
+    require(logits.ndim == 3,
+            f"official logits must have shape [batch, sequence, vocabulary], got rank {logits.ndim}")
+    require(logits.shape[-1] == 131125,
+            f"official final logits must have 131125 entries, got {logits.shape[-1]}")
+    final = logits[:, -1, :]
+    order = np.argsort(final, axis=-1)[:, ::-1][:, :top_k]
+    values = np.take_along_axis(final, order, axis=-1)
+    arrays = {"selected_logits": final[:, selected_logit_ids],
+              "topk_token_ids": order.astype(np.int64),
+              "topk_values": values, "argmax_token_id": order[:, :1].astype(np.int64)}
+    if include_complete:
+        arrays["complete_final_position_logits"] = final
+    dtypes = {name: ("int64" if name in ("topk_token_ids", "argmax_token_id") else source_dtype)
+              for name in arrays}
+    return arrays, dtypes
 
 
 def deterministic_npz_bytes(arrays):
@@ -280,10 +412,12 @@ def write_core_outputs(output_dir, stem, arrays, metadata, reproducibility, max_
     return paths
 
 def tensor_array(tensor):
-    import torch
+    import numpy as np
+    if isinstance(tensor, np.ndarray):
+        return np.ascontiguousarray(tensor), str(tensor.dtype)
     value = tensor.detach().cpu()
     source_dtype = str(value.dtype).replace("torch.", "")
-    if value.dtype == torch.bfloat16:
+    if source_dtype == "bfloat16":
         value = value.float()
     return value.contiguous().numpy(), source_dtype
 
@@ -302,7 +436,7 @@ def load_case_ids(weight_free_fixture, tokenizer):
     return cases, prompts
 
 
-def capture_forward(model, input_ids, selected_logit_ids, case_name):
+def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_context):
     import numpy as np
     import torch
     modules = resolve_capture_modules(model)
@@ -337,11 +471,15 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name):
     ids = torch.tensor([input_ids], dtype=torch.long, device=device)
     attention = torch.ones_like(ids)
     positions = torch.arange(ids.shape[1], dtype=torch.long, device=device).unsqueeze(0)
+    status, visual_generation_config, audio_generation_config = generation_context
+    require(getattr(status, "mode", None) == "text",
+            "direct forward requires official multimodal generation status in text mode")
     try:
         with torch.inference_mode():
-            output = model(input_ids=ids.clone(), attention_mask=attention,
-                           position_ids=positions, use_cache=False,
-                           logits_to_keep=1, return_dict=True)
+            output = call_text_forward(model, {
+                "input_ids": ids.clone(), "attention_mask": attention,
+                "position_ids": positions, "use_cache": False,
+                "logits_to_keep": 1, "return_dict": True}, generation_context)
     finally:
         for handle in handles:
             handle.remove()
@@ -358,21 +496,10 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name):
     for block in (0, 1, 2, 27):
         require(f"physical_block_{block:02d}" in captured,
                 f"official module hook for physical block {block} did not fire")
-    logits, logits_dtype = tensor_array(output.logits[:, -1, :])
-    require(logits.shape[-1] == 131125,
-            f"official final logits must have 131125 entries, got {logits.shape[-1]}")
-    selected = logits[:, selected_logit_ids]
-    captured["selected_logits"] = selected
-    source_dtypes["selected_logits"] = logits_dtype
-    if case_name.startswith("tokenizer_prompt_0"):
-        captured["complete_final_position_logits"] = logits
-        source_dtypes["complete_final_position_logits"] = logits_dtype
-    values, indices = torch.topk(output.logits[:, -1, :].float(), k=10, dim=-1)
-    captured["topk_token_ids"] = indices.cpu().numpy()
-    captured["topk_values"] = values.cpu().numpy()
-    captured["argmax_token_id"] = indices[:, :1].cpu().numpy()
-    source_dtypes.update({"topk_token_ids": "int64", "topk_values": "float32",
-                          "argmax_token_id": "int64"})
+    logit_arrays, logit_dtypes = summarize_forward_logits(
+        output, selected_logit_ids, case_name.startswith("tokenizer_prompt_0"))
+    captured.update(logit_arrays)
+    source_dtypes.update(logit_dtypes)
     captured["input_ids"] = ids.cpu().numpy()
     captured["attention_mask"] = attention.cpu().numpy()
     captured["position_ids"] = positions.cpu().numpy()
@@ -384,6 +511,7 @@ def run_core_generation(args, weight_free_fixture):
     validate_core_options(args.precision, args.placement, args.repeat_count, args.max_output_bytes)
     inspection = validate_checkpoint(args.model_dir, args.hash_shards)
     enforce_offline_environment()
+    dependency_report = require_dependency_preflight()
     try:
         ensure_transformers_version()
         import torch
@@ -415,7 +543,9 @@ def run_core_generation(args, weight_free_fixture):
         arrays = {}
         repeat_sources = {}
         for case_name, ids in cases:
-            case_arrays, case_sources = capture_forward(model, ids, selected_logit_ids, case_name)
+            generation_context = build_text_generation_context(model, args.model_dir)
+            case_arrays, case_sources = capture_forward(
+                model, ids, selected_logit_ids, case_name, generation_context)
             for name, value in case_arrays.items():
                 arrays[f"{case_name}/{name}"] = value
                 repeat_sources[f"{case_name}/{name}"] = case_sources[name]
@@ -426,8 +556,9 @@ def run_core_generation(args, weight_free_fixture):
             encoded = {key: value.to(device) for key, value in encoded.items()}
             with torch.inference_mode():
                 generated = model.generate(**encoded, do_sample=False,
-                                           max_new_tokens=args.max_new_tokens, use_cache=True)
-            result = generated.detach().cpu().numpy()
+                                           max_new_tokens=args.max_new_tokens, use_cache=True,
+                                           return_dict_in_generate=True)
+            result = extract_greedy_sequences(generated).detach().cpu().numpy()
             arrays[f"greedy_ids/prompt_{index}"] = result
             repeat_sources[f"greedy_ids/prompt_{index}"] = "int64"
             greedy[f"prompt_{index}"] = result.tolist()
@@ -444,6 +575,7 @@ def run_core_generation(args, weight_free_fixture):
                 "source_dtypes": source_dtypes, "checkpoint": inspection,
                 "software_versions": {"transformers": EXPECTED_TRANSFORMERS,
                                       "torch": torch.__version__},
+                "dependency_preflight": dependency_report,
                 "seeds": {"python": 20260725, "torch": 20260725},
                 "selected_logit_token_ids": selected_logit_ids,
                 "module_anchors": {
