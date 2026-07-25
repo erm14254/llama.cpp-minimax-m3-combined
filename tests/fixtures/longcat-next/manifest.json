@@ -80,5 +80,15 @@
       "bytes": 172058,
       "contains_model_weights": false
     }
+  },
+  "local_core_fixture_schemas": {
+    "core-fixture-schema.json": {
+      "sha256": "b5b048cb7220546b7a4e75aa2aa156460c8979f85ce8051f0100fee3103f2f51",
+      "contains_generated_activations": false
+    },
+    "core-reproducibility-schema.json": {
+      "sha256": "0298519a3d74c308d1786f134e92861524cbe20e8a4f8f9ca793b624063f3e4d",
+      "contains_generated_activations": false
+    }
   }
 }

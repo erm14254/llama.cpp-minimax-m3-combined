@@ -25,3 +25,7 @@ seeing C++ results. Pending `null` tolerances are not permission to compare loos
 Fields named `official_hashes` come from AST-isolated methods executed directly from the
 pinned official source. Fields named `independent_hashes` come from the standalone
 implementation. Generation fails unless they match exactly for every case.
+
+The two core-*.json schema files define local-only weight-backed metadata and
+official reproducibility reports. They contain no generated activations. Actual
+longcat-next-core-*.npz/json files remain outside the repository pending review.

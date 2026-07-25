@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "longcat-next-core-fixture-schema-v1",
+  "title": "LongCat-Next local core reference fixture metadata",
+  "type": "object",
+  "required": ["schema_version", "kind", "precision", "source_dtypes", "checkpoint", "arrays", "module_anchors"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "longcat-next-core-reference"},
+    "precision": {"enum": ["bf16", "f16"]},
+    "serialized_activation_dtype": {"type": "string"},
+    "source_dtypes": {"type": "object", "additionalProperties": {"type": "string"}},
+    "checkpoint": {"type": "object"},
+    "software_versions": {"type": "object"},
+    "seeds": {"type": "object"},
+    "selected_logit_token_ids": {"type": "array", "items": {"type": "integer"}},
+    "module_anchors": {"type": "object", "additionalProperties": {"type": "string"}},
+    "arrays": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["shape", "serialized_dtype", "sha256", "bytes"],
+        "properties": {
+          "shape": {"type": "array", "items": {"type": "integer"}},
+          "serialized_dtype": {"type": "string"},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "bytes": {"type": "integer", "minimum": 0}
+        }
+      }
+    }
+  }
+}
