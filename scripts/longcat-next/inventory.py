@@ -41,6 +41,8 @@ EXPECTED_IMAGE = {
     "image_refiner": (828, 4058323163, 8116646326),
     "visual_model": (385, 631975680, 1263951360),
 }
+EXPECTED_HIFT_PARAMETERS = 20821295
+EXPECTED_HIFT_PAYLOAD_BYTES = 83285180
 
 class InventoryError(ValueError):
     pass
@@ -137,17 +139,28 @@ def validate_hift(path):
     require(isinstance(tensors, dict), "HiFT metadata: missing required object field 'tensors'")
     require(len(tensors) == 328, f"HiFT tensor count: expected 328, got {len(tensors)}")
     dtypes = set()
+    parameters = 0
     for name, item in tensors.items():
         require(isinstance(item, dict), f"HiFT tensor {name}: metadata must be an object")
         require("dtype" in item and "shape" in item,
                 f"HiFT tensor {name}: missing dtype or shape")
         dtypes.add(str(item["dtype"]).replace("torch.", "").upper())
+        require(isinstance(item["shape"], list) and
+                all(isinstance(value, int) and value >= 0 for value in item["shape"]),
+                f"HiFT tensor {name}: shape must be an array of non-negative integers")
+        parameters += math.prod(item["shape"])
     require(dtypes == {"FLOAT32"} or dtypes == {"F32"},
             f"HiFT tensors: expected only F32/float32, got {sorted(dtypes)}")
     g = {name[:-9] for name in tensors if name.endswith(".weight_g")}
     v = {name[:-9] for name in tensors if name.endswith(".weight_v")}
     require(g == v and g, "HiFT metadata: weight_g/weight_v pairs are missing or unmatched")
-    return len(tensors)
+    require(parameters == EXPECTED_HIFT_PARAMETERS,
+            f"HiFT parameter count: expected {EXPECTED_HIFT_PARAMETERS}, got {parameters}")
+    payload_bytes = parameters * 4
+    require(payload_bytes == EXPECTED_HIFT_PAYLOAD_BYTES,
+            f"HiFT F32 tensor payload bytes: expected {EXPECTED_HIFT_PAYLOAD_BYTES}, got {payload_bytes}")
+    return {"tensor_count": len(tensors), "parameters": parameters,
+            "tensor_payload_bytes": payload_bytes}
 
 
 def validate(next_index_path, lite_index_path, config_path, image_header=None, hift_metadata=None):
@@ -190,10 +203,15 @@ def validate(next_index_path, lite_index_path, config_path, image_header=None, h
     require(not missing,
             f"{len(missing)} LongCat-Next text/trunk names are absent from Flash-Lite; first: {missing[:5]}")
 
+    image_report = None
+    hift_report = None
     if image_header:
-        validate_image(image_header)
+        image_summary = validate_image(image_header)
+        image_report = {prefix: {"tensor_count": row[0], "parameters": row[1],
+                                 "tensor_payload_bytes": row[2], "dtypes": sorted(row[3])}
+                        for prefix, row in image_summary.items()}
     if hift_metadata:
-        validate_hift(hift_metadata)
+        hift_report = validate_hift(hift_metadata)
 
     return {
         "main_tensor_count": len(next_names), "main_payload_bytes": nxt["metadata"]["total_size"],
@@ -201,6 +219,7 @@ def validate(next_index_path, lite_index_path, config_path, image_header=None, h
         "vocabulary_extents": EXPECTED_VOCAB, "main_families": EXPECTED_MAIN,
         "modality_subfamilies": EXPECTED_SUBFAMILIES, "text_names_in_lite": len(text_names),
         "image_checked": bool(image_header), "hift_checked": bool(hift_metadata),
+        "image_inventory": image_report, "hift_inventory": hift_report,
     }
 
 

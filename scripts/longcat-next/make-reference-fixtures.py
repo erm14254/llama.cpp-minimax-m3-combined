@@ -114,7 +114,23 @@ def hashes(tokens, text_vocab=131072, ratio=78, ignored_start=131072, ignored_en
     return out
 
 
-def make_cases(config):
+def official_hash_batches(source, sequences):
+    runner = Path(__file__).with_name("official-ngram-runner.py")
+    try:
+        process = subprocess.run(
+            [sys.executable, str(runner), "--source", str(Path(source) / "modeling_longcat_ngram.py")],
+            input=json.dumps({"sequences": sequences}), text=True, capture_output=True, check=True)
+    except subprocess.CalledProcessError as exc:
+        raise FixtureError(f"official n-gram runner failed: {exc.stderr.strip()}") from exc
+    try:
+        result = json.loads(process.stdout)["hashes"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise FixtureError("official n-gram runner returned invalid output") from exc
+    require(len(result) == len(sequences), "official n-gram runner returned the wrong sequence count")
+    return result
+
+
+def make_cases(config, official_source):
     for field, value in {"text_vocab_size": 131072, "eos_token_id": 2,
                          "ngram_vocab_size_ratio": 78, "emb_neighbor_num": 4,
                          "emb_split_num": 4}.items():
@@ -131,7 +147,15 @@ def make_cases(config):
         sequence[offset] = 2
         cases.append((f"eos_window_position_{offset}", sequence + [59]))
     cases.append(("all_ignored_ids", list(range(131072, 131125))))
-    rendered = [{"name": name, "input_ids": ids, "hashes": hashes(ids)} for name, ids in cases]
+    direct_official = official_hash_batches(official_source, [ids for _, ids in cases])
+    rendered = []
+    for (name, ids), official in zip(cases, direct_official):
+        independent = hashes(ids)
+        require(independent == official,
+                f"independent n-gram implementation differs from official source for {name}")
+        rendered.append({"name": name, "input_ids": ids,
+                         "official_hashes": official, "independent_hashes": independent,
+                         "cross_check_equal": True})
 
     prompt = [bos, 101, 103, 107, 109, 113]
     prompt_hashes = hashes(prompt)
@@ -142,16 +166,41 @@ def make_cases(config):
         current = hashes(combined)
         streamed.append([entry["ids"][-1] for entry in current])
         history.append(0 if 131072 <= token < 131125 else token)
+    incremental_inputs = []
+    history = []
+    for token in prompt:
+        incremental_inputs.append(history[-3:] + [token])
+        history.append(0 if 131072 <= token < 131125 else token)
+    official_prompt, *official_incremental = official_hash_batches(
+        official_source, [prompt] + incremental_inputs)
+    require(prompt_hashes == official_prompt,
+            "independent prompt-at-once hashes differ from official source")
+    official_streamed = [[entry["ids"][-1] for entry in result]
+                         for result in official_incremental]
+    require(streamed == official_streamed,
+            "independent incremental hashes differ from official source")
     rendered.append({"name": "prompt_at_once_vs_token_at_a_time", "input_ids": prompt,
                      "prompt_hash_ids": [[entry["ids"][i] for entry in prompt_hashes] for i in range(len(prompt))],
                      "stream_hash_ids": streamed,
+                     "official_prompt_hashes": official_prompt,
+                     "official_stream_hash_ids": official_streamed,
+                     "independent_prompt_hashes": prompt_hashes,
+                     "cross_check_equal": True,
                      "equal": all([entry["ids"][i] for entry in prompt_hashes] == streamed[i]
                                   for i in range(len(prompt)))})
 
     sequences = {"sequence_0": [bos, 211, 223, 227], "sequence_1": [bos, 307, 2, 311, 313]}
+    sequence_official = official_hash_batches(official_source, list(sequences.values()))
+    sequence_results = {}
+    for (name, ids), official in zip(sequences.items(), sequence_official):
+        independent = hashes(ids)
+        require(independent == official,
+                f"independent n-gram implementation differs from official source for {name}")
+        sequence_results[name] = {"input_ids": ids, "official_hashes": official,
+                                  "independent_hashes": independent, "cross_check_equal": True}
     rendered.append({"name": "two_independent_histories", "sequences": {
-        name: {"input_ids": ids, "hashes": hashes(ids)} for name, ids in sequences.items()
-    }})
+        name: result for name, result in sequence_results.items()
+    }, "cross_check_equal": True})
     return rendered
 
 
@@ -221,7 +270,12 @@ def run(args):
         "software_versions": versions(), "deterministic_seeds": SEEDS,
         "identities": {"config_sha256": sha256(args.config),
                        "tokenizer_config_sha256": sha256(args.tokenizer_config)},
-        "cases": make_cases(config),
+        "reference_provenance": {
+            "official": "AST-isolated methods executed from pinned modeling_longcat_ngram.py",
+            "independent": "standalone shifted() and hashes() implementation",
+            "policy": "generation fails on any mismatch"
+        },
+        "cases": make_cases(config, args.official_source),
     }
     size = write_limited(fixture_path, document, args.max_output_bytes)
     return fixture_path, size

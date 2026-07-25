@@ -5,7 +5,7 @@ model weights, checkpoint shards, arbitrary pickle files, or generated output ab
 1 MiB per file.
 
 `ngram-cases.json` is weight-free and ASCII JSON. For each input sequence it stores
-all 12 integer hash streams (orders 2, 3, and 4; four splits each), table moduli,
+official and independently recomputed copies of all 12 integer hash streams (orders 2, 3, and 4; four splits each), table moduli,
 polynomial power residues, and lookup masks. It covers BOS/left-zero padding, literal
 zero, EOS in every order-4 history position, token 131071, every ignored ID from
 131072 through 131124, prompt-at-once versus incremental history, and two independent
@@ -21,3 +21,7 @@ Weight-backed embedding, selected-layer, logits, and greedy fixtures are deliber
 absent. Their expected interfaces are reserved in the manifest. Before generating
 or comparing them, reviewers must select separate BF16 and F16 tolerances without
 seeing C++ results. Pending `null` tolerances are not permission to compare loosely.
+
+Fields named `official_hashes` come from AST-isolated methods executed directly from the
+pinned official source. Fields named `independent_hashes` come from the standalone
+implementation. Generation fails unless they match exactly for every case.

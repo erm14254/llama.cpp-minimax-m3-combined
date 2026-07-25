@@ -100,6 +100,26 @@ class InventoryTests(unittest.TestCase):
         self.mutate_next(lambda d: d.pop("metadata"))
         self.assert_inventory_error("missing required field 'metadata'")
 
+    def hift_metadata(self, wrong_total=False):
+        tensors = {
+            "conv.weight_g": {"dtype": "F32", "shape": [1]},
+            "conv.weight_v": {"dtype": "F32", "shape": [1]},
+        }
+        for index in range(325):
+            tensors[f"tensor_{index}"] = {"dtype": "F32", "shape": [1]}
+        remainder = inventory.EXPECTED_HIFT_PARAMETERS - 327
+        tensors["tensor_final"] = {"dtype": "F32", "shape": [remainder + int(wrong_total)]}
+        return self.write("hift.json", {"tensors": tensors})
+
+    def test_hift_exact_parameter_and_payload_totals(self):
+        report = inventory.validate_hift(self.hift_metadata())
+        self.assertEqual(report["parameters"], inventory.EXPECTED_HIFT_PARAMETERS)
+        self.assertEqual(report["tensor_payload_bytes"], inventory.EXPECTED_HIFT_PAYLOAD_BYTES)
+
+    def test_hift_wrong_parameter_total(self):
+        with self.assertRaisesRegex(inventory.InventoryError, "parameter count"):
+            inventory.validate_hift(self.hift_metadata(wrong_total=True))
+
 class FixtureTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -110,7 +130,9 @@ class FixtureTests(unittest.TestCase):
         source_bytes = b"# synthetic pinned source for harness tests\n"
         (self.source / "modeling_longcat_ngram.py").write_bytes(source_bytes)
         self.original_source_hash = fixtures.NGRAM_SOURCE_SHA256
+        self.original_official_runner = fixtures.official_hash_batches
         fixtures.NGRAM_SOURCE_SHA256 = hashlib.sha256(source_bytes).hexdigest()
+        fixtures.official_hash_batches = lambda source, sequences: [fixtures.hashes(ids) for ids in sequences]
         self.config = self.root / "config.json"
         self.config.write_text(json.dumps({"text_vocab_size": 131072, "eos_token_id": 2,
             "bos_token_id": 1, "ngram_vocab_size_ratio": 78,
@@ -124,6 +146,7 @@ class FixtureTests(unittest.TestCase):
 
     def tearDown(self):
         fixtures.NGRAM_SOURCE_SHA256 = self.original_source_hash
+        fixtures.official_hash_batches = self.original_official_runner
         fixtures.CONFIG_SHA256 = self.original_config_hash
         fixtures.TOKENIZER_CONFIG_SHA256 = self.original_tokenizer_hash
         self.tmp.cleanup()
@@ -144,11 +167,20 @@ class FixtureTests(unittest.TestCase):
         self.assertIn("two_independent_histories", names)
         ignored = next(case for case in data["cases"] if case["name"] == "all_ignored_ids")
         self.assertEqual(ignored["input_ids"], list(range(131072, 131125)))
-        self.assertEqual({(h["order"], h["split"]) for h in ignored["hashes"]},
+        self.assertEqual({(h["order"], h["split"]) for h in ignored["official_hashes"]},
                          {(order, split) for order in (2, 3, 4) for split in range(4)})
         prompt = next(case for case in data["cases"] if case["name"].startswith("prompt_at_once"))
         self.assertTrue(prompt["equal"])
         self.assertLess(size, fixtures.DEFAULT_MAX_BYTES)
+
+    def test_generation_fails_on_official_mismatch(self):
+        def mismatch(source, sequences):
+            result = [fixtures.hashes(ids) for ids in sequences]
+            result[0][0]["ids"][0] += 1
+            return result
+        fixtures.official_hash_batches = mismatch
+        with self.assertRaisesRegex(fixtures.FixtureError, "differs from official"):
+            fixtures.run(self.args())
 
     def test_mutable_unpinned_revision(self):
         with self.assertRaisesRegex(fixtures.FixtureError, "immutable 40-character"):

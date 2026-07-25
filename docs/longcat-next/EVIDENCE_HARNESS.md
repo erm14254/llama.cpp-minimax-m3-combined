@@ -92,10 +92,16 @@ The inventory checker asserts, rather than warns about, all of the following:
 
 If supplied, the image header is checked for its exact length, 1,771 BF16 entries,
 three prefix counts, parameter totals, and payload totals. HiFT JSON metadata is
-checked for 328 F32 tensors and matched weight-normalization pairs.
+checked for 328 F32 tensors, 20,821,295 parameters, 83,285,180 tensor payload
+bytes, and matched weight-normalization pairs.
 
-The checked JSON fixture verifies pure integer behavior without torch or weights.
-Integer hashes and masks are exact comparisons and have no tolerance.
+The checked JSON fixture uses torch but no model weights. The generator AST-isolates
+and executes the actual pinned official `_shift_right_ignore_eos`,
+`_precompute_vocab_mods`, and `_get_ngram_ids` method bodies. `official_hashes`
+fields are produced by those methods; `independent_hashes` fields are produced by
+the standalone implementation. Generation fails on any mismatch, including direct,
+incremental, ignored-ID, boundary, and independent-history cases. Integer hashes
+and masks are exact comparisons and have no tolerance.
 
 ## Blocked until official weights are local
 
