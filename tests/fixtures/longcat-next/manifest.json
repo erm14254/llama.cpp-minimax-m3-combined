@@ -80,5 +80,35 @@
       "bytes": 172058,
       "contains_model_weights": false
     }
+  },
+  "local_core_fixture_schemas": {
+    "core-fixture-schema.json": {
+      "sha256": "c4fae91c797ebd6257f86b83a0e2c0cd7f02dbfec7a1b1e59bcf3f42c3d0aeb0",
+      "contains_generated_activations": false
+    },
+    "core-reproducibility-schema.json": {
+      "sha256": "0298519a3d74c308d1786f134e92861524cbe20e8a4f8f9ca793b624063f3e4d",
+      "contains_generated_activations": false
+    }
+  },
+  "runtime_profiles": {
+    "official-pinned": {
+      "python": "3.10",
+      "torch": "2.6.0",
+      "torchvision": "0.21.0",
+      "torchaudio": "2.6.0",
+      "flash-attn": "2.7.4.post1",
+      "einops": "unpinned transitive custom-code dependency",
+      "provenance": "official LongCat requirements"
+    },
+    "blackwell-compatible": {
+      "minimum_torch": "2.7",
+      "minimum_torch_cuda": "12.8",
+      "required_compute_capability": "sm_120",
+      "python_policy": "record exact executing Python; on native Windows require an installed wheel tag compatible with it",
+      "flash_attn_policy": "native Windows may use a non-official ABI-matched Blackwell community wheel only after the BF16 causal CUDA smoke test passes",
+      "community_windows_source": "https://huggingface.co/ussoewwin/Flash-Attention-2_for_Windows",
+      "policy": "record exact installed departures from official provenance; require CUDA, FlashAttention, and local custom-class smoke tests"
+    }
   }
 }

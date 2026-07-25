@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "longcat-next-core-fixture-schema-v1",
+  "title": "LongCat-Next local core reference fixture metadata",
+  "type": "object",
+  "required": ["schema_version", "kind", "precision", "source_dtypes", "checkpoint", "arrays", "module_anchors", "tokenizer", "dtype_provenance", "fixture_generation_settings"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "longcat-next-core-reference"},
+    "precision": {"enum": ["bf16", "f16"]},
+    "serialized_activation_dtype": {"type": "string"},
+    "source_dtypes": {"type": "object", "additionalProperties": {"type": "string"}},
+    "checkpoint": {"type": "object"},
+    "tokenizer": {
+      "type": "object",
+      "required": ["declared_tokenizer_class", "runtime_tokenizer_class", "runtime_tokenizer_is_fast", "runtime_slow_tokenizer_class", "tokenizer_source_directory", "fix_mistral_regex", "tokenizer_config_json_sha256", "tokenizer_json_sha256", "backend_pre_tokenizer_state_sha256", "prompts"],
+      "properties": {
+        "declared_tokenizer_class": {"const": "BloomTokenizer"},
+        "runtime_tokenizer_class": {"const": "BloomTokenizerFast"},
+        "runtime_tokenizer_is_fast": {"const": true},
+        "runtime_slow_tokenizer_class": {"enum": ["BloomTokenizer", null]},
+        "fix_mistral_regex": {"const": false}
+      }
+    },
+    "dtype_provenance": {"type": "object"},
+    "fixture_generation_settings": {
+      "type": "object",
+      "required": ["copied_base_generation_configuration", "explicit_call_overrides", "effective_resolved_greedy_policy"],
+      "properties": {
+        "copied_base_generation_configuration": {"type": "object"},
+        "explicit_call_overrides": {"type": "object"},
+        "effective_resolved_greedy_policy": {"type": "object"}
+      }
+    },
+    "software_versions": {"type": "object"},
+    "seeds": {"type": "object"},
+    "selected_logit_token_ids": {"type": "array", "items": {"type": "integer"}},
+    "module_anchors": {"type": "object", "additionalProperties": {"type": "string"}},
+    "arrays": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["shape", "serialized_dtype", "sha256", "bytes"],
+        "properties": {
+          "shape": {"type": "array", "items": {"type": "integer"}},
+          "serialized_dtype": {"type": "string"},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "bytes": {"type": "integer", "minimum": 0}
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "longcat-next-core-reproducibility-schema-v1",
+  "title": "LongCat-Next official-only reproducibility report",
+  "type": "object",
+  "required": ["schema_version", "repeat_count", "arrays", "greedy_continuations", "comparison_tolerances", "tolerances_selected_automatically"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "repeat_count": {"type": "integer", "minimum": 1},
+    "arrays": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["shape", "dtype", "byte_identical", "max_absolute_difference", "max_relative_difference", "comparison_tolerance"],
+        "properties": {
+          "shape": {"type": "array", "items": {"type": "integer"}},
+          "dtype": {"type": "string"},
+          "byte_identical": {"type": "boolean"},
+          "max_absolute_difference": {"type": "number", "minimum": 0},
+          "max_relative_difference": {"type": "number", "minimum": 0},
+          "comparison_tolerance": {"type": "null"}
+        }
+      }
+    },
+    "greedy_continuations": {"type": "array"},
+    "comparison_tolerances": {
+      "type": "object",
+      "properties": {"bf16": {"type": "null"}, "f16": {"type": "null"}}
+    },
+    "tolerances_selected_automatically": {"const": false}
+  }
+}

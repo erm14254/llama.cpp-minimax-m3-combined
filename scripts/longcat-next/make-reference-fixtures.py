@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Create small, deterministic LongCat-Next reference fixtures without model weights."""
+"""Create deterministic LongCat-Next fixtures from pinned local-only sources."""
 
 import argparse
 import hashlib
 import importlib.metadata
 import json
 import os
+import importlib.util
 import platform
 import random
 import re
@@ -22,6 +23,13 @@ NGRAM_SOURCE_SHA256 = "f7c6fb4de561e3311a67adea22b8a9467044d3c503d59afe0dde542e5
 CONFIG_SHA256 = "9115e9785603b04382a45ebece9092235281f309f56f35eb4e43bcf53150b2a2"
 TOKENIZER_CONFIG_SHA256 = "22dddd0eb59965adf6e4861a7c8a9ed803595cd16bc86ed6e2d4ed915b9718d4"
 SEEDS = {"python": 20260725, "torch": 20260725, "numpy": 20260725}
+
+def load_core_reference():
+    path = Path(__file__).with_name("core_reference.py")
+    spec = importlib.util.spec_from_file_location("longcat_next_core_reference", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 class FixtureError(ValueError):
     pass
@@ -224,23 +232,58 @@ def write_limited(path, data, limit):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--official-source", required=True, type=Path)
-    parser.add_argument("--source-revision", required=True)
-    parser.add_argument("--inference-revision", required=True)
-    parser.add_argument("--model-revision", required=True)
-    parser.add_argument("--config", required=True, type=Path)
-    parser.add_argument("--tokenizer-config", required=True, type=Path)
-    parser.add_argument("--output-dir", required=True, type=Path)
-    parser.add_argument("--mode", choices=("ngram", "core"), default="ngram")
+    parser.add_argument("--official-source", type=Path)
+    parser.add_argument("--source-revision")
+    parser.add_argument("--inference-revision")
+    parser.add_argument("--model-revision")
+    parser.add_argument("--config", type=Path)
+    parser.add_argument("--tokenizer-config", type=Path)
+    parser.add_argument("--output-dir", type=Path, default=Path("longcat-next-reference-output"))
+    parser.add_argument("--mode", choices=("ngram", "inspect", "preflight", "core"), default="ngram")
     parser.add_argument("--model-dir", type=Path,
-                        help="local full checkpoint for future core fixtures; never downloaded")
-    parser.add_argument("--max-output-bytes", type=int, default=DEFAULT_MAX_BYTES)
+                        help="local official checkpoint for inspection/core fixtures; never downloaded")
+    parser.add_argument("--max-output-bytes", type=int)
+    parser.add_argument("--precision", choices=("bf16", "f16"), default="bf16")
+    parser.add_argument("--placement", choices=("auto", "cpu", "cuda"), default="auto")
+    parser.add_argument("--runtime-profile", choices=("official-pinned", "blackwell-compatible"),
+                        default="blackwell-compatible")
+    parser.add_argument("--offload-dir", type=Path)
+    parser.add_argument("--cpu-memory", default="220GiB")
+    parser.add_argument("--gpu-memory", default="88GiB")
+    parser.add_argument("--repeat-count", type=int, default=2)
+    parser.add_argument("--hash-shards", action="store_true")
+    parser.add_argument("--flash-wheel-path", type=Path,
+                        help="original FlashAttention wheel path for identity validation only")
+    parser.add_argument("--max-new-tokens", type=int, default=8)
     return parser.parse_args(argv)
 
 
 def run(args):
+    if args.mode in ("inspect", "preflight", "core"):
+        require(args.model_dir is not None, f"{args.mode} mode requires --model-dir")
+        core = load_core_reference()
+        if args.max_output_bytes is None:
+            args.max_output_bytes = 64 * 1024 * 1024
+        try:
+            if args.mode == "inspect":
+                return core.validate_checkpoint(args.model_dir, args.hash_shards), 0
+            if args.mode == "preflight":
+                inspection = core.validate_checkpoint(args.model_dir, args.hash_shards)
+                core.enforce_offline_environment()
+                dependencies = core.require_dependency_preflight(
+                    args.runtime_profile, args.placement, args.model_dir,
+                    args.flash_wheel_path)
+                return {"checkpoint": inspection, "dependencies": dependencies}, 0
+            return core.run_core_generation(args, Path(__file__).resolve().parents[2] /
+                                            "tests/fixtures/longcat-next/ngram-cases.json"), 0
+        except core.CoreFixtureError as exc:
+            raise FixtureError(str(exc)) from exc
+    if args.max_output_bytes is None:
+        args.max_output_bytes = DEFAULT_MAX_BYTES
     pinned_revision(args.model_revision, HF_REVISION, "model revision")
     pinned_revision(args.inference_revision, INFERENCE_REVISION, "inference revision")
+    require(args.official_source is not None and args.config is not None and args.tokenizer_config is not None,
+            "ngram mode requires --official-source, --config, and --tokenizer-config")
     verify_source(args.official_source, args.source_revision)
     require(0 < args.max_output_bytes <= DEFAULT_MAX_BYTES,
             f"max output bytes must be in [1,{DEFAULT_MAX_BYTES}], got {args.max_output_bytes}")
@@ -251,10 +294,6 @@ def run(args):
     require(sha256(args.tokenizer_config) == TOKENIZER_CONFIG_SHA256,
             "tokenizer config does not match the pinned official identity")
     random.seed(SEEDS["python"])
-    if args.mode == "core":
-        require(args.model_dir is not None and args.model_dir.is_dir(),
-                "core fixtures require --model-dir pointing to a local official checkpoint")
-        raise FixtureError("core fixture interface is reserved until numerical tolerances are frozen; no output written")
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     require(not any(p.name.endswith((".safetensors", ".bin", ".pt")) for p in args.output_dir.iterdir()),
@@ -284,11 +323,16 @@ def run(args):
 def main(argv=None):
     args = parse_args(argv)
     try:
-        path, size = run(args)
+        result, size = run(args)
     except (FixtureError, subprocess.CalledProcessError) as exc:
         print(f"fixture error: {exc}", file=sys.stderr)
         return 1
-    print(json.dumps({"fixture": str(path), "bytes": size, "sha256": sha256(path)}, sort_keys=True))
+    if args.mode in ("inspect", "preflight"):
+        print(json.dumps(result, indent=2, sort_keys=True))
+    elif args.mode == "core":
+        print(json.dumps({name: str(path) for name, path in result.items()}, sort_keys=True))
+    else:
+        print(json.dumps({"fixture": str(result), "bytes": size, "sha256": sha256(result)}, sort_keys=True))
     return 0
 
 if __name__ == "__main__":
