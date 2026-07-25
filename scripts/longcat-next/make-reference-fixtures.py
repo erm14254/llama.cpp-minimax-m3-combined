@@ -252,6 +252,8 @@ def parse_args(argv=None):
     parser.add_argument("--gpu-memory", default="88GiB")
     parser.add_argument("--repeat-count", type=int, default=2)
     parser.add_argument("--hash-shards", action="store_true")
+    parser.add_argument("--flash-wheel-path", type=Path,
+                        help="original FlashAttention wheel path for identity validation only")
     parser.add_argument("--max-new-tokens", type=int, default=8)
     return parser.parse_args(argv)
 
@@ -269,7 +271,8 @@ def run(args):
                 inspection = core.validate_checkpoint(args.model_dir, args.hash_shards)
                 core.enforce_offline_environment()
                 dependencies = core.require_dependency_preflight(
-                    args.runtime_profile, args.placement, args.model_dir)
+                    args.runtime_profile, args.placement, args.model_dir,
+                    args.flash_wheel_path)
                 return {"checkpoint": inspection, "dependencies": dependencies}, 0
             return core.run_core_generation(args, Path(__file__).resolve().parents[2] /
                                             "tests/fixtures/longcat-next/ngram-cases.json"), 0

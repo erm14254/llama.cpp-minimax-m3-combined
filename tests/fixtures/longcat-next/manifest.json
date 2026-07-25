@@ -98,6 +98,7 @@
       "torchvision": "0.21.0",
       "torchaudio": "2.6.0",
       "flash-attn": "2.7.4.post1",
+      "einops": "unpinned transitive custom-code dependency",
       "provenance": "official LongCat requirements"
     },
     "blackwell-compatible": {

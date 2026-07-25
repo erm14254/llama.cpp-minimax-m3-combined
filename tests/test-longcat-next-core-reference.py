@@ -390,6 +390,73 @@ class CoreHelperTests(unittest.TestCase):
 
 
 class NativeWindowsFlashAttentionTests(unittest.TestCase):
+    class Distribution:
+        version = "2.9.2"
+        metadata = {"Name": "flash-attn"}
+        def __init__(self, direct_url=None):
+            self.direct_url = direct_url
+        def read_text(self, name):
+            if name == "WHEEL":
+                return "Wheel-Version: 1.0\nTag: cp312-cp312-win_amd64\n"
+            if name == "direct_url.json" and self.direct_url is not None:
+                return json.dumps(self.direct_url)
+            return None
+        def locate_file(self, name):
+            return Path(r"C:\fixture\site-packages")
+
+    @staticmethod
+    def observed_runtime():
+        return {"torch_version": "2.13.0+cu132", "torch_cuda_build": "13.2",
+                "gpu_compute_capability": [12, 0], "torch_cxx11_abi": True}
+
+    def test_pep610_origin_recovers_complete_native_wheel_identity(self):
+        filename = ("flash_attn-2.9.2+cu132torch2.13.0cxx11abiTRUE.blackwell-"
+                    "cp312-cp312-win_amd64.whl")
+        direct = {"url": "file:///C:/Downloads/" + filename.replace("+", "%2B"),
+                  "archive_info": {"hash": "sha256=abc123"}}
+        from packaging.tags import Tag
+        with mock.patch("packaging.tags.sys_tags",
+                        return_value=iter([Tag("cp312", "cp312", "win_amd64")])):
+            report = core.windows_flash_distribution_report(
+                self.Distribution(direct), self.observed_runtime())
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["distribution_version"], "2.9.2")
+        self.assertEqual(report["original_wheel_filename"], filename)
+        self.assertEqual(report["archive_hash"], "sha256=abc123")
+        self.assertEqual(report["wheel_cuda"], "13.2")
+        self.assertEqual(report["wheel_torch"], "2.13.0")
+        self.assertTrue(report["wheel_cxx11_abi"])
+        self.assertTrue(report["checks"]["blackwell_kernel_build"])
+        self.assertEqual(report["wheel_tags"], ["cp312-cp312-win_amd64"])
+
+    def test_mismatched_direct_wheel_filename_is_rejected(self):
+        filename = ("flash_attn-2.9.2+cu128torch2.13.0cxx11abiTRUE.legacy-"
+                    "cp312-cp312-win_amd64.whl")
+        from packaging.tags import Tag
+        with mock.patch("packaging.tags.sys_tags",
+                        return_value=iter([Tag("cp312", "cp312", "win_amd64")])):
+            report = core.windows_flash_distribution_report(
+                self.Distribution({"url": "file:///C:/" + filename}),
+                self.observed_runtime())
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["checks"]["cuda_build_matches"])
+        self.assertFalse(report["checks"]["blackwell_kernel_build"])
+
+    def test_missing_wheel_origin_has_clear_error_and_explicit_fallback(self):
+        distribution = self.Distribution()
+        with self.assertRaisesRegex(core.CoreFixtureError, "wheel origin identity unavailable"):
+            core.wheel_filename_from_origin(distribution)
+        origin = core.wheel_filename_from_origin(
+            distribution, r"C:\Wheels\flash_attn-2.9.2-py3-none-any.whl")
+        self.assertEqual(origin["identity_source"], "explicit-wheel-path")
+        self.assertEqual(origin["original_wheel_filename"],
+                         "flash_attn-2.9.2-py3-none-any.whl")
+
+    def test_known_community_direct_origin_is_recorded(self):
+        origin = core.wheel_filename_from_origin(self.Distribution({
+            "url": "https://huggingface.co/ussoewwin/Flash-Attention-2_for_Windows/resolve/main/flash_attn-2.9.2-py3-none-any.whl"}))
+        self.assertTrue(origin["known_community_windows_source"])
+
     def test_custom_classes_import_only_after_flash_smoke(self):
         expected = core.EXPECTED_DEPENDENCIES
         core.EXPECTED_DEPENDENCIES = {"available": ("available-dist", None)}
@@ -412,6 +479,59 @@ class NativeWindowsFlashAttentionTests(unittest.TestCase):
             core.EXPECTED_DEPENDENCIES = expected
         self.assertTrue(report["ok"])
         self.assertEqual(events, ["flash-smoke", "custom-classes"])
+
+    def test_custom_classes_are_skipped_when_flash_fails(self):
+        expected = core.EXPECTED_DEPENDENCIES
+        core.EXPECTED_DEPENDENCIES = {"available": ("available-dist", None)}
+        try:
+            with mock.patch.object(core.importlib.metadata, "version", return_value="1"), \
+                 mock.patch.object(core.importlib, "import_module", return_value=object()), \
+                 mock.patch.object(core, "runtime_probe", return_value={"ok": True}), \
+                 mock.patch.object(core, "flash_attention_probe",
+                                   return_value={"ok": False, "error": "ABI failed"}), \
+                 mock.patch.object(core, "import_local_custom_classes") as loader:
+                report = core.dependency_preflight(
+                    "blackwell-compatible", "cuda", model_dir="fixture")
+        finally:
+            core.EXPECTED_DEPENDENCIES = expected
+        loader.assert_not_called()
+        self.assertTrue(report["custom_code"]["skipped"])
+        self.assertIn("FlashAttention", report["custom_code"]["reason"])
+
+    def test_einops_is_unpinned_and_reports_installed_version(self):
+        self.assertEqual(core.EXPECTED_DEPENDENCIES["einops"], ("einops", None))
+        expected = core.EXPECTED_DEPENDENCIES
+        core.EXPECTED_DEPENDENCIES = {"einops": ("einops", None)}
+        try:
+            with mock.patch.object(core.importlib.metadata, "version", return_value="0.8.1"), \
+                 mock.patch.object(core.importlib, "import_module", return_value=object()), \
+                 mock.patch.object(core, "runtime_probe", return_value={"ok": True}), \
+                 mock.patch.object(core, "flash_attention_probe", return_value={"ok": True}):
+                report = core.dependency_preflight("blackwell-compatible", "cpu")
+        finally:
+            core.EXPECTED_DEPENDENCIES = expected
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["packages"]["einops"]["installed_version"], "0.8.1")
+        self.assertIsNone(report["packages"]["einops"]["official_pinned_version"])
+
+    def test_missing_einops_is_reported_before_custom_code(self):
+        expected = core.EXPECTED_DEPENDENCIES
+        core.EXPECTED_DEPENDENCIES = {"einops": ("einops", None)}
+        try:
+            with mock.patch.object(core.importlib.metadata, "version",
+                                   side_effect=importlib.metadata.PackageNotFoundError("einops")), \
+                 mock.patch.object(core.importlib, "import_module",
+                                   side_effect=ModuleNotFoundError("No module named 'einops'")), \
+                 mock.patch.object(core, "runtime_probe", return_value={"ok": True}), \
+                 mock.patch.object(core, "import_local_custom_classes") as loader:
+                report = core.dependency_preflight(
+                    "blackwell-compatible", "cuda", model_dir="fixture")
+        finally:
+            core.EXPECTED_DEPENDENCIES = expected
+        self.assertFalse(report["ok"])
+        self.assertIn("einops", report["packages"])
+        self.assertIn("import failed", report["packages"]["einops"]["error"])
+        loader.assert_not_called()
 
     def test_official_profile_rejects_newer_flash_attention(self):
         torch = types.SimpleNamespace()

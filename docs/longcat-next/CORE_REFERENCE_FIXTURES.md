@@ -38,6 +38,9 @@ The official requirements pin torch
 2.6.0, torchvision 0.21.0, torchaudio 2.6.0, Accelerate 1.10.0, Transformers
 4.57.6, librosa 0.11.0, diffusers 0.34.0, and flash-attn 2.7.4.post1. Safetensors
 and NumPy are also required but are not exactly pinned by the published requirements.
+The custom model additionally imports einops; because the official short requirements
+do not pin it, the preflight records its installed version as an unpinned transitive
+dependency rather than inventing an official version.
 Install a PyTorch build appropriate for the local NVIDIA driver and CUDA environment
 using current official PyTorch instructions; this document does not invent a PyTorch
 wheel index or CUDA build. Native Windows FlashAttention execution is supported
@@ -54,7 +57,7 @@ py -0p
 py -3.10 -m venv D:\LongCat-Next-fixture-env
 call D:\LongCat-Next-fixture-env\Scripts\activate.bat
 python -m pip install --upgrade pip
-python -m pip install transformers==4.57.6 accelerate==1.10.0 safetensors numpy librosa==0.11.0 diffusers==0.34.0
+python -m pip install transformers==4.57.6 accelerate==1.10.0 safetensors numpy librosa==0.11.0 diffusers==0.34.0 einops
 python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
 python -c "import transformers; assert transformers.__version__ == '4.57.6'"
 set HF_HUB_OFFLINE=1
@@ -108,7 +111,7 @@ Any mismatch is fatal and is reported before model construction.
 
 After inspection, run the local import/version preflight. It validates the checkpoint
 again and then checks torch, torchvision, torchaudio, Accelerate, Transformers,
-librosa, diffusers, flash_attn, safetensors, and NumPy. It reports installed versions,
+librosa, diffusers, flash_attn, einops, safetensors, and NumPy. It reports installed versions,
 required versions, import failures, and mismatches without constructing the model.
 
 ```bat
@@ -131,6 +134,24 @@ module and install paths, exact Python version, wheel tags, unofficial community
 provenance, and official-versus-executed version departure. It then dynamically
 imports the pinned local config/model classes through Transformers' own remote-code
 loader before any shard is loaded.
+
+For a directly installed wheel, preflight reads its PEP 610 `direct_url.json`, decodes
+the original URL, and parses the ABI-qualified original wheel filename. The normalized
+installed distribution version (for example, `2.9.2`) is recorded separately because
+it does not retain CUDA, PyTorch, C++ ABI, or Blackwell identity. If PEP 610 metadata
+is unavailable, pass the original wheel path for identity validation only:
+
+```bat
+python scripts\longcat-next\make-reference-fixtures.py ^
+  --mode preflight ^
+  --model-dir D:\LongCat-Next ^
+  --runtime-profile blackwell-compatible ^
+  --placement cuda ^
+  --flash-wheel-path D:\path\to\the-original-ABI-qualified-wheel.whl
+```
+
+The fallback never installs or opens the wheel payload. Without either PEP 610 origin
+metadata or this explicit path, preflight fails with `wheel origin identity unavailable`.
 
 ## BF16 generation
 

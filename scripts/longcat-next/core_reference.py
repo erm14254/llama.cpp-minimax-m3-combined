@@ -13,6 +13,7 @@ import re
 import sys
 import zipfile
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 EXPECTED_TENSORS = 13450
 EXPECTED_PAYLOAD = 150825367872
@@ -55,6 +56,7 @@ EXPECTED_DEPENDENCIES = {
     "transformers": ("transformers", "4.57.6"),
     "librosa": ("librosa", "0.11.0"),
     "diffusers": ("diffusers", "0.34.0"),
+    "einops": ("einops", None),
     "flash_attn": ("flash-attn", OFFICIAL_FLASH_ATTN),
     "safetensors": ("safetensors", None),
     "numpy": ("numpy", None),
@@ -241,10 +243,50 @@ def import_local_custom_classes(model_dir):
     return report
 
 
-def windows_flash_abi(version, wheel_tags, compatible_tags, torch_version,
+def wheel_filename_from_origin(distribution, explicit_wheel_path=None):
+    """Return the original wheel identity, preferring PEP 610 direct_url.json."""
+    direct_text = distribution.read_text("direct_url.json")
+    direct = None
+    if direct_text:
+        try:
+            direct = json.loads(direct_text)
+        except json.JSONDecodeError as exc:
+            raise CoreFixtureError(f"invalid flash-attn direct_url.json: {exc}") from exc
+        require(isinstance(direct, dict) and isinstance(direct.get("url"), str),
+                "flash-attn direct_url.json is missing its URL")
+        parsed = urlparse(direct["url"])
+        filename = Path(unquote(parsed.path)).name
+        archive_hash = (direct.get("archive_info") or {}).get("hash")
+        source = "pep610-direct-url"
+        url = direct["url"]
+    elif explicit_wheel_path is not None:
+        value = str(explicit_wheel_path)
+        filename = Path(value).name
+        if "\\" in value:
+            filename = value.rsplit("\\", 1)[-1]
+        archive_hash = None
+        source = "explicit-wheel-path"
+        url = None
+    else:
+        raise CoreFixtureError(
+            "wheel origin identity unavailable: flash-attn direct_url.json is absent; "
+            "provide --flash-wheel-path pointing to the original wheel for identity validation")
+    require(filename.lower().endswith(".whl"),
+            f"FlashAttention origin is not a wheel filename: {filename!r}")
+    known_source = False
+    if url:
+        parsed = urlparse(url)
+        known_source = (parsed.hostname or "").lower() == "huggingface.co" and \
+            unquote(parsed.path).startswith("/ussoewwin/Flash-Attention-2_for_Windows/")
+    return {"identity_source": source, "direct_url": url,
+            "original_wheel_filename": filename, "archive_hash": archive_hash,
+            "known_community_windows_source": known_source}
+
+
+def windows_flash_abi(wheel_filename, wheel_tags, compatible_tags, torch_version,
                       cuda_version, capability, torch_cxx11_abi=None):
     """Validate the metadata encoded by a native Windows community wheel."""
-    value = version.lower()
+    value = wheel_filename.lower()
     cuda_match = re.search(r"cu(\d{3})", value)
     torch_match = re.search(r"torch(\d+\.\d+(?:\.\d+)?)", value)
     cxx_match = re.search(r"cxx11abi(true|false)", value)
@@ -271,18 +313,30 @@ def windows_flash_abi(version, wheel_tags, compatible_tags, torch_version,
             "executing_python": sys.version.split()[0]}
 
 
-def windows_flash_distribution_report(distribution, runtime):
+def windows_flash_distribution_report(distribution, runtime, explicit_wheel_path=None):
     from packaging.tags import sys_tags
+    from packaging.utils import InvalidWheelFilename, parse_wheel_filename
     wheel_text = distribution.read_text("WHEEL") or ""
-    wheel_tags = [line.split(":", 1)[1].strip() for line in wheel_text.splitlines()
-                  if line.startswith("Tag:")]
+    origin = wheel_filename_from_origin(distribution, explicit_wheel_path)
+    metadata_tags = [line.split(":", 1)[1].strip() for line in wheel_text.splitlines()
+                     if line.startswith("Tag:")]
+    try:
+        _, _, _, filename_tags = parse_wheel_filename(origin["original_wheel_filename"])
+    except InvalidWheelFilename as exc:
+        raise CoreFixtureError(
+            f"cannot parse original FlashAttention wheel filename: {exc}") from exc
+    wheel_tags = [str(tag) for tag in filename_tags]
+    require(set(wheel_tags) == set(metadata_tags),
+            "original FlashAttention wheel Python/ABI/platform tags do not match installed WHEEL metadata")
     report = windows_flash_abi(
-        distribution.version, wheel_tags, [str(tag) for tag in sys_tags()],
+        origin["original_wheel_filename"], wheel_tags, [str(tag) for tag in sys_tags()],
         runtime.get("torch_version"), runtime.get("torch_cuda_build"),
         runtime.get("gpu_compute_capability"), runtime.get("torch_cxx11_abi"))
     report.update({"distribution_name": distribution.metadata.get("Name", "flash-attn"),
                    "distribution_version": distribution.version,
                    "distribution_path": str(distribution.locate_file("")),
+                   "installed_wheel_metadata_tags": sorted(metadata_tags),
+                   **origin,
                    "community_unofficial_windows_build": True,
                    "community_source":
                        "https://huggingface.co/ussoewwin/Flash-Attention-2_for_Windows"})
@@ -302,7 +356,7 @@ def perform_flash_attention_smoke(torch, flash_attn):
             "causal": True, "finite_values": True, "cuda_synchronize": "passed"}
 
 
-def flash_attention_probe(runtime, placement, runtime_profile):
+def flash_attention_probe(runtime, placement, runtime_profile, flash_wheel_path=None):
     platform_module = __import__("platform")
     report = {"ok": True, "platform": platform_module.platform(),
               "operating_system": platform_module.system(), "operation": "not requested",
@@ -322,7 +376,7 @@ def flash_attention_probe(runtime, placement, runtime_profile):
                     f"official-pinned requires flash-attn {OFFICIAL_FLASH_ATTN}, got {installed}")
             report["provenance"] = "official LongCat requirement"
         elif platform_module.system() == "Windows":
-            abi = windows_flash_distribution_report(distribution, runtime)
+            abi = windows_flash_distribution_report(distribution, runtime, flash_wheel_path)
             report["windows_wheel_abi"] = abi
             require(abi["ok"], "native Windows FlashAttention wheel ABI does not match " +
                     "the executing Python, PyTorch, CUDA, platform, and sm_120 device: " +
@@ -343,7 +397,8 @@ def packages_version(distribution):
         return None
 
 
-def dependency_preflight(runtime_profile="official-pinned", placement="cpu", model_dir=None):
+def dependency_preflight(runtime_profile="official-pinned", placement="cpu", model_dir=None,
+                         flash_wheel_path=None):
     require(runtime_profile in RUNTIME_PROFILES,
             f"runtime profile must be one of {RUNTIME_PROFILES}")
     packages = {}
@@ -367,19 +422,30 @@ def dependency_preflight(runtime_profile="official-pinned", placement="cpu", mod
         if not row["version_ok"] and row["error"] is None:
             row["error"] = (f"expected {expected}, installed {row['installed_version']}")
         packages[module_name] = row
+    packages_ok = all(row["import_ok"] and row["version_ok"] for row in packages.values())
     runtime = runtime_probe(packages, runtime_profile, placement)
-    flash = flash_attention_probe(runtime, placement, runtime_profile)
-    # This deliberately follows the CUDA extension smoke test: the exact dynamic
-    # classes used by AutoModel must still import in the proven runtime.
-    custom_code = import_local_custom_classes(model_dir) if model_dir is not None else None
-    ok = (all(row["import_ok"] and row["version_ok"] for row in packages.values()) and
-          runtime["ok"] and flash["ok"] and (custom_code is None or custom_code["ok"]))
+    if packages_ok and runtime["ok"]:
+        flash = flash_attention_probe(runtime, placement, runtime_profile, flash_wheel_path)
+    else:
+        flash = {"ok": False, "skipped": True,
+                 "reason": "package imports/versions or runtime probe failed"}
+    # The dynamic loader is intentionally gated behind every earlier stage.
+    if model_dir is None:
+        custom_code = None
+    elif packages_ok and runtime["ok"] and flash["ok"]:
+        custom_code = import_local_custom_classes(model_dir)
+    else:
+        custom_code = {"ok": False, "skipped": True,
+                       "reason": "runtime and FlashAttention preflight must pass first"}
+    ok = (packages_ok and runtime["ok"] and flash["ok"] and
+          (custom_code is None or custom_code["ok"]))
     return {"ok": ok, "runtime_profile": runtime_profile, "packages": packages,
             "runtime": runtime, "flash_attention": flash, "custom_code": custom_code}
 
 
-def require_dependency_preflight(runtime_profile="official-pinned", placement="cpu", model_dir=None):
-    report = dependency_preflight(runtime_profile, placement, model_dir)
+def require_dependency_preflight(runtime_profile="official-pinned", placement="cpu", model_dir=None,
+                                 flash_wheel_path=None):
+    report = dependency_preflight(runtime_profile, placement, model_dir, flash_wheel_path)
     require(report["ok"], "dependency preflight failed; do not load model weights:\n" +
             json.dumps(report, indent=2, sort_keys=True))
     return report
@@ -769,7 +835,7 @@ def run_core_generation(args, weight_free_fixture):
     inspection = validate_checkpoint(args.model_dir, args.hash_shards)
     enforce_offline_environment()
     dependency_report = require_dependency_preflight(
-        args.runtime_profile, args.placement, args.model_dir)
+        args.runtime_profile, args.placement, args.model_dir, args.flash_wheel_path)
     try:
         ensure_transformers_version()
         import torch
