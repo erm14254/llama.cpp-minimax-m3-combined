@@ -23,21 +23,26 @@ Inspection enforces 13,450 names, 150,825,367,872 tensor payload bytes, 15 shard
 names, no missing or unreferenced model shards, and pinned custom-code/config/tokenizer
 SHA-256 identities.
 
-Use a dedicated 64-bit Python 3.10 environment. Two runtime profiles are explicit:
+Use a dedicated 64-bit Python environment. Python 3.10 is the official-environment
+provenance, not the only executable Python for native Windows Blackwell. Two runtime
+profiles are explicit:
 
 * official-pinned enforces the published package versions on hardware where they
   actually execute;
 * blackwell-compatible retains those versions as provenance but requires an actual
-  sm_120-capable torch 2.7+ CUDA 12.8+ runtime and records every departure.
+  sm_120-capable torch 2.7+ CUDA 12.8+ runtime and records every departure. On
+  Windows, the executing Python version must match the installed wheel's Python,
+  ABI, platform, PyTorch, CUDA, and Blackwell tags.
 
 The official requirements pin torch
 2.6.0, torchvision 0.21.0, torchaudio 2.6.0, Accelerate 1.10.0, Transformers
 4.57.6, librosa 0.11.0, diffusers 0.34.0, and flash-attn 2.7.4.post1. Safetensors
 and NumPy are also required but are not exactly pinned by the published requirements.
 Install a PyTorch build appropriate for the local NVIDIA driver and CUDA environment
-using current official PyTorch instructions; this document does not invent a wheel
-index, CUDA build, or unofficial Windows flash-attn method. Core generation must not
-begin until the preflight below reports every distribution version and import as OK.
+using current official PyTorch instructions; this document does not invent a PyTorch
+wheel index or CUDA build. Native Windows FlashAttention execution is supported
+through ABI-matched community wheels, which remain unofficial and must pass the full
+preflight below. Core generation must not begin until every check is OK.
 
 ### Windows cmd.exe environment setup
 
@@ -45,6 +50,7 @@ Run these commands in an x64 Native Tools Command Prompt. They are cmd.exe comma
 not PowerShell syntax.
 
 ```bat
+py -0p
 py -3.10 -m venv D:\LongCat-Next-fixture-env
 call D:\LongCat-Next-fixture-env\Scripts\activate.bat
 python -m pip install --upgrade pip
@@ -56,14 +62,21 @@ set TRANSFORMERS_OFFLINE=1
 set HF_DATASETS_OFFLINE=1
 ```
 
-Install the official torch 2.6.0, torchvision 0.21.0, and torchaudio 2.6.0
-requirements together using the official PyTorch selector for the workstation before
-the two verification commands. The official post-requirement
-is flash-attn 2.7.4.post1; install it only through a supported official package/build
-workflow. This project does not claim a working native-Windows installation method.
-Native Windows FlashAttention support is not assured by the official project; WSL2
-or Linux may be required for the GPU reference run. Do not use an unofficial wheel
-to bypass preflight.
+The `py -3.10` command recreates the official Python provenance profile. For a native
+Windows Blackwell profile, select from `py -0p` the Python interpreter matching the
+wheel's CPython tag and use that interpreter in the venv command instead; the tool
+records the exact executing version and rejects a tag mismatch. It does not hard-code
+a second Python version because available wheel combinations change.
+
+Install mutually compatible torch, torchvision, and torchaudio builds using official
+PyTorch instructions. The official LongCat provenance remains torch 2.6.0,
+torchvision 0.21.0, torchaudio 2.6.0, and flash-attn 2.7.4.post1. For native Windows
+Blackwell, an optional source of newer community/unofficial, Blackwell-specific wheels
+is [Flash-Attention-2 for Windows](https://huggingface.co/ussoewwin/Flash-Attention-2_for_Windows).
+Choose no fixed filename: its Python, PyTorch, CUDA, ABI, platform, and Blackwell tags
+must match the environment. This repository never downloads or installs that wheel.
+WSL2/Linux is a fallback only if no matching native Windows wheel passes preflight;
+it is not required when native preflight succeeds.
 Keep the three offline
 variables set for inspection and generation. The loader also sets them internally
 and passes local_files_only=True, trust_remote_code=True, use_safetensors=True, and
@@ -112,8 +125,12 @@ fails because a DLL, CUDA runtime, or compiled extension is unavailable.
 For CUDA it also records the OS/platform, torch and torch-CUDA versions, GPU name,
 compute capability, torch architecture list, sm_120 availability, BF16 support, a
 real synchronized CUDA tensor operation, torchvision/torchaudio compatibility, and
-a tiny FlashAttention forward. It dynamically imports the pinned local config/model
-classes through Transformers' own remote-code loader before any shard is loaded.
+a tiny causal BF16 FlashAttention forward with shape, finite-value, and synchronized
+CUDA checks. On native Windows it additionally records the distribution identity,
+module and install paths, exact Python version, wheel tags, unofficial community
+provenance, and official-versus-executed version departure. It then dynamically
+imports the pinned local config/model classes through Transformers' own remote-code
+loader before any shard is loaded.
 
 ## BF16 generation
 

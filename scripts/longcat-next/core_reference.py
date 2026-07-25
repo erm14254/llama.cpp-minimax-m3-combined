@@ -9,6 +9,8 @@ import json
 import math
 import os
 import random
+import re
+import sys
 import zipfile
 from pathlib import Path
 
@@ -17,6 +19,7 @@ EXPECTED_PAYLOAD = 150825367872
 EXPECTED_SHARDS = 15
 EXPECTED_SHARD_BYTES = 150827115056
 EXPECTED_TRANSFORMERS = "4.57.6"
+OFFICIAL_FLASH_ATTN = "2.7.4.post1"
 CORE_SCHEMA_VERSION = 1
 REQUIRED_FILES = (
     "config.json", "tokenizer_config.json", "tokenizer.json",
@@ -52,7 +55,7 @@ EXPECTED_DEPENDENCIES = {
     "transformers": ("transformers", "4.57.6"),
     "librosa": ("librosa", "0.11.0"),
     "diffusers": ("diffusers", "0.34.0"),
-    "flash_attn": ("flash-attn", "2.7.4.post1"),
+    "flash_attn": ("flash-attn", OFFICIAL_FLASH_ATTN),
     "safetensors": ("safetensors", None),
     "numpy": ("numpy", None),
 }
@@ -167,11 +170,17 @@ def version_pair(value):
 def runtime_probe(packages, runtime_profile, placement):
     report = {"ok": True, "operating_system": os.name,
               "platform": __import__("platform").platform(),
+              "python_version": __import__("platform").python_version(),
+              "python_implementation": __import__("platform").python_implementation(),
+              "python_executable": sys.executable,
               "cuda_selected": placement in ("auto", "cuda")}
     try:
         torch = importlib.import_module("torch")
         report.update({"torch_version": getattr(torch, "__version__", None),
-                       "torch_cuda_build": getattr(torch.version, "cuda", None)})
+                       "torch_cuda_build": getattr(torch.version, "cuda", None),
+                       "torch_cxx11_abi": (torch.compiled_with_cxx11_abi()
+                                           if hasattr(torch, "compiled_with_cxx11_abi")
+                                           else None)})
         if runtime_profile == "official-pinned":
             report["ok"] &= packages["torch"]["version_ok"]
         if report["cuda_selected"]:
@@ -232,21 +241,95 @@ def import_local_custom_classes(model_dir):
     return report
 
 
-def flash_attention_probe(runtime, placement):
-    report = {"ok": True, "platform": __import__("platform").platform(), "operation": "not requested"}
+def windows_flash_abi(version, wheel_tags, compatible_tags, torch_version,
+                      cuda_version, capability, torch_cxx11_abi=None):
+    """Validate the metadata encoded by a native Windows community wheel."""
+    value = version.lower()
+    cuda_match = re.search(r"cu(\d{3})", value)
+    torch_match = re.search(r"torch(\d+\.\d+(?:\.\d+)?)", value)
+    cxx_match = re.search(r"cxx11abi(true|false)", value)
+    wheel_cuda = (f"{cuda_match.group(1)[:-1]}.{cuda_match.group(1)[-1]}"
+                  if cuda_match else None)
+    wheel_torch = torch_match.group(1) if torch_match else None
+    normalized_torch = (torch_version or "").split("+")[0]
+    wheel_cxx11_abi = None if cxx_match is None else cxx_match.group(1) == "true"
+    matching_tags = sorted(set(wheel_tags) & set(compatible_tags))
+    checks = {
+        "sm_120_device": tuple(capability or ()) == (12, 0),
+        "blackwell_kernel_build": ".blackwell" in value,
+        "cuda_build_matches": wheel_cuda is not None and wheel_cuda == cuda_version,
+        "torch_build_matches": wheel_torch is not None and wheel_torch == normalized_torch,
+        "cxx11_abi_matches": (wheel_cxx11_abi is not None and
+                              torch_cxx11_abi is not None and
+                              wheel_cxx11_abi == bool(torch_cxx11_abi)),
+        "python_abi_platform_tag_matches": bool(matching_tags),
+    }
+    return {"ok": all(checks.values()), "checks": checks,
+            "wheel_cuda": wheel_cuda, "wheel_torch": wheel_torch,
+            "wheel_cxx11_abi": wheel_cxx11_abi,
+            "wheel_tags": sorted(wheel_tags), "executing_compatible_tags": matching_tags,
+            "executing_python": sys.version.split()[0]}
+
+
+def windows_flash_distribution_report(distribution, runtime):
+    from packaging.tags import sys_tags
+    wheel_text = distribution.read_text("WHEEL") or ""
+    wheel_tags = [line.split(":", 1)[1].strip() for line in wheel_text.splitlines()
+                  if line.startswith("Tag:")]
+    report = windows_flash_abi(
+        distribution.version, wheel_tags, [str(tag) for tag in sys_tags()],
+        runtime.get("torch_version"), runtime.get("torch_cuda_build"),
+        runtime.get("gpu_compute_capability"), runtime.get("torch_cxx11_abi"))
+    report.update({"distribution_name": distribution.metadata.get("Name", "flash-attn"),
+                   "distribution_version": distribution.version,
+                   "distribution_path": str(distribution.locate_file("")),
+                   "community_unofficial_windows_build": True,
+                   "community_source":
+                       "https://huggingface.co/ussoewwin/Flash-Attention-2_for_Windows"})
+    return report
+
+
+def perform_flash_attention_smoke(torch, flash_attn):
+    function = getattr(flash_attn, "flash_attn_func")
+    query = torch.randn((1, 4, 2, 16), device="cuda", dtype=torch.bfloat16)
+    output = function(query, query, query, dropout_p=0.0, causal=True)
+    require(tuple(output.shape) == tuple(query.shape),
+            f"FlashAttention output shape {tuple(output.shape)} does not match input {tuple(query.shape)}")
+    require(bool(torch.isfinite(output).all()), "FlashAttention tiny forward produced non-finite values")
+    torch.cuda.synchronize()
+    return {"operation": "passed", "input_shape": list(query.shape),
+            "output_shape": list(output.shape), "dtype": "bfloat16",
+            "causal": True, "finite_values": True, "cuda_synchronize": "passed"}
+
+
+def flash_attention_probe(runtime, placement, runtime_profile):
+    platform_module = __import__("platform")
+    report = {"ok": True, "platform": platform_module.platform(),
+              "operating_system": platform_module.system(), "operation": "not requested",
+              "official_pinned_version": OFFICIAL_FLASH_ATTN}
     if placement not in ("auto", "cuda"):
         return report
     try:
         torch = importlib.import_module("torch")
         flash_attn = importlib.import_module("flash_attn")
-        function = getattr(flash_attn, "flash_attn_func")
-        query = torch.randn((1, 4, 2, 16), device="cuda", dtype=torch.bfloat16)
-        output = function(query, query, query, dropout_p=0.0, causal=True)
-        require(tuple(output.shape) == tuple(query.shape),
-                f"FlashAttention output shape {tuple(output.shape)} does not match input {tuple(query.shape)}")
-        require(bool(torch.isfinite(output).all()), "FlashAttention tiny forward produced non-finite values")
-        torch.cuda.synchronize()
-        report.update({"operation": "passed", "version": packages_version("flash-attn")})
+        distribution = importlib.metadata.distribution("flash-attn")
+        installed = distribution.version
+        report.update({"installed_distribution_version": installed,
+                       "module_path": getattr(flash_attn, "__file__", None),
+                       "version_departure_from_official": installed != OFFICIAL_FLASH_ATTN})
+        if runtime_profile == "official-pinned":
+            require(installed == OFFICIAL_FLASH_ATTN,
+                    f"official-pinned requires flash-attn {OFFICIAL_FLASH_ATTN}, got {installed}")
+            report["provenance"] = "official LongCat requirement"
+        elif platform_module.system() == "Windows":
+            abi = windows_flash_distribution_report(distribution, runtime)
+            report["windows_wheel_abi"] = abi
+            require(abi["ok"], "native Windows FlashAttention wheel ABI does not match " +
+                    "the executing Python, PyTorch, CUDA, platform, and sm_120 device: " +
+                    json.dumps(abi, sort_keys=True))
+            report.update({"provenance": "community/unofficial native Windows build",
+                           "wsl_required": False})
+        report.update(perform_flash_attention_smoke(torch, flash_attn))
     except Exception as exc:
         report["ok"] = False
         report["error"] = f"{type(exc).__name__}: {exc}"
@@ -285,8 +368,10 @@ def dependency_preflight(runtime_profile="official-pinned", placement="cpu", mod
             row["error"] = (f"expected {expected}, installed {row['installed_version']}")
         packages[module_name] = row
     runtime = runtime_probe(packages, runtime_profile, placement)
+    flash = flash_attention_probe(runtime, placement, runtime_profile)
+    # This deliberately follows the CUDA extension smoke test: the exact dynamic
+    # classes used by AutoModel must still import in the proven runtime.
     custom_code = import_local_custom_classes(model_dir) if model_dir is not None else None
-    flash = flash_attention_probe(runtime, placement)
     ok = (all(row["import_ok"] and row["version_ok"] for row in packages.values()) and
           runtime["ok"] and flash["ok"] and (custom_code is None or custom_code["ok"]))
     return {"ok": ok, "runtime_profile": runtime_profile, "packages": packages,

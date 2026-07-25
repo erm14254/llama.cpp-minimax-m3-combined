@@ -389,5 +389,82 @@ class CoreHelperTests(unittest.TestCase):
             self.assertTrue(outputs["npz"].is_file())
 
 
+class NativeWindowsFlashAttentionTests(unittest.TestCase):
+    def test_custom_classes_import_only_after_flash_smoke(self):
+        expected = core.EXPECTED_DEPENDENCIES
+        core.EXPECTED_DEPENDENCIES = {"available": ("available-dist", None)}
+        events = []
+        def flash_probe(*args):
+            events.append("flash-smoke")
+            return {"ok": True}
+        def custom_probe(*args):
+            events.append("custom-classes")
+            return {"ok": True}
+        try:
+            with mock.patch.object(core.importlib.metadata, "version", return_value="1"), \
+                 mock.patch.object(core.importlib, "import_module", return_value=object()), \
+                 mock.patch.object(core, "runtime_probe", return_value={"ok": True}), \
+                 mock.patch.object(core, "flash_attention_probe", side_effect=flash_probe), \
+                 mock.patch.object(core, "import_local_custom_classes", side_effect=custom_probe):
+                report = core.dependency_preflight(
+                    "blackwell-compatible", "cuda", model_dir="fixture")
+        finally:
+            core.EXPECTED_DEPENDENCIES = expected
+        self.assertTrue(report["ok"])
+        self.assertEqual(events, ["flash-smoke", "custom-classes"])
+
+    def test_official_profile_rejects_newer_flash_attention(self):
+        torch = types.SimpleNamespace()
+        flash = types.SimpleNamespace(__file__=r"C:\fixture\flash_attn\__init__.py")
+        distribution = types.SimpleNamespace(version="2.9.2")
+        with mock.patch.object(core.importlib, "import_module",
+                               side_effect=lambda name: torch if name == "torch" else flash), \
+             mock.patch.object(core.importlib.metadata, "distribution", return_value=distribution):
+            report = core.flash_attention_probe({}, "cuda", "official-pinned")
+        self.assertFalse(report["ok"])
+        self.assertIn("requires flash-attn 2.7.4.post1", report["error"])
+
+    def test_native_windows_newer_build_requires_and_passes_smoke(self):
+        torch = types.SimpleNamespace()
+        flash = types.SimpleNamespace(__file__=r"C:\fixture\flash_attn\__init__.py")
+        distribution = types.SimpleNamespace(version="2.9.2+cu132torch2.13.0.blackwell")
+        abi = {"ok": True, "community_unofficial_windows_build": True,
+               "community_source": "fixture"}
+        smoke = {"operation": "passed", "output_shape": [1, 4, 2, 16],
+                 "finite_values": True, "cuda_synchronize": "passed"}
+        with mock.patch("platform.system", return_value="Windows"), \
+             mock.patch.object(core.importlib, "import_module",
+                               side_effect=lambda name: torch if name == "torch" else flash), \
+             mock.patch.object(core.importlib.metadata, "distribution", return_value=distribution), \
+             mock.patch.object(core, "windows_flash_distribution_report", return_value=abi), \
+             mock.patch.object(core, "perform_flash_attention_smoke", return_value=smoke) as probe:
+            report = core.flash_attention_probe({}, "cuda", "blackwell-compatible")
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["official_pinned_version"], "2.7.4.post1")
+        self.assertEqual(report["installed_distribution_version"], distribution.version)
+        self.assertTrue(report["version_departure_from_official"])
+        self.assertEqual(report["provenance"], "community/unofficial native Windows build")
+        self.assertFalse(report["wsl_required"])
+        probe.assert_called_once_with(torch, flash)
+
+    def test_native_windows_abi_rejects_python_tag_mismatch(self):
+        report = core.windows_flash_abi(
+            "2.9.2+cu132torch2.13.0cxx11abiTRUE.blackwell",
+            ["cp313-cp313-win_amd64"], ["cp312-cp312-win_amd64"],
+            "2.13.0+cu132", "13.2", (12, 0), True)
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["checks"]["python_abi_platform_tag_matches"])
+        self.assertEqual(report["executing_compatible_tags"], [])
+
+    def test_native_windows_abi_accepts_matching_blackwell_wheel(self):
+        tag = "cp313-cp313-win_amd64"
+        report = core.windows_flash_abi(
+            "2.9.2+cu132torch2.13.0cxx11abiTRUE.blackwell", [tag], [tag],
+            "2.13.0+cu132", "13.2", [12, 0], True)
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["wheel_cuda"], "13.2")
+        self.assertEqual(report["wheel_torch"], "2.13.0")
+
+
 if __name__ == "__main__":
     unittest.main()
