@@ -1,0 +1,9101 @@
+{
+  "cases": [
+    {
+      "cross_check_equal": true,
+      "independent_hashes": [
+        {
+          "ids": [
+            0,
+            0,
+            1,
+            131089,
+            2228247
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223617,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 0,
+          "table_index": 0
+        },
+        {
+          "ids": [
+            0,
+            0,
+            1,
+            131089,
+            2228247
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223619,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 1,
+          "table_index": 1
+        },
+        {
+          "ids": [
+            0,
+            0,
+            1,
+            131089,
+            2228247
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223621,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 2,
+          "table_index": 2
+        },
+        {
+          "ids": [
+            0,
+            0,
+            1,
+            131089,
+            2228247
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223623,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 3,
+          "table_index": 3
+        },
+        {
+          "ids": [
+            0,
+            0,
+            1,
+            131089,
+            6407431
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223625,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4179184
+          ],
+          "split": 0,
+          "table_index": 4
+        },
+        {
+          "ids": [
+            0,
+            0,
+            1,
+            131089,
+            6404071
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223627,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4175824
+          ],
+          "split": 1,
+          "table_index": 5
+        },
+        {
+          "ids": [
+            0,
+            0,
+            1,
+            131089,
+            6400711
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223629,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4172464
+          ],
+          "split": 2,
+          "table_index": 6
+        },
+        {
+          "ids": [
+            0,
+            0,
+            1,
+            131089,
+            6397351
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223631,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4169104
+          ],
+          "split": 3,
+          "table_index": 7
+        },
+        {
+          "ids": [
+            0,
+            0,
+            1,
+            131089,
+            6393991
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223633,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4165744,
+            9053570
+          ],
+          "split": 0,
+          "table_index": 8
+        },
+        {
+          "ids": [
+            0,
+            0,
+            1,
+            131089,
+            6390631
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223635,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4162384,
+            8161143
+          ],
+          "split": 1,
+          "table_index": 9
+        },
+        {
+          "ids": [
+            0,
+            0,
+            1,
+            131089,
+            6387271
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223637,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4159024,
+            7268888
+          ],
+          "split": 2,
+          "table_index": 10
+        },
+        {
+          "ids": [
+            0,
+            0,
+            1,
+            131089,
+            6383911
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223639,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4155664,
+            6376805
+          ],
+          "split": 3,
+          "table_index": 11
+        }
+      ],
+      "input_ids": [
+        0,
+        0,
+        1,
+        17,
+        23
+      ],
+      "name": "bos_left_zero",
+      "official_hashes": [
+        {
+          "ids": [
+            0,
+            0,
+            1,
+            131089,
+            2228247
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223617,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 0,
+          "table_index": 0
+        },
+        {
+          "ids": [
+            0,
+            0,
+            1,
+            131089,
+            2228247
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223619,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 1,
+          "table_index": 1
+        },
+        {
+          "ids": [
+            0,
+            0,
+            1,
+            131089,
+            2228247
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223621,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 2,
+          "table_index": 2
+        },
+        {
+          "ids": [
+            0,
+            0,
+            1,
+            131089,
+            2228247
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223623,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 3,
+          "table_index": 3
+        },
+        {
+          "ids": [
+            0,
+            0,
+            1,
+            131089,
+            6407431
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223625,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4179184
+          ],
+          "split": 0,
+          "table_index": 4
+        },
+        {
+          "ids": [
+            0,
+            0,
+            1,
+            131089,
+            6404071
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223627,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4175824
+          ],
+          "split": 1,
+          "table_index": 5
+        },
+        {
+          "ids": [
+            0,
+            0,
+            1,
+            131089,
+            6400711
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223629,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4172464
+          ],
+          "split": 2,
+          "table_index": 6
+        },
+        {
+          "ids": [
+            0,
+            0,
+            1,
+            131089,
+            6397351
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223631,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4169104
+          ],
+          "split": 3,
+          "table_index": 7
+        },
+        {
+          "ids": [
+            0,
+            0,
+            1,
+            131089,
+            6393991
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223633,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4165744,
+            9053570
+          ],
+          "split": 0,
+          "table_index": 8
+        },
+        {
+          "ids": [
+            0,
+            0,
+            1,
+            131089,
+            6390631
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223635,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4162384,
+            8161143
+          ],
+          "split": 1,
+          "table_index": 9
+        },
+        {
+          "ids": [
+            0,
+            0,
+            1,
+            131089,
+            6387271
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223637,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4159024,
+            7268888
+          ],
+          "split": 2,
+          "table_index": 10
+        },
+        {
+          "ids": [
+            0,
+            0,
+            1,
+            131089,
+            6383911
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223639,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4155664,
+            6376805
+          ],
+          "split": 3,
+          "table_index": 11
+        }
+      ]
+    },
+    {
+      "cross_check_equal": true,
+      "independent_hashes": [
+        {
+          "ids": [
+            19,
+            0,
+            29,
+            3801119,
+            4063269
+          ],
+          "lookup_mask": [
+            true,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223617,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 0,
+          "table_index": 0
+        },
+        {
+          "ids": [
+            19,
+            0,
+            29,
+            3801119,
+            4063269
+          ],
+          "lookup_mask": [
+            true,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223619,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 1,
+          "table_index": 1
+        },
+        {
+          "ids": [
+            19,
+            0,
+            29,
+            3801119,
+            4063269
+          ],
+          "lookup_mask": [
+            true,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223621,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 2,
+          "table_index": 2
+        },
+        {
+          "ids": [
+            19,
+            0,
+            29,
+            3801119,
+            4063269
+          ],
+          "lookup_mask": [
+            true,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223623,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 3,
+          "table_index": 3
+        },
+        {
+          "ids": [
+            19,
+            0,
+            29,
+            3801119,
+            2576105
+          ],
+          "lookup_mask": [
+            true,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223625,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4179184
+          ],
+          "split": 0,
+          "table_index": 4
+        },
+        {
+          "ids": [
+            19,
+            0,
+            29,
+            3801119,
+            2478641
+          ],
+          "lookup_mask": [
+            true,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223627,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4175824
+          ],
+          "split": 1,
+          "table_index": 5
+        },
+        {
+          "ids": [
+            19,
+            0,
+            29,
+            3801119,
+            2381177
+          ],
+          "lookup_mask": [
+            true,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223629,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4172464
+          ],
+          "split": 2,
+          "table_index": 6
+        },
+        {
+          "ids": [
+            19,
+            0,
+            29,
+            3801119,
+            2283713
+          ],
+          "lookup_mask": [
+            true,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223631,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4169104
+          ],
+          "split": 3,
+          "table_index": 7
+        },
+        {
+          "ids": [
+            19,
+            0,
+            29,
+            3801119,
+            2186249
+          ],
+          "lookup_mask": [
+            true,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223633,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4165744,
+            9053570
+          ],
+          "split": 0,
+          "table_index": 8
+        },
+        {
+          "ids": [
+            19,
+            0,
+            29,
+            3801119,
+            2088785
+          ],
+          "lookup_mask": [
+            true,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223635,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4162384,
+            8161143
+          ],
+          "split": 1,
+          "table_index": 9
+        },
+        {
+          "ids": [
+            19,
+            0,
+            29,
+            3801119,
+            1991321
+          ],
+          "lookup_mask": [
+            true,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223637,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4159024,
+            7268888
+          ],
+          "split": 2,
+          "table_index": 10
+        },
+        {
+          "ids": [
+            19,
+            0,
+            29,
+            3801119,
+            1893857
+          ],
+          "lookup_mask": [
+            true,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223639,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4155664,
+            6376805
+          ],
+          "split": 3,
+          "table_index": 11
+        }
+      ],
+      "input_ids": [
+        19,
+        0,
+        29,
+        31,
+        37
+      ],
+      "name": "literal_zero",
+      "official_hashes": [
+        {
+          "ids": [
+            19,
+            0,
+            29,
+            3801119,
+            4063269
+          ],
+          "lookup_mask": [
+            true,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223617,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 0,
+          "table_index": 0
+        },
+        {
+          "ids": [
+            19,
+            0,
+            29,
+            3801119,
+            4063269
+          ],
+          "lookup_mask": [
+            true,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223619,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 1,
+          "table_index": 1
+        },
+        {
+          "ids": [
+            19,
+            0,
+            29,
+            3801119,
+            4063269
+          ],
+          "lookup_mask": [
+            true,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223621,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 2,
+          "table_index": 2
+        },
+        {
+          "ids": [
+            19,
+            0,
+            29,
+            3801119,
+            4063269
+          ],
+          "lookup_mask": [
+            true,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223623,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 3,
+          "table_index": 3
+        },
+        {
+          "ids": [
+            19,
+            0,
+            29,
+            3801119,
+            2576105
+          ],
+          "lookup_mask": [
+            true,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223625,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4179184
+          ],
+          "split": 0,
+          "table_index": 4
+        },
+        {
+          "ids": [
+            19,
+            0,
+            29,
+            3801119,
+            2478641
+          ],
+          "lookup_mask": [
+            true,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223627,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4175824
+          ],
+          "split": 1,
+          "table_index": 5
+        },
+        {
+          "ids": [
+            19,
+            0,
+            29,
+            3801119,
+            2381177
+          ],
+          "lookup_mask": [
+            true,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223629,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4172464
+          ],
+          "split": 2,
+          "table_index": 6
+        },
+        {
+          "ids": [
+            19,
+            0,
+            29,
+            3801119,
+            2283713
+          ],
+          "lookup_mask": [
+            true,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223631,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4169104
+          ],
+          "split": 3,
+          "table_index": 7
+        },
+        {
+          "ids": [
+            19,
+            0,
+            29,
+            3801119,
+            2186249
+          ],
+          "lookup_mask": [
+            true,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223633,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4165744,
+            9053570
+          ],
+          "split": 0,
+          "table_index": 8
+        },
+        {
+          "ids": [
+            19,
+            0,
+            29,
+            3801119,
+            2088785
+          ],
+          "lookup_mask": [
+            true,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223635,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4162384,
+            8161143
+          ],
+          "split": 1,
+          "table_index": 9
+        },
+        {
+          "ids": [
+            19,
+            0,
+            29,
+            3801119,
+            1991321
+          ],
+          "lookup_mask": [
+            true,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223637,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4159024,
+            7268888
+          ],
+          "split": 2,
+          "table_index": 10
+        },
+        {
+          "ids": [
+            19,
+            0,
+            29,
+            3801119,
+            1893857
+          ],
+          "lookup_mask": [
+            true,
+            false,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223639,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4155664,
+            6376805
+          ],
+          "split": 3,
+          "table_index": 11
+        }
+      ]
+    },
+    {
+      "cross_check_equal": true,
+      "independent_hashes": [
+        {
+          "ids": [
+            7,
+            917515,
+            1441805,
+            1835007
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223617,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 0,
+          "table_index": 0
+        },
+        {
+          "ids": [
+            7,
+            917515,
+            1441805,
+            1835007
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223619,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 1,
+          "table_index": 1
+        },
+        {
+          "ids": [
+            7,
+            917515,
+            1441805,
+            1835007
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223621,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 2,
+          "table_index": 2
+        },
+        {
+          "ids": [
+            7,
+            917515,
+            1441805,
+            1835007
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223623,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 3,
+          "table_index": 3
+        },
+        {
+          "ids": [
+            7,
+            917515,
+            25218,
+            6911531
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223625,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4179184
+          ],
+          "split": 0,
+          "table_index": 4
+        },
+        {
+          "ids": [
+            7,
+            917515,
+            1692,
+            6874563
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223627,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4175824
+          ],
+          "split": 1,
+          "table_index": 5
+        },
+        {
+          "ids": [
+            7,
+            917515,
+            10201795,
+            6837595
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223629,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4172464
+          ],
+          "split": 2,
+          "table_index": 6
+        },
+        {
+          "ids": [
+            7,
+            917515,
+            10178271,
+            6800627
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223631,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4169104
+          ],
+          "split": 3,
+          "table_index": 7
+        },
+        {
+          "ids": [
+            7,
+            917515,
+            10154747,
+            8796851
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223633,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4165744,
+            9053570
+          ],
+          "split": 0,
+          "table_index": 8
+        },
+        {
+          "ids": [
+            7,
+            917515,
+            10131223,
+            2512882
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223635,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4162384,
+            8161143
+          ],
+          "split": 1,
+          "table_index": 9
+        },
+        {
+          "ids": [
+            7,
+            917515,
+            10107699,
+            6453754
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223637,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4159024,
+            7268888
+          ],
+          "split": 2,
+          "table_index": 10
+        },
+        {
+          "ids": [
+            7,
+            917515,
+            10084175,
+            172195
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223639,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4155664,
+            6376805
+          ],
+          "split": 3,
+          "table_index": 11
+        }
+      ],
+      "input_ids": [
+        7,
+        11,
+        13,
+        131071
+      ],
+      "name": "maximum_text_token",
+      "official_hashes": [
+        {
+          "ids": [
+            7,
+            917515,
+            1441805,
+            1835007
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223617,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 0,
+          "table_index": 0
+        },
+        {
+          "ids": [
+            7,
+            917515,
+            1441805,
+            1835007
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223619,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 1,
+          "table_index": 1
+        },
+        {
+          "ids": [
+            7,
+            917515,
+            1441805,
+            1835007
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223621,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 2,
+          "table_index": 2
+        },
+        {
+          "ids": [
+            7,
+            917515,
+            1441805,
+            1835007
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223623,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 3,
+          "table_index": 3
+        },
+        {
+          "ids": [
+            7,
+            917515,
+            25218,
+            6911531
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223625,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4179184
+          ],
+          "split": 0,
+          "table_index": 4
+        },
+        {
+          "ids": [
+            7,
+            917515,
+            1692,
+            6874563
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223627,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4175824
+          ],
+          "split": 1,
+          "table_index": 5
+        },
+        {
+          "ids": [
+            7,
+            917515,
+            10201795,
+            6837595
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223629,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4172464
+          ],
+          "split": 2,
+          "table_index": 6
+        },
+        {
+          "ids": [
+            7,
+            917515,
+            10178271,
+            6800627
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223631,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4169104
+          ],
+          "split": 3,
+          "table_index": 7
+        },
+        {
+          "ids": [
+            7,
+            917515,
+            10154747,
+            8796851
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223633,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4165744,
+            9053570
+          ],
+          "split": 0,
+          "table_index": 8
+        },
+        {
+          "ids": [
+            7,
+            917515,
+            10131223,
+            2512882
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223635,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4162384,
+            8161143
+          ],
+          "split": 1,
+          "table_index": 9
+        },
+        {
+          "ids": [
+            7,
+            917515,
+            10107699,
+            6453754
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223637,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4159024,
+            7268888
+          ],
+          "split": 2,
+          "table_index": 10
+        },
+        {
+          "ids": [
+            7,
+            917515,
+            10084175,
+            172195
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223639,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4155664,
+            6376805
+          ],
+          "split": 3,
+          "table_index": 11
+        }
+      ]
+    },
+    {
+      "cross_check_equal": true,
+      "independent_hashes": [
+        {
+          "ids": [
+            2,
+            43,
+            5636143,
+            6160437,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223617,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 0,
+          "table_index": 0
+        },
+        {
+          "ids": [
+            2,
+            43,
+            5636143,
+            6160437,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223619,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 1,
+          "table_index": 1
+        },
+        {
+          "ids": [
+            2,
+            43,
+            5636143,
+            6160437,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223621,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 2,
+          "table_index": 2
+        },
+        {
+          "ids": [
+            2,
+            43,
+            5636143,
+            6160437,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223623,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 3,
+          "table_index": 3
+        },
+        {
+          "ids": [
+            2,
+            43,
+            5636143,
+            1840099,
+            9119648
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223625,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4179184
+          ],
+          "split": 0,
+          "table_index": 4
+        },
+        {
+          "ids": [
+            2,
+            43,
+            5636143,
+            1695583,
+            8961690
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223627,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4175824
+          ],
+          "split": 1,
+          "table_index": 5
+        },
+        {
+          "ids": [
+            2,
+            43,
+            5636143,
+            1551067,
+            8803732
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223629,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4172464
+          ],
+          "split": 2,
+          "table_index": 6
+        },
+        {
+          "ids": [
+            2,
+            43,
+            5636143,
+            1406551,
+            8645774
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223631,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4169104
+          ],
+          "split": 3,
+          "table_index": 7
+        },
+        {
+          "ids": [
+            2,
+            43,
+            5636143,
+            1262035,
+            9293272
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223633,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4165744,
+            9053570
+          ],
+          "split": 0,
+          "table_index": 8
+        },
+        {
+          "ids": [
+            2,
+            43,
+            5636143,
+            1117519,
+            1431782
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223635,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4162384,
+            8161143
+          ],
+          "split": 1,
+          "table_index": 9
+        },
+        {
+          "ids": [
+            2,
+            43,
+            5636143,
+            973003,
+            3801337
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223637,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4159024,
+            7268888
+          ],
+          "split": 2,
+          "table_index": 10
+        },
+        {
+          "ids": [
+            2,
+            43,
+            5636143,
+            828487,
+            6178304
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223639,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4155664,
+            6376805
+          ],
+          "split": 3,
+          "table_index": 11
+        }
+      ],
+      "input_ids": [
+        2,
+        43,
+        47,
+        53,
+        59
+      ],
+      "name": "eos_window_position_0",
+      "official_hashes": [
+        {
+          "ids": [
+            2,
+            43,
+            5636143,
+            6160437,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223617,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 0,
+          "table_index": 0
+        },
+        {
+          "ids": [
+            2,
+            43,
+            5636143,
+            6160437,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223619,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 1,
+          "table_index": 1
+        },
+        {
+          "ids": [
+            2,
+            43,
+            5636143,
+            6160437,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223621,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 2,
+          "table_index": 2
+        },
+        {
+          "ids": [
+            2,
+            43,
+            5636143,
+            6160437,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223623,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 3,
+          "table_index": 3
+        },
+        {
+          "ids": [
+            2,
+            43,
+            5636143,
+            1840099,
+            9119648
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223625,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4179184
+          ],
+          "split": 0,
+          "table_index": 4
+        },
+        {
+          "ids": [
+            2,
+            43,
+            5636143,
+            1695583,
+            8961690
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223627,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4175824
+          ],
+          "split": 1,
+          "table_index": 5
+        },
+        {
+          "ids": [
+            2,
+            43,
+            5636143,
+            1551067,
+            8803732
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223629,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4172464
+          ],
+          "split": 2,
+          "table_index": 6
+        },
+        {
+          "ids": [
+            2,
+            43,
+            5636143,
+            1406551,
+            8645774
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223631,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4169104
+          ],
+          "split": 3,
+          "table_index": 7
+        },
+        {
+          "ids": [
+            2,
+            43,
+            5636143,
+            1262035,
+            9293272
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223633,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4165744,
+            9053570
+          ],
+          "split": 0,
+          "table_index": 8
+        },
+        {
+          "ids": [
+            2,
+            43,
+            5636143,
+            1117519,
+            1431782
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223635,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4162384,
+            8161143
+          ],
+          "split": 1,
+          "table_index": 9
+        },
+        {
+          "ids": [
+            2,
+            43,
+            5636143,
+            973003,
+            3801337
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223637,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4159024,
+            7268888
+          ],
+          "split": 2,
+          "table_index": 10
+        },
+        {
+          "ids": [
+            2,
+            43,
+            5636143,
+            828487,
+            6178304
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223639,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4155664,
+            6376805
+          ],
+          "split": 3,
+          "table_index": 11
+        }
+      ]
+    },
+    {
+      "cross_check_equal": true,
+      "independent_hashes": [
+        {
+          "ids": [
+            41,
+            5373954,
+            47,
+            6160437,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223617,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 0,
+          "table_index": 0
+        },
+        {
+          "ids": [
+            41,
+            5373954,
+            47,
+            6160437,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223619,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 1,
+          "table_index": 1
+        },
+        {
+          "ids": [
+            41,
+            5373954,
+            47,
+            6160437,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223621,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 2,
+          "table_index": 2
+        },
+        {
+          "ids": [
+            41,
+            5373954,
+            47,
+            6160437,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223623,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 3,
+          "table_index": 3
+        },
+        {
+          "ids": [
+            41,
+            5373954,
+            47,
+            6160437,
+            9119648
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223625,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4179184
+          ],
+          "split": 0,
+          "table_index": 4
+        },
+        {
+          "ids": [
+            41,
+            5373954,
+            47,
+            6160437,
+            8961690
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223627,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4175824
+          ],
+          "split": 1,
+          "table_index": 5
+        },
+        {
+          "ids": [
+            41,
+            5373954,
+            47,
+            6160437,
+            8803732
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223629,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4172464
+          ],
+          "split": 2,
+          "table_index": 6
+        },
+        {
+          "ids": [
+            41,
+            5373954,
+            47,
+            6160437,
+            8645774
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223631,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4169104
+          ],
+          "split": 3,
+          "table_index": 7
+        },
+        {
+          "ids": [
+            41,
+            5373954,
+            47,
+            6160437,
+            8487816
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223633,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4165744,
+            9053570
+          ],
+          "split": 0,
+          "table_index": 8
+        },
+        {
+          "ids": [
+            41,
+            5373954,
+            47,
+            6160437,
+            8329858
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223635,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4162384,
+            8161143
+          ],
+          "split": 1,
+          "table_index": 9
+        },
+        {
+          "ids": [
+            41,
+            5373954,
+            47,
+            6160437,
+            8171900
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223637,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4159024,
+            7268888
+          ],
+          "split": 2,
+          "table_index": 10
+        },
+        {
+          "ids": [
+            41,
+            5373954,
+            47,
+            6160437,
+            8013942
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223639,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4155664,
+            6376805
+          ],
+          "split": 3,
+          "table_index": 11
+        }
+      ],
+      "input_ids": [
+        41,
+        2,
+        47,
+        53,
+        59
+      ],
+      "name": "eos_window_position_1",
+      "official_hashes": [
+        {
+          "ids": [
+            41,
+            5373954,
+            47,
+            6160437,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223617,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 0,
+          "table_index": 0
+        },
+        {
+          "ids": [
+            41,
+            5373954,
+            47,
+            6160437,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223619,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 1,
+          "table_index": 1
+        },
+        {
+          "ids": [
+            41,
+            5373954,
+            47,
+            6160437,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223621,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 2,
+          "table_index": 2
+        },
+        {
+          "ids": [
+            41,
+            5373954,
+            47,
+            6160437,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223623,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 3,
+          "table_index": 3
+        },
+        {
+          "ids": [
+            41,
+            5373954,
+            47,
+            6160437,
+            9119648
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223625,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4179184
+          ],
+          "split": 0,
+          "table_index": 4
+        },
+        {
+          "ids": [
+            41,
+            5373954,
+            47,
+            6160437,
+            8961690
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223627,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4175824
+          ],
+          "split": 1,
+          "table_index": 5
+        },
+        {
+          "ids": [
+            41,
+            5373954,
+            47,
+            6160437,
+            8803732
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223629,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4172464
+          ],
+          "split": 2,
+          "table_index": 6
+        },
+        {
+          "ids": [
+            41,
+            5373954,
+            47,
+            6160437,
+            8645774
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223631,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4169104
+          ],
+          "split": 3,
+          "table_index": 7
+        },
+        {
+          "ids": [
+            41,
+            5373954,
+            47,
+            6160437,
+            8487816
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223633,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4165744,
+            9053570
+          ],
+          "split": 0,
+          "table_index": 8
+        },
+        {
+          "ids": [
+            41,
+            5373954,
+            47,
+            6160437,
+            8329858
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223635,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4162384,
+            8161143
+          ],
+          "split": 1,
+          "table_index": 9
+        },
+        {
+          "ids": [
+            41,
+            5373954,
+            47,
+            6160437,
+            8171900
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223637,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4159024,
+            7268888
+          ],
+          "split": 2,
+          "table_index": 10
+        },
+        {
+          "ids": [
+            41,
+            5373954,
+            47,
+            6160437,
+            8013942
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223639,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4155664,
+            6376805
+          ],
+          "split": 3,
+          "table_index": 11
+        }
+      ]
+    },
+    {
+      "cross_check_equal": true,
+      "independent_hashes": [
+        {
+          "ids": [
+            41,
+            5373995,
+            5636098,
+            53,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223617,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 0,
+          "table_index": 0
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            5636098,
+            53,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223619,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 1,
+          "table_index": 1
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            5636098,
+            53,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223621,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 2,
+          "table_index": 2
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            5636098,
+            53,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223623,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 3,
+          "table_index": 3
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            3181017,
+            53,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223625,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4179184
+          ],
+          "split": 0,
+          "table_index": 4
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            3043223,
+            53,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223627,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4175824
+          ],
+          "split": 1,
+          "table_index": 5
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            2905429,
+            53,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223629,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4172464
+          ],
+          "split": 2,
+          "table_index": 6
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            2767635,
+            53,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223631,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4169104
+          ],
+          "split": 3,
+          "table_index": 7
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            2629841,
+            53,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223633,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4165744,
+            9053570
+          ],
+          "split": 0,
+          "table_index": 8
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            2492047,
+            53,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223635,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4162384,
+            8161143
+          ],
+          "split": 1,
+          "table_index": 9
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            2354253,
+            53,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223637,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4159024,
+            7268888
+          ],
+          "split": 2,
+          "table_index": 10
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            2216459,
+            53,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223639,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4155664,
+            6376805
+          ],
+          "split": 3,
+          "table_index": 11
+        }
+      ],
+      "input_ids": [
+        41,
+        43,
+        2,
+        53,
+        59
+      ],
+      "name": "eos_window_position_2",
+      "official_hashes": [
+        {
+          "ids": [
+            41,
+            5373995,
+            5636098,
+            53,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223617,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 0,
+          "table_index": 0
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            5636098,
+            53,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223619,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 1,
+          "table_index": 1
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            5636098,
+            53,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223621,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 2,
+          "table_index": 2
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            5636098,
+            53,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223623,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 3,
+          "table_index": 3
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            3181017,
+            53,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223625,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4179184
+          ],
+          "split": 0,
+          "table_index": 4
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            3043223,
+            53,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223627,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4175824
+          ],
+          "split": 1,
+          "table_index": 5
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            2905429,
+            53,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223629,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4172464
+          ],
+          "split": 2,
+          "table_index": 6
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            2767635,
+            53,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223631,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4169104
+          ],
+          "split": 3,
+          "table_index": 7
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            2629841,
+            53,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223633,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4165744,
+            9053570
+          ],
+          "split": 0,
+          "table_index": 8
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            2492047,
+            53,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223635,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4162384,
+            8161143
+          ],
+          "split": 1,
+          "table_index": 9
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            2354253,
+            53,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223637,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4159024,
+            7268888
+          ],
+          "split": 2,
+          "table_index": 10
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            2216459,
+            53,
+            6946875
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223639,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4155664,
+            6376805
+          ],
+          "split": 3,
+          "table_index": 11
+        }
+      ]
+    },
+    {
+      "cross_check_equal": true,
+      "independent_hashes": [
+        {
+          "ids": [
+            41,
+            5373995,
+            5636143,
+            6160386,
+            59
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223617,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 0,
+          "table_index": 0
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            5636143,
+            6160386,
+            59
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223619,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 1,
+          "table_index": 1
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            5636143,
+            6160386,
+            59
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223621,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 2,
+          "table_index": 2
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            5636143,
+            6160386,
+            59
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223623,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 3,
+          "table_index": 3
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            3181062,
+            1840048,
+            59
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223625,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4179184
+          ],
+          "split": 0,
+          "table_index": 4
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            3043268,
+            1695532,
+            59
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223627,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4175824
+          ],
+          "split": 1,
+          "table_index": 5
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            2905474,
+            1551016,
+            59
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223629,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4172464
+          ],
+          "split": 2,
+          "table_index": 6
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            2767680,
+            1406500,
+            59
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223631,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4169104
+          ],
+          "split": 3,
+          "table_index": 7
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            2629886,
+            4407566,
+            59
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223633,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4165744,
+            9053570
+          ],
+          "split": 0,
+          "table_index": 8
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            2492092,
+            8568011,
+            59
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223635,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4162384,
+            8161143
+          ],
+          "split": 1,
+          "table_index": 9
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            2354298,
+            2511887,
+            59
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223637,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4159024,
+            7268888
+          ],
+          "split": 2,
+          "table_index": 10
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            2216504,
+            6686466,
+            59
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223639,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4155664,
+            6376805
+          ],
+          "split": 3,
+          "table_index": 11
+        }
+      ],
+      "input_ids": [
+        41,
+        43,
+        47,
+        2,
+        59
+      ],
+      "name": "eos_window_position_3",
+      "official_hashes": [
+        {
+          "ids": [
+            41,
+            5373995,
+            5636143,
+            6160386,
+            59
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223617,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 0,
+          "table_index": 0
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            5636143,
+            6160386,
+            59
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223619,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 1,
+          "table_index": 1
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            5636143,
+            6160386,
+            59
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223621,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 2,
+          "table_index": 2
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            5636143,
+            6160386,
+            59
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223623,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 3,
+          "table_index": 3
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            3181062,
+            1840048,
+            59
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223625,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4179184
+          ],
+          "split": 0,
+          "table_index": 4
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            3043268,
+            1695532,
+            59
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223627,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4175824
+          ],
+          "split": 1,
+          "table_index": 5
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            2905474,
+            1551016,
+            59
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223629,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4172464
+          ],
+          "split": 2,
+          "table_index": 6
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            2767680,
+            1406500,
+            59
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223631,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4169104
+          ],
+          "split": 3,
+          "table_index": 7
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            2629886,
+            4407566,
+            59
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223633,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4165744,
+            9053570
+          ],
+          "split": 0,
+          "table_index": 8
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            2492092,
+            8568011,
+            59
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223635,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4162384,
+            8161143
+          ],
+          "split": 1,
+          "table_index": 9
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            2354298,
+            2511887,
+            59
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223637,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4159024,
+            7268888
+          ],
+          "split": 2,
+          "table_index": 10
+        },
+        {
+          "ids": [
+            41,
+            5373995,
+            2216504,
+            6686466,
+            59
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223639,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4155664,
+            6376805
+          ],
+          "split": 3,
+          "table_index": 11
+        }
+      ]
+    },
+    {
+      "cross_check_equal": true,
+      "independent_hashes": [
+        {
+          "ids": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "modulus": 10223617,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 0,
+          "table_index": 0
+        },
+        {
+          "ids": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "modulus": 10223619,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 1,
+          "table_index": 1
+        },
+        {
+          "ids": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "modulus": 10223621,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 2,
+          "table_index": 2
+        },
+        {
+          "ids": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "modulus": 10223623,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 3,
+          "table_index": 3
+        },
+        {
+          "ids": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "modulus": 10223625,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4179184
+          ],
+          "split": 0,
+          "table_index": 4
+        },
+        {
+          "ids": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "modulus": 10223627,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4175824
+          ],
+          "split": 1,
+          "table_index": 5
+        },
+        {
+          "ids": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "modulus": 10223629,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4172464
+          ],
+          "split": 2,
+          "table_index": 6
+        },
+        {
+          "ids": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "modulus": 10223631,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4169104
+          ],
+          "split": 3,
+          "table_index": 7
+        },
+        {
+          "ids": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "modulus": 10223633,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4165744,
+            9053570
+          ],
+          "split": 0,
+          "table_index": 8
+        },
+        {
+          "ids": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "modulus": 10223635,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4162384,
+            8161143
+          ],
+          "split": 1,
+          "table_index": 9
+        },
+        {
+          "ids": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "modulus": 10223637,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4159024,
+            7268888
+          ],
+          "split": 2,
+          "table_index": 10
+        },
+        {
+          "ids": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "modulus": 10223639,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4155664,
+            6376805
+          ],
+          "split": 3,
+          "table_index": 11
+        }
+      ],
+      "input_ids": [
+        131072,
+        131073,
+        131074,
+        131075,
+        131076,
+        131077,
+        131078,
+        131079,
+        131080,
+        131081,
+        131082,
+        131083,
+        131084,
+        131085,
+        131086,
+        131087,
+        131088,
+        131089,
+        131090,
+        131091,
+        131092,
+        131093,
+        131094,
+        131095,
+        131096,
+        131097,
+        131098,
+        131099,
+        131100,
+        131101,
+        131102,
+        131103,
+        131104,
+        131105,
+        131106,
+        131107,
+        131108,
+        131109,
+        131110,
+        131111,
+        131112,
+        131113,
+        131114,
+        131115,
+        131116,
+        131117,
+        131118,
+        131119,
+        131120,
+        131121,
+        131122,
+        131123,
+        131124
+      ],
+      "name": "all_ignored_ids",
+      "official_hashes": [
+        {
+          "ids": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "modulus": 10223617,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 0,
+          "table_index": 0
+        },
+        {
+          "ids": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "modulus": 10223619,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 1,
+          "table_index": 1
+        },
+        {
+          "ids": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "modulus": 10223621,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 2,
+          "table_index": 2
+        },
+        {
+          "ids": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "modulus": 10223623,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 3,
+          "table_index": 3
+        },
+        {
+          "ids": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "modulus": 10223625,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4179184
+          ],
+          "split": 0,
+          "table_index": 4
+        },
+        {
+          "ids": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "modulus": 10223627,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4175824
+          ],
+          "split": 1,
+          "table_index": 5
+        },
+        {
+          "ids": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "modulus": 10223629,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4172464
+          ],
+          "split": 2,
+          "table_index": 6
+        },
+        {
+          "ids": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "modulus": 10223631,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4169104
+          ],
+          "split": 3,
+          "table_index": 7
+        },
+        {
+          "ids": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "modulus": 10223633,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4165744,
+            9053570
+          ],
+          "split": 0,
+          "table_index": 8
+        },
+        {
+          "ids": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "modulus": 10223635,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4162384,
+            8161143
+          ],
+          "split": 1,
+          "table_index": 9
+        },
+        {
+          "ids": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "modulus": 10223637,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4159024,
+            7268888
+          ],
+          "split": 2,
+          "table_index": 10
+        },
+        {
+          "ids": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "lookup_mask": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "modulus": 10223639,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4155664,
+            6376805
+          ],
+          "split": 3,
+          "table_index": 11
+        }
+      ]
+    },
+    {
+      "cross_check_equal": true,
+      "equal": true,
+      "independent_prompt_hashes": [
+        {
+          "ids": [
+            1,
+            131173,
+            3014758,
+            3276906,
+            3801196,
+            4063344
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223617,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 0,
+          "table_index": 0
+        },
+        {
+          "ids": [
+            1,
+            131173,
+            3014756,
+            3276904,
+            3801194,
+            4063342
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223619,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 1,
+          "table_index": 1
+        },
+        {
+          "ids": [
+            1,
+            131173,
+            3014754,
+            3276902,
+            3801192,
+            4063340
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223621,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 2,
+          "table_index": 2
+        },
+        {
+          "ids": [
+            1,
+            131173,
+            3014752,
+            3276900,
+            3801190,
+            4063338
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223623,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 3,
+          "table_index": 3
+        },
+        {
+          "ids": [
+            1,
+            131173,
+            7193934,
+            6205857,
+            4864890,
+            1396524
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223625,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4179184
+          ],
+          "split": 0,
+          "table_index": 4
+        },
+        {
+          "ids": [
+            1,
+            131173,
+            7190572,
+            5866413,
+            4518724,
+            1036914
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223627,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4175824
+          ],
+          "split": 1,
+          "table_index": 5
+        },
+        {
+          "ids": [
+            1,
+            131173,
+            7187210,
+            5526969,
+            4172558,
+            677304
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223629,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4172464
+          ],
+          "split": 2,
+          "table_index": 6
+        },
+        {
+          "ids": [
+            1,
+            131173,
+            7183848,
+            5187525,
+            3826392,
+            317694
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223631,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4169104
+          ],
+          "split": 3,
+          "table_index": 7
+        },
+        {
+          "ids": [
+            1,
+            131173,
+            7180486,
+            3678018,
+            7987459,
+            2125191
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223633,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4165744,
+            9053570
+          ],
+          "split": 0,
+          "table_index": 8
+        },
+        {
+          "ids": [
+            1,
+            131173,
+            7177124,
+            2446145,
+            9518703,
+            1858133
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223635,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4162384,
+            8161143
+          ],
+          "split": 1,
+          "table_index": 9
+        },
+        {
+          "ids": [
+            1,
+            131173,
+            7173762,
+            1214444,
+            843718,
+            1608827
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223637,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4159024,
+            7268888
+          ],
+          "split": 2,
+          "table_index": 10
+        },
+        {
+          "ids": [
+            1,
+            131173,
+            7170400,
+            10206554,
+            2409776,
+            1377273
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223639,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4155664,
+            6376805
+          ],
+          "split": 3,
+          "table_index": 11
+        }
+      ],
+      "input_ids": [
+        1,
+        101,
+        103,
+        107,
+        109,
+        113
+      ],
+      "name": "prompt_at_once_vs_token_at_a_time",
+      "official_prompt_hashes": [
+        {
+          "ids": [
+            1,
+            131173,
+            3014758,
+            3276906,
+            3801196,
+            4063344
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223617,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 0,
+          "table_index": 0
+        },
+        {
+          "ids": [
+            1,
+            131173,
+            3014756,
+            3276904,
+            3801194,
+            4063342
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223619,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 1,
+          "table_index": 1
+        },
+        {
+          "ids": [
+            1,
+            131173,
+            3014754,
+            3276902,
+            3801192,
+            4063340
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223621,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 2,
+          "table_index": 2
+        },
+        {
+          "ids": [
+            1,
+            131173,
+            3014752,
+            3276900,
+            3801190,
+            4063338
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223623,
+          "order": 2,
+          "power_mods": [
+            131072
+          ],
+          "split": 3,
+          "table_index": 3
+        },
+        {
+          "ids": [
+            1,
+            131173,
+            7193934,
+            6205857,
+            4864890,
+            1396524
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223625,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4179184
+          ],
+          "split": 0,
+          "table_index": 4
+        },
+        {
+          "ids": [
+            1,
+            131173,
+            7190572,
+            5866413,
+            4518724,
+            1036914
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223627,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4175824
+          ],
+          "split": 1,
+          "table_index": 5
+        },
+        {
+          "ids": [
+            1,
+            131173,
+            7187210,
+            5526969,
+            4172558,
+            677304
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223629,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4172464
+          ],
+          "split": 2,
+          "table_index": 6
+        },
+        {
+          "ids": [
+            1,
+            131173,
+            7183848,
+            5187525,
+            3826392,
+            317694
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223631,
+          "order": 3,
+          "power_mods": [
+            131072,
+            4169104
+          ],
+          "split": 3,
+          "table_index": 7
+        },
+        {
+          "ids": [
+            1,
+            131173,
+            7180486,
+            3678018,
+            7987459,
+            2125191
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223633,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4165744,
+            9053570
+          ],
+          "split": 0,
+          "table_index": 8
+        },
+        {
+          "ids": [
+            1,
+            131173,
+            7177124,
+            2446145,
+            9518703,
+            1858133
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223635,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4162384,
+            8161143
+          ],
+          "split": 1,
+          "table_index": 9
+        },
+        {
+          "ids": [
+            1,
+            131173,
+            7173762,
+            1214444,
+            843718,
+            1608827
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223637,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4159024,
+            7268888
+          ],
+          "split": 2,
+          "table_index": 10
+        },
+        {
+          "ids": [
+            1,
+            131173,
+            7170400,
+            10206554,
+            2409776,
+            1377273
+          ],
+          "lookup_mask": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ],
+          "modulus": 10223639,
+          "order": 4,
+          "power_mods": [
+            131072,
+            4155664,
+            6376805
+          ],
+          "split": 3,
+          "table_index": 11
+        }
+      ],
+      "official_stream_hash_ids": [
+        [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          131173,
+          131173,
+          131173,
+          131173,
+          131173,
+          131173,
+          131173,
+          131173,
+          131173,
+          131173,
+          131173,
+          131173
+        ],
+        [
+          3014758,
+          3014756,
+          3014754,
+          3014752,
+          7193934,
+          7190572,
+          7187210,
+          7183848,
+          7180486,
+          7177124,
+          7173762,
+          7170400
+        ],
+        [
+          3276906,
+          3276904,
+          3276902,
+          3276900,
+          6205857,
+          5866413,
+          5526969,
+          5187525,
+          3678018,
+          2446145,
+          1214444,
+          10206554
+        ],
+        [
+          3801196,
+          3801194,
+          3801192,
+          3801190,
+          4864890,
+          4518724,
+          4172558,
+          3826392,
+          7987459,
+          9518703,
+          843718,
+          2409776
+        ],
+        [
+          4063344,
+          4063342,
+          4063340,
+          4063338,
+          1396524,
+          1036914,
+          677304,
+          317694,
+          2125191,
+          1858133,
+          1608827,
+          1377273
+        ]
+      ],
+      "prompt_hash_ids": [
+        [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          131173,
+          131173,
+          131173,
+          131173,
+          131173,
+          131173,
+          131173,
+          131173,
+          131173,
+          131173,
+          131173,
+          131173
+        ],
+        [
+          3014758,
+          3014756,
+          3014754,
+          3014752,
+          7193934,
+          7190572,
+          7187210,
+          7183848,
+          7180486,
+          7177124,
+          7173762,
+          7170400
+        ],
+        [
+          3276906,
+          3276904,
+          3276902,
+          3276900,
+          6205857,
+          5866413,
+          5526969,
+          5187525,
+          3678018,
+          2446145,
+          1214444,
+          10206554
+        ],
+        [
+          3801196,
+          3801194,
+          3801192,
+          3801190,
+          4864890,
+          4518724,
+          4172558,
+          3826392,
+          7987459,
+          9518703,
+          843718,
+          2409776
+        ],
+        [
+          4063344,
+          4063342,
+          4063340,
+          4063338,
+          1396524,
+          1036914,
+          677304,
+          317694,
+          2125191,
+          1858133,
+          1608827,
+          1377273
+        ]
+      ],
+      "stream_hash_ids": [
+        [
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1,
+          1
+        ],
+        [
+          131173,
+          131173,
+          131173,
+          131173,
+          131173,
+          131173,
+          131173,
+          131173,
+          131173,
+          131173,
+          131173,
+          131173
+        ],
+        [
+          3014758,
+          3014756,
+          3014754,
+          3014752,
+          7193934,
+          7190572,
+          7187210,
+          7183848,
+          7180486,
+          7177124,
+          7173762,
+          7170400
+        ],
+        [
+          3276906,
+          3276904,
+          3276902,
+          3276900,
+          6205857,
+          5866413,
+          5526969,
+          5187525,
+          3678018,
+          2446145,
+          1214444,
+          10206554
+        ],
+        [
+          3801196,
+          3801194,
+          3801192,
+          3801190,
+          4864890,
+          4518724,
+          4172558,
+          3826392,
+          7987459,
+          9518703,
+          843718,
+          2409776
+        ],
+        [
+          4063344,
+          4063342,
+          4063340,
+          4063338,
+          1396524,
+          1036914,
+          677304,
+          317694,
+          2125191,
+          1858133,
+          1608827,
+          1377273
+        ]
+      ]
+    },
+    {
+      "cross_check_equal": true,
+      "name": "two_independent_histories",
+      "sequences": {
+        "sequence_0": {
+          "cross_check_equal": true,
+          "independent_hashes": [
+            {
+              "ids": [
+                1,
+                131283,
+                7209181,
+                8782049
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223617,
+              "order": 2,
+              "power_mods": [
+                131072
+              ],
+              "split": 0,
+              "table_index": 0
+            },
+            {
+              "ids": [
+                1,
+                131283,
+                7209177,
+                8782045
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223619,
+              "order": 2,
+              "power_mods": [
+                131072
+              ],
+              "split": 1,
+              "table_index": 1
+            },
+            {
+              "ids": [
+                1,
+                131283,
+                7209173,
+                8782041
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223621,
+              "order": 2,
+              "power_mods": [
+                131072
+              ],
+              "split": 2,
+              "table_index": 2
+            },
+            {
+              "ids": [
+                1,
+                131283,
+                7209169,
+                8782037
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223623,
+              "order": 2,
+              "power_mods": [
+                131072
+              ],
+              "split": 3,
+              "table_index": 3
+            },
+            {
+              "ids": [
+                1,
+                131283,
+                1164724,
+                1134482
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223625,
+              "order": 3,
+              "power_mods": [
+                131072,
+                4179184
+              ],
+              "split": 0,
+              "table_index": 4
+            },
+            {
+              "ids": [
+                1,
+                131283,
+                1161358,
+                425344
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223627,
+              "order": 3,
+              "power_mods": [
+                131072,
+                4175824
+              ],
+              "split": 1,
+              "table_index": 5
+            },
+            {
+              "ids": [
+                1,
+                131283,
+                1157992,
+                9939835
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223629,
+              "order": 3,
+              "power_mods": [
+                131072,
+                4172464
+              ],
+              "split": 2,
+              "table_index": 6
+            },
+            {
+              "ids": [
+                1,
+                131283,
+                1154626,
+                9230699
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223631,
+              "order": 3,
+              "power_mods": [
+                131072,
+                4169104
+              ],
+              "split": 3,
+              "table_index": 7
+            },
+            {
+              "ids": [
+                1,
+                131283,
+                1151260,
+                7351500
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223633,
+              "order": 4,
+              "power_mods": [
+                131072,
+                4165744,
+                9053570
+              ],
+              "split": 0,
+              "table_index": 8
+            },
+            {
+              "ids": [
+                1,
+                131283,
+                1147894,
+                5749935
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223635,
+              "order": 4,
+              "power_mods": [
+                131072,
+                4162384,
+                8161143
+              ],
+              "split": 1,
+              "table_index": 9
+            },
+            {
+              "ids": [
+                1,
+                131283,
+                1144528,
+                4148542
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223637,
+              "order": 4,
+              "power_mods": [
+                131072,
+                4159024,
+                7268888
+              ],
+              "split": 2,
+              "table_index": 10
+            },
+            {
+              "ids": [
+                1,
+                131283,
+                1141162,
+                2547321
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223639,
+              "order": 4,
+              "power_mods": [
+                131072,
+                4155664,
+                6376805
+              ],
+              "split": 3,
+              "table_index": 11
+            }
+          ],
+          "input_ids": [
+            1,
+            211,
+            223,
+            227
+          ],
+          "official_hashes": [
+            {
+              "ids": [
+                1,
+                131283,
+                7209181,
+                8782049
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223617,
+              "order": 2,
+              "power_mods": [
+                131072
+              ],
+              "split": 0,
+              "table_index": 0
+            },
+            {
+              "ids": [
+                1,
+                131283,
+                7209177,
+                8782045
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223619,
+              "order": 2,
+              "power_mods": [
+                131072
+              ],
+              "split": 1,
+              "table_index": 1
+            },
+            {
+              "ids": [
+                1,
+                131283,
+                7209173,
+                8782041
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223621,
+              "order": 2,
+              "power_mods": [
+                131072
+              ],
+              "split": 2,
+              "table_index": 2
+            },
+            {
+              "ids": [
+                1,
+                131283,
+                7209169,
+                8782037
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223623,
+              "order": 2,
+              "power_mods": [
+                131072
+              ],
+              "split": 3,
+              "table_index": 3
+            },
+            {
+              "ids": [
+                1,
+                131283,
+                1164724,
+                1134482
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223625,
+              "order": 3,
+              "power_mods": [
+                131072,
+                4179184
+              ],
+              "split": 0,
+              "table_index": 4
+            },
+            {
+              "ids": [
+                1,
+                131283,
+                1161358,
+                425344
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223627,
+              "order": 3,
+              "power_mods": [
+                131072,
+                4175824
+              ],
+              "split": 1,
+              "table_index": 5
+            },
+            {
+              "ids": [
+                1,
+                131283,
+                1157992,
+                9939835
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223629,
+              "order": 3,
+              "power_mods": [
+                131072,
+                4172464
+              ],
+              "split": 2,
+              "table_index": 6
+            },
+            {
+              "ids": [
+                1,
+                131283,
+                1154626,
+                9230699
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223631,
+              "order": 3,
+              "power_mods": [
+                131072,
+                4169104
+              ],
+              "split": 3,
+              "table_index": 7
+            },
+            {
+              "ids": [
+                1,
+                131283,
+                1151260,
+                7351500
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223633,
+              "order": 4,
+              "power_mods": [
+                131072,
+                4165744,
+                9053570
+              ],
+              "split": 0,
+              "table_index": 8
+            },
+            {
+              "ids": [
+                1,
+                131283,
+                1147894,
+                5749935
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223635,
+              "order": 4,
+              "power_mods": [
+                131072,
+                4162384,
+                8161143
+              ],
+              "split": 1,
+              "table_index": 9
+            },
+            {
+              "ids": [
+                1,
+                131283,
+                1144528,
+                4148542
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223637,
+              "order": 4,
+              "power_mods": [
+                131072,
+                4159024,
+                7268888
+              ],
+              "split": 2,
+              "table_index": 10
+            },
+            {
+              "ids": [
+                1,
+                131283,
+                1141162,
+                2547321
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223639,
+              "order": 4,
+              "power_mods": [
+                131072,
+                4155664,
+                6376805
+              ],
+              "split": 3,
+              "table_index": 11
+            }
+          ]
+        },
+        "sequence_1": {
+          "cross_check_equal": true,
+          "independent_hashes": [
+            {
+              "ids": [
+                1,
+                131379,
+                9568255,
+                311,
+                10092854
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223617,
+              "order": 2,
+              "power_mods": [
+                131072
+              ],
+              "split": 0,
+              "table_index": 0
+            },
+            {
+              "ids": [
+                1,
+                131379,
+                9568249,
+                311,
+                10092848
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223619,
+              "order": 2,
+              "power_mods": [
+                131072
+              ],
+              "split": 1,
+              "table_index": 1
+            },
+            {
+              "ids": [
+                1,
+                131379,
+                9568243,
+                311,
+                10092842
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223621,
+              "order": 2,
+              "power_mods": [
+                131072
+              ],
+              "split": 2,
+              "table_index": 2
+            },
+            {
+              "ids": [
+                1,
+                131379,
+                9568237,
+                311,
+                10092836
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223623,
+              "order": 2,
+              "power_mods": [
+                131072
+              ],
+              "split": 3,
+              "table_index": 3
+            },
+            {
+              "ids": [
+                1,
+                131379,
+                3523790,
+                311,
+                10092830
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223625,
+              "order": 3,
+              "power_mods": [
+                131072,
+                4179184
+              ],
+              "split": 0,
+              "table_index": 4
+            },
+            {
+              "ids": [
+                1,
+                131379,
+                3520422,
+                311,
+                10092824
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223627,
+              "order": 3,
+              "power_mods": [
+                131072,
+                4175824
+              ],
+              "split": 1,
+              "table_index": 5
+            },
+            {
+              "ids": [
+                1,
+                131379,
+                3517054,
+                311,
+                10092818
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223629,
+              "order": 3,
+              "power_mods": [
+                131072,
+                4172464
+              ],
+              "split": 2,
+              "table_index": 6
+            },
+            {
+              "ids": [
+                1,
+                131379,
+                3513686,
+                311,
+                10092812
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223631,
+              "order": 3,
+              "power_mods": [
+                131072,
+                4169104
+              ],
+              "split": 3,
+              "table_index": 7
+            },
+            {
+              "ids": [
+                1,
+                131379,
+                3510318,
+                311,
+                10092806
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223633,
+              "order": 4,
+              "power_mods": [
+                131072,
+                4165744,
+                9053570
+              ],
+              "split": 0,
+              "table_index": 8
+            },
+            {
+              "ids": [
+                1,
+                131379,
+                3506950,
+                311,
+                10092800
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223635,
+              "order": 4,
+              "power_mods": [
+                131072,
+                4162384,
+                8161143
+              ],
+              "split": 1,
+              "table_index": 9
+            },
+            {
+              "ids": [
+                1,
+                131379,
+                3503582,
+                311,
+                10092794
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223637,
+              "order": 4,
+              "power_mods": [
+                131072,
+                4159024,
+                7268888
+              ],
+              "split": 2,
+              "table_index": 10
+            },
+            {
+              "ids": [
+                1,
+                131379,
+                3500214,
+                311,
+                10092788
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223639,
+              "order": 4,
+              "power_mods": [
+                131072,
+                4155664,
+                6376805
+              ],
+              "split": 3,
+              "table_index": 11
+            }
+          ],
+          "input_ids": [
+            1,
+            307,
+            2,
+            311,
+            313
+          ],
+          "official_hashes": [
+            {
+              "ids": [
+                1,
+                131379,
+                9568255,
+                311,
+                10092854
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223617,
+              "order": 2,
+              "power_mods": [
+                131072
+              ],
+              "split": 0,
+              "table_index": 0
+            },
+            {
+              "ids": [
+                1,
+                131379,
+                9568249,
+                311,
+                10092848
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223619,
+              "order": 2,
+              "power_mods": [
+                131072
+              ],
+              "split": 1,
+              "table_index": 1
+            },
+            {
+              "ids": [
+                1,
+                131379,
+                9568243,
+                311,
+                10092842
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223621,
+              "order": 2,
+              "power_mods": [
+                131072
+              ],
+              "split": 2,
+              "table_index": 2
+            },
+            {
+              "ids": [
+                1,
+                131379,
+                9568237,
+                311,
+                10092836
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223623,
+              "order": 2,
+              "power_mods": [
+                131072
+              ],
+              "split": 3,
+              "table_index": 3
+            },
+            {
+              "ids": [
+                1,
+                131379,
+                3523790,
+                311,
+                10092830
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223625,
+              "order": 3,
+              "power_mods": [
+                131072,
+                4179184
+              ],
+              "split": 0,
+              "table_index": 4
+            },
+            {
+              "ids": [
+                1,
+                131379,
+                3520422,
+                311,
+                10092824
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223627,
+              "order": 3,
+              "power_mods": [
+                131072,
+                4175824
+              ],
+              "split": 1,
+              "table_index": 5
+            },
+            {
+              "ids": [
+                1,
+                131379,
+                3517054,
+                311,
+                10092818
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223629,
+              "order": 3,
+              "power_mods": [
+                131072,
+                4172464
+              ],
+              "split": 2,
+              "table_index": 6
+            },
+            {
+              "ids": [
+                1,
+                131379,
+                3513686,
+                311,
+                10092812
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223631,
+              "order": 3,
+              "power_mods": [
+                131072,
+                4169104
+              ],
+              "split": 3,
+              "table_index": 7
+            },
+            {
+              "ids": [
+                1,
+                131379,
+                3510318,
+                311,
+                10092806
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223633,
+              "order": 4,
+              "power_mods": [
+                131072,
+                4165744,
+                9053570
+              ],
+              "split": 0,
+              "table_index": 8
+            },
+            {
+              "ids": [
+                1,
+                131379,
+                3506950,
+                311,
+                10092800
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223635,
+              "order": 4,
+              "power_mods": [
+                131072,
+                4162384,
+                8161143
+              ],
+              "split": 1,
+              "table_index": 9
+            },
+            {
+              "ids": [
+                1,
+                131379,
+                3503582,
+                311,
+                10092794
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223637,
+              "order": 4,
+              "power_mods": [
+                131072,
+                4159024,
+                7268888
+              ],
+              "split": 2,
+              "table_index": 10
+            },
+            {
+              "ids": [
+                1,
+                131379,
+                3500214,
+                311,
+                10092788
+              ],
+              "lookup_mask": [
+                true,
+                true,
+                true,
+                true,
+                true
+              ],
+              "modulus": 10223639,
+              "order": 4,
+              "power_mods": [
+                131072,
+                4155664,
+                6376805
+              ],
+              "split": 3,
+              "table_index": 11
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "deterministic_seeds": {
+    "numpy": 20260725,
+    "python": 20260725,
+    "torch": 20260725
+  },
+  "identities": {
+    "config_sha256": "9115e9785603b04382a45ebece9092235281f309f56f35eb4e43bcf53150b2a2",
+    "tokenizer_config_sha256": "22dddd0eb59965adf6e4861a7c8a9ed803595cd16bc86ed6e2d4ed915b9718d4"
+  },
+  "kind": "longcat-next-weight-free-ngram",
+  "reference_provenance": {
+    "independent": "standalone shifted() and hashes() implementation",
+    "official": "AST-isolated methods executed from pinned modeling_longcat_ngram.py",
+    "policy": "generation fails on any mismatch"
+  },
+  "schema_version": 1,
+  "software_versions": {
+    "numpy": "not-installed",
+    "platform": "Linux-6.12.13-x86_64-with-glibc2.39",
+    "python": "3.12.13",
+    "safetensors": "not-installed",
+    "torch": "2.13.0",
+    "transformers": "not-installed"
+  },
+  "source_revisions": {
+    "hugging_face_model": "0cf0631862402ff36366e513e4023d22e7e5c84c",
+    "longcat_next": "0cf0631862402ff36366e513e4023d22e7e5c84c",
+    "longcat_next_inference": "70ab100beecaaa77c1f45c0cf9ec89a4faf20fd8",
+    "longcat_next_repository": "49dc718151f9943a9dca2c1169541934bb85d83e"
+  }
+}
