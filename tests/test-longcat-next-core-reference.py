@@ -172,7 +172,7 @@ class CoreHelperTests(unittest.TestCase):
             is_bf16_supported=lambda: True)
         fake_torch = types.SimpleNamespace(
             __version__="2.6.0", version=types.SimpleNamespace(cuda="12.6"), cuda=cuda)
-        packages = {"torch": {"installed_version": "2.6.0"},
+        packages = {"torch": {"installed_version": "2.6.0", "version_ok": True},
                     "torchaudio": {"installed_version": "2.6.0"},
                     "torchvision": {"installed_version": "0.21.0"}}
         with mock.patch.object(core.importlib, "import_module", return_value=fake_torch):
