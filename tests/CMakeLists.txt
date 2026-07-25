@@ -166,6 +166,13 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     llama_build_and_test(test-longcat-memory.cpp)
     target_include_directories(test-longcat-memory PRIVATE ${PROJECT_SOURCE_DIR}/src)
     llama_build(longcat-next-capture.cpp)
+    add_test(NAME test-longcat-next-capture-self-test COMMAND longcat-next-capture --self-test)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if (Python3_Interpreter_FOUND)
+        add_test(NAME test-longcat-next-parity-harness
+            COMMAND ${CMAKE_COMMAND} -E env PYTHONPATH=${PROJECT_SOURCE_DIR}
+                ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-longcat-next-parity.py)
+    endif()
     target_include_directories(test-chat PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
     target_link_libraries(test-chat PRIVATE server-context)
     # TODO: disabled on loongarch64 because the ggml-ci node lacks Python 3.8

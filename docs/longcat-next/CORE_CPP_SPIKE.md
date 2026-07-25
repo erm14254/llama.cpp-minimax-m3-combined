@@ -39,8 +39,20 @@ The callback mapping is stable and explicit: `inp_embd` is the base embedding,
 `ngram_proj-0..11` are the masked raw projections, `inp_embd_ngram` is the fused
 pre-trunk embedding, `l_out-0/1/2/27` are physical blocks 0, 1, 2, and 27, and
 `result_norm` is the final normalized hidden state. Captures are lossless raw arrays
-with a dtype/shape manifest. The machine-readable report contains errors but a null
-tolerance.
+with a dtype/shape manifest. The machine-readable report records errors, the frozen per-array tolerances, normalized
+violations, and pass/fail results.
+
+The Python driver creates one case manifest directly from the accepted NPZ integer
+arrays. One capture-process invocation loads the GGUF once, creates an isolated
+context per case, and uses a runtime context sized to the longest fixture plus eight
+generated tokens and a 16-token safety margin. Masked leading padding is assigned to
+isolated auxiliary sequence IDs; attended tokens use sequence zero and the exact
+reference positions. Embedding surfaces compare every position. Physical-block and
+final hidden surfaces compare only positions selected by `attention_mask`.
+
+`tests/fixtures/longcat-next/stage1-tolerances.json` freezes the BF16/F16 combined
+absolute-relative criterion before local execution. A failure requires diagnosis;
+the checked thresholds must not be widened after inspecting C++ results.
 
 Image/audio inputs and heads, MTMD, server integration, MTP, decoders, quantization
 tuning, custom accelerator kernels, and performance claims remain out of scope.
