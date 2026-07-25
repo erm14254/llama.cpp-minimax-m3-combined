@@ -4,6 +4,7 @@
 #include "llama-batch.h"
 #include "llama-hparams.h"
 #include "llama-adapter.h"
+#include "llama-longcat-history.h"
 
 #include <cstdint>
 #include <deque>
@@ -658,7 +659,7 @@ public:
 };
 
 // LONGCAT_NGRAM_POSITION_AWARE_HISTORY
-using llm_ngram_token_history = std::map<llama_seq_id, std::deque<std::pair<llama_pos, llama_token>>>;
+using llm_ngram_token_history = llama_longcat_token_history;
 
 
 struct llm_graph_longcat_moe_route {
@@ -693,6 +694,8 @@ public:
             int32_t vocab_size,     // model vocab size
             int64_t m,              // ngram_vocab_size_ratio * vocab_size
             int32_t eos_token_id,   // EOS token that terminates n-gram history segments
+            int32_t ignored_start,
+            int32_t ignored_count,
             llm_ngram_token_history * token_history) // persistent history (owned by llm_graph_result)
         : n_embedders(n_embedders)
         , n_neighbor(n_neighbor)
@@ -700,6 +703,8 @@ public:
         , vocab_size(vocab_size)
         , m(m)
         , eos_token_id(eos_token_id)
+        , ignored_start(ignored_start)
+        , ignored_count(ignored_count)
         , token_history(token_history) {}
     virtual ~llm_graph_input_ngram() = default;
 
@@ -708,6 +713,7 @@ public:
     // one I32 [n_tokens] tensor per embedder
     static constexpr int NGRAM_MAX_EMBEDDERS = 12;
     ggml_tensor * ngram_ids[NGRAM_MAX_EMBEDDERS] = {};
+    ggml_tensor * preserve_base = nullptr;
 
     const int32_t n_embedders;
     const int32_t n_neighbor;
@@ -715,6 +721,8 @@ public:
     const int32_t vocab_size;
     const int64_t m;
     const int32_t eos_token_id;
+    const int32_t ignored_start;
+    const int32_t ignored_count;
 
     llm_ngram_token_history * token_history;
 };
@@ -774,6 +782,8 @@ struct llm_graph_params {
     llm_graph_cb cb;
 
     llm_graph_result * res;
+
+    llama_longcat_token_history * longcat_history = nullptr;
 
     // return true if the "other" params would result in a graph with the same topology as with the current params
     //   having the same topology allows us to reuse the graph in some cases

@@ -76,7 +76,7 @@ static llama_ubatch make_ubatch(
 
 class production_ngram_runner {
 public:
-    production_ngram_runner() {
+    production_ngram_runner(int32_t ignored_start = 0, int32_t ignored_count = 0) {
         struct ggml_init_params params = {
             /* .mem_size   = */ ggml_tensor_overhead() * 32,
             /* .mem_buffer = */ nullptr,
@@ -87,9 +87,12 @@ public:
 
         input = std::make_unique<llm_graph_input_ngram>(
             LONGCAT_EMBEDDERS, LONGCAT_NEIGHBOR, LONGCAT_SPLIT,
-            LONGCAT_VOCAB, LONGCAT_M, LONGCAT_EOS, &history);
+            LONGCAT_VOCAB, LONGCAT_M, LONGCAT_EOS, ignored_start, ignored_count, &history);
         for (int i = 0; i < LONGCAT_EMBEDDERS; ++i) {
             input->ngram_ids[i] = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 16);
+        }
+        if (ignored_count > 0) {
+            input->preserve_base = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 16);
         }
         backend = ggml_backend_cpu_init();
         GGML_ASSERT(backend != nullptr);
@@ -107,6 +110,22 @@ public:
         const auto ubatch = make_ubatch(std::vector<int32_t>{ token }, std::vector<int32_t>{ pos }, std::vector<int32_t>{ seq_id });
         input->set_input(&ubatch);
         return read_row(0);
+    }
+
+    std::array<int32_t, LONGCAT_EMBEDDERS> append_all(int32_t token, int32_t pos, int32_t seq_id = 0) {
+        const auto ubatch = make_ubatch(std::vector<int32_t>{ token }, std::vector<int32_t>{ pos }, std::vector<int32_t>{ seq_id });
+        input->set_input(&ubatch);
+        std::array<int32_t, LONGCAT_EMBEDDERS> result = {};
+        for (int i = 0; i < LONGCAT_EMBEDDERS; ++i) {
+            ggml_backend_tensor_get(input->ngram_ids[i], &result[i], 0, sizeof(result[i]));
+        }
+        return result;
+    }
+
+    float preserve_mask() const {
+        float result = 0.0f;
+        ggml_backend_tensor_get(input->preserve_base, &result, 0, sizeof(result));
+        return result;
     }
 
     std::array<int32_t, 3> append_many(
@@ -257,8 +276,31 @@ static void test_production_ngram(testing & t) {
     t.assert_equal("shared sequence history updated b", std::string("[0:10,1:11,2:12,3:13]"), shared.history_trace(1));
 }
 
+static void test_longcat_next_ignored_interval(testing & t) {
+    for (int32_t token = 131072; token < 131125; ++token) {
+        production_ngram_runner runner(131072, 53);
+        const auto hashes = runner.append_all(token, 0);
+        for (int i = 0; i < LONGCAT_EMBEDDERS; ++i) {
+            t.assert_equal("ignored token hash zero", 0, hashes[i]);
+        }
+        t.assert_equal("ignored token preserves base", 1.0f, runner.preserve_mask());
+    }
+
+    production_ngram_runner literal_zero(131072, 53);
+    const auto zero_hashes = literal_zero.append_all(0, 0);
+    for (int i = 0; i < LONGCAT_EMBEDDERS; ++i) {
+        t.assert_equal("literal zero hash zero", 0, zero_hashes[i]);
+    }
+    t.assert_equal("literal zero still scales", 0.0f, literal_zero.preserve_mask());
+
+    production_ngram_runner max_text(131072, 53);
+    max_text.append_all(131071, 0);
+    t.assert_equal("max text token still scales", 0.0f, max_text.preserve_mask());
+}
+
 int main() {
     testing t(std::cout);
     t.test("longcat production ngram", test_production_ngram);
+    t.test("longcat-next ignored interval", test_longcat_next_ignored_interval);
     return t.summary();
 }

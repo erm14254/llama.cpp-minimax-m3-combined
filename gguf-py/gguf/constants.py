@@ -131,6 +131,11 @@ class Keys:
         NGRAM_NEIGHBOR_NUM                = "{arch}.ngram.neighbor_num"
         NGRAM_SPLIT_NUM                   = "{arch}.ngram.split_num"
         NGRAM_VOCAB_SIZE_RATIO            = "{arch}.ngram.vocab_size_ratio"
+        NGRAM_HASH_VOCAB_SIZE             = "{arch}.ngram.hash_vocab_size"
+        NGRAM_INPUT_OUTPUT_SIZE           = "{arch}.ngram.input_output_vocab_size"
+        NGRAM_SOURCE_VOCAB_SIZE           = "{arch}.ngram.source_vocab_size"
+        NGRAM_IGNORED_START               = "{arch}.ngram.ignored_start"
+        NGRAM_IGNORED_COUNT               = "{arch}.ngram.ignored_count"
         NUM_DEEPSTACK_LAYERS              = "{arch}.n_deepstack_layers"
         DEEPSTACK_MAPPING                 = "{arch}.deepstack_mapping"
         POOLING_TYPE                      = "{arch}.pooling_type"
@@ -547,6 +552,7 @@ class MODEL_ARCH(IntEnum):
     TALKIE           = auto()
     MELLUM           = auto()
     LONGCAT_FLASH_NGRAM = auto()
+    LONGCAT_NEXT        = auto()
 
 
 class VISION_PROJECTOR_TYPE(IntEnum):
@@ -1134,6 +1140,7 @@ MODEL_ARCH_NAMES: dict[MODEL_ARCH, str] = {
     MODEL_ARCH.TALKIE:           "talkie",
     MODEL_ARCH.MELLUM:           "mellum",
     MODEL_ARCH.LONGCAT_FLASH_NGRAM: "longcat-flash-ngram",
+    MODEL_ARCH.LONGCAT_NEXT:        "longcat-next",
 }
 
 VISION_PROJECTOR_TYPE_NAMES: dict[VISION_PROJECTOR_TYPE, str] = {
@@ -3287,6 +3294,34 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.NEXTN_HNORM,
         MODEL_TENSOR.NEXTN_SHARED_HEAD_HEAD,
         MODEL_TENSOR.NEXTN_SHARED_HEAD_NORM,
+    ],
+    MODEL_ARCH.LONGCAT_NEXT: [
+        MODEL_TENSOR.TOKEN_EMBD,
+        MODEL_TENSOR.OUTPUT_NORM,
+        MODEL_TENSOR.OUTPUT,
+        MODEL_TENSOR.ATTN_NORM,
+        MODEL_TENSOR.ATTN_Q_A,
+        MODEL_TENSOR.ATTN_Q_B,
+        MODEL_TENSOR.ATTN_KV_A_MQA,
+        MODEL_TENSOR.ATTN_K_B,
+        MODEL_TENSOR.ATTN_V_B,
+        MODEL_TENSOR.ATTN_Q_A_NORM,
+        MODEL_TENSOR.ATTN_KV_A_NORM,
+        MODEL_TENSOR.ATTN_OUT,
+        MODEL_TENSOR.FFN_GATE_INP,
+        MODEL_TENSOR.FFN_NORM,
+        MODEL_TENSOR.FFN_GATE,
+        MODEL_TENSOR.FFN_DOWN,
+        MODEL_TENSOR.FFN_UP,
+        MODEL_TENSOR.FFN_GATE_EXP,
+        MODEL_TENSOR.FFN_DOWN_EXP,
+        MODEL_TENSOR.FFN_UP_EXP,
+        MODEL_TENSOR.FFN_GATE_SHEXP,
+        MODEL_TENSOR.FFN_DOWN_SHEXP,
+        MODEL_TENSOR.FFN_UP_SHEXP,
+        MODEL_TENSOR.FFN_EXP_PROBS_B,
+        MODEL_TENSOR.NGRAM_EMBD,
+        MODEL_TENSOR.NGRAM_PROJ,
     ],
     MODEL_ARCH.ERNIE4_5_MOE: [
         MODEL_TENSOR.TOKEN_EMBD,

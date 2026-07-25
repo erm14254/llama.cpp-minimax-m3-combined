@@ -7,6 +7,7 @@
 #include "llama-batch.h"
 #include "llama-io.h"
 #include "llama-memory.h"
+#include "llama-memory-longcat.h"
 #include "llama-mmap.h"
 #include "llama-model.h"
 #include "llama-ext.h"
@@ -2339,7 +2340,9 @@ uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
         model.arch == LLM_ARCH_QWEN35 ||
         model.arch == LLM_ARCH_QWEN35MOE ||
         model.arch == LLM_ARCH_DEEPSEEK4 ||
-        model.arch == LLM_ARCH_LONGCAT_FLASH_NGRAM) {
+        model.arch == LLM_ARCH_LONGCAT_FLASH_NGRAM ||
+        model.arch == LLM_ARCH_LONGCAT_NEXT) {
+        // LongCat-Next shares the same 28-block MLA/MoE graph size profile.
         return std::max<uint32_t>(n_tokens * 40, 32u * model.n_tensors());
     }
     uint32_t res = std::max<uint32_t>(1024u, 8u*model.n_tensors());
@@ -2417,7 +2420,7 @@ llm_graph_params llama_context::graph_params(
                       const llama_ubatch & ubatch,
             const llama_memory_context_i * mctx,
                           llm_graph_type   gtype) const {
-    return {
+    llm_graph_params params = {
         /*.arch        =*/ model.arch,
         /*.hparams     =*/ model.hparams,
         /*.cparams     =*/ cparams,
@@ -2434,6 +2437,10 @@ llm_graph_params llama_context::graph_params(
         /*.cb          =*/ graph_get_cb(),
         /*.res         =*/ res,
     };
+    if (auto * longcat = dynamic_cast<llama_memory_longcat *>(memory.get())) {
+        params.longcat_history = &longcat->history;
+    }
+    return params;
 }
 
 ggml_status llama_context::graph_compute(

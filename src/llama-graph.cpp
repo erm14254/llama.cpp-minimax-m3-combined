@@ -1231,6 +1231,16 @@ void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
     const int32_t n = n_neighbor;
     const int32_t k = n_split;
 
+    if (preserve_base) {
+        std::vector<float> mask(n_tokens, 0.0f);
+        for (int64_t i = 0; i < n_tokens; ++i) {
+            const llama_token token = ubatch->token[i];
+            mask[i] = ignored_count > 0 && token >= ignored_start &&
+                token < ignored_start + ignored_count ? 1.0f : 0.0f;
+        }
+        ggml_backend_tensor_set(preserve_base, mask.data(), 0, mask.size() * sizeof(float));
+    }
+
     // Reconcile speculative rollback before computing hashes. Target
     // verification evaluates sampled + draft tokens together. Rejected draft
     // KV is removed later, so the next decode starts again at the rejected
@@ -1316,6 +1326,11 @@ void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
         return token_at(row, seq_id, prev_pos);
     };
 
+    auto hash_token = [&](llama_token token) {
+        return ignored_count > 0 && token >= ignored_start &&
+            token < ignored_start + ignored_count ? (llama_token) 0 : token;
+    };
+
     for (int64_t i = 0; i < n_tokens; ++i) {
         const llama_seq_id seq_id0 = ubatch->seq_id[i][0];
         const llama_pos pos = ubatch->pos[i];
@@ -1353,9 +1368,9 @@ void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
                 const llama_seq_id seq_id = ubatch->seq_id[i][0];
                 const llama_pos pos = ubatch->pos[i];
 
-                int64_t hash = (int64_t) ubatch->token[i];
+                int64_t hash = (int64_t) hash_token(ubatch->token[i]);
                 for (int32_t p = 0; p < ng - 1; ++p) {
-                    const llama_token prev = shifted_token_at(i, seq_id, pos, p + 1);
+                    const llama_token prev = hash_token(shifted_token_at(i, seq_id, pos, p + 1));
                     hash += (int64_t) prev * power_mods[p];
                 }
 

@@ -66,7 +66,9 @@ void llama_model_longcat_flash_ngram::load_arch_tensors(llama_model_loader &) {
         GGML_ASSERT(n_ngram > 0 && n_ngram <= (uint32_t) llama_model::NGRAM_MAX);
 
         const int64_t ngram_emb_dim = n_embd / n_ngram;
-        const int64_t ngram_m = (int64_t) hparams.ngram_vocab_size_ratio * n_vocab;
+        const int64_t hash_vocab = hparams.ngram_hash_vocab_size > 0
+            ? hparams.ngram_hash_vocab_size : n_vocab;
+        const int64_t ngram_m = (int64_t) hparams.ngram_vocab_size_ratio * hash_vocab;
 
         for (uint32_t j = 0; j < n_ngram; ++j) {
             const int64_t ngram_vocab_j = ngram_m + j * 2 + 1;
@@ -336,7 +338,8 @@ llama_model_longcat_flash_ngram::graph::graph(
         const uint32_t n_neighbor = hparams.ngram_neighbor_num;    // 4
         const uint32_t n_split    = hparams.ngram_split_num;       // 4
         const uint32_t n_ngram    = (n_neighbor - 1) * n_split;    // 12
-        const int64_t  vocab_size   = model.tok_embd->ne[1];
+        const int64_t  vocab_size   = hparams.ngram_hash_vocab_size > 0
+            ? hparams.ngram_hash_vocab_size : model.tok_embd->ne[1];
         const int64_t  m            = (int64_t)hparams.ngram_vocab_size_ratio * vocab_size;
         const int32_t  eos_token_id = model.vocab.token_eos();
         GGML_ASSERT(eos_token_id == 2);
@@ -345,7 +348,14 @@ llama_model_longcat_flash_ngram::graph::graph(
         auto inp = std::make_unique<llm_graph_input_ngram>(
             (int32_t)n_ngram, (int32_t)n_neighbor, (int32_t)n_split,
             (int32_t)vocab_size, m, eos_token_id,
-            &res->ngram_token_history);
+            (int32_t) hparams.ngram_ignored_start,
+            (int32_t) hparams.ngram_ignored_count,
+            params.longcat_history ? params.longcat_history : &res->ngram_token_history);
+
+        inp->preserve_base = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_tokens);
+        ggml_set_input(inp->preserve_base);
+
+        ggml_tensor * base_embedding = inpL;
 
         for (uint32_t j = 0; j < n_ngram; j++) {
             inp->ngram_ids[j] = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
@@ -367,6 +377,11 @@ llama_model_longcat_flash_ngram::graph::graph(
 
         // Normalize: x = (base + sum_of_projections) / (1 + n_ngram)
         inpL = ggml_scale(ctx0, inpL, 1.0f / (1.0f + (float)n_ngram));
+        if (hparams.ngram_ignored_count > 0) {
+            ggml_tensor * mask = ggml_reshape_2d(ctx0, inp->preserve_base, 1, n_tokens);
+            inpL = ggml_add(ctx0, inpL,
+                ggml_mul(ctx0, ggml_sub(ctx0, base_embedding, inpL), mask));
+        }
         cb(inpL, "inp_embd_ngram", -1);
 
         res->add_input(std::move(inp));
