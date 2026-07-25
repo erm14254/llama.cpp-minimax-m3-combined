@@ -1308,6 +1308,11 @@ void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
         return (llama_token) 0;
     };
 
+    auto hash_token = [&](llama_token token) {
+        return ignored_count > 0 && token >= ignored_start &&
+            token < ignored_start + ignored_count ? (llama_token) 0 : token;
+    };
+
     auto shifted_token_at = [&](int64_t row, llama_seq_id seq_id, llama_pos pos, int32_t shift) {
         const llama_pos prev_pos = pos - shift;
         if (prev_pos < 0) {
@@ -1318,17 +1323,13 @@ void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
         // segments. The EOS token itself can see earlier tokens in its segment,
         // but tokens after EOS cannot see the EOS or anything before it.
         for (llama_pos p = prev_pos; p < pos; ++p) {
-            if (token_at(row, seq_id, p) == eos_token_id) {
+            const llama_token raw = token_at(row, seq_id, p);
+            if (raw == eos_token_id || hash_token(raw) == 0) {
                 return (llama_token) 0;
             }
         }
 
         return token_at(row, seq_id, prev_pos);
-    };
-
-    auto hash_token = [&](llama_token token) {
-        return ignored_count > 0 && token >= ignored_start &&
-            token < ignored_start + ignored_count ? (llama_token) 0 : token;
     };
 
     for (int64_t i = 0; i < n_tokens; ++i) {
@@ -1368,10 +1369,13 @@ void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
                 const llama_seq_id seq_id = ubatch->seq_id[i][0];
                 const llama_pos pos = ubatch->pos[i];
 
-                int64_t hash = (int64_t) hash_token(ubatch->token[i]);
-                for (int32_t p = 0; p < ng - 1; ++p) {
-                    const llama_token prev = hash_token(shifted_token_at(i, seq_id, pos, p + 1));
-                    hash += (int64_t) prev * power_mods[p];
+                const llama_token current = hash_token(ubatch->token[i]);
+                int64_t hash = current;
+                if (current != 0) {
+                    for (int32_t p = 0; p < ng - 1; ++p) {
+                        const llama_token prev = hash_token(shifted_token_at(i, seq_id, pos, p + 1));
+                        hash += (int64_t) prev * power_mods[p];
+                    }
                 }
 
                 hash_ids[i] = (int32_t) (hash % emb_vocab_dim);
@@ -1382,6 +1386,14 @@ void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
                 hash_ids.data(),
                 0,
                 n_tokens * sizeof(int32_t));
+            if (lookup_masks[index]) {
+                std::vector<float> lookup_mask(n_tokens);
+                for (int64_t i = 0; i < n_tokens; ++i) {
+                    lookup_mask[i] = hash_ids[i] != 0 ? 1.0f : 0.0f;
+                }
+                ggml_backend_tensor_set(lookup_masks[index], lookup_mask.data(), 0,
+                    n_tokens * sizeof(float));
+            }
         }
     }
 

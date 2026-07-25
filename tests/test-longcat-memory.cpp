@@ -1,10 +1,23 @@
 #include "llama-io.h"
 #include "llama-memory-longcat.h"
+#include "llama-batch.h"
 #include "testing.h"
 
 #include <cstring>
 #include <iostream>
 #include <vector>
+
+class fake_context final : public llama_memory_context_i {
+public:
+    explicit fake_context(bool succeed) : succeed(succeed) {}
+    bool next() override { return false; }
+    bool apply() override { ++apply_count; return succeed; }
+    const llama_ubatch & get_ubatch() const override { return ubatch; }
+    llama_memory_status get_status() const override { return LLAMA_MEMORY_STATUS_SUCCESS; }
+    bool succeed;
+    int apply_count = 0;
+    llama_ubatch ubatch = {};
+};
 
 class fake_memory final : public llama_memory_i {
   public:
@@ -105,8 +118,42 @@ static void test_lifecycle(testing & t) {
     t.assert_equal("clear history", (size_t) 0, restored.history.size());
 }
 
+static void test_atomic_context(testing & t) {
+    llama_memory_longcat memory(new fake_memory());
+    memory.history[0] = { { 0, 10 } };
+    {
+        auto raw = std::make_unique<fake_context>(false);
+        llama_memory_longcat_context context(memory, std::move(raw));
+        context.pending_history()[0].emplace_back(1, 11);
+        t.assert_true("failed underlying apply", !context.apply());
+        t.assert_equal("failure leaves committed history", (size_t) 1, memory.history[0].size());
+    }
+    {
+        auto raw = std::make_unique<fake_context>(true);
+        llama_memory_longcat_context context(memory, std::move(raw));
+        t.assert_equal("retry starts from committed history", (size_t) 1, context.pending_history()[0].size());
+        context.pending_history()[0].emplace_back(1, 12);
+        t.assert_true("successful underlying apply", context.apply());
+        t.assert_equal("apply alone is not compute commit", (size_t) 1, memory.history[0].size());
+        context.commit();
+        t.assert_equal("successful compute commits pending", (size_t) 2, memory.history[0].size());
+    }
+    {
+        auto raw = std::make_unique<fake_context>(true);
+        llama_memory_longcat_context cancelled(memory, std::move(raw));
+        cancelled.pending_history()[0].emplace_back(2, 13);
+        t.assert_true("cancelled apply prepared", cancelled.apply());
+    }
+    t.assert_equal("destruction without compute commit discards", (size_t) 2, memory.history[0].size());
+
+    buffer_io partial;
+    memory.state_write(partial, -1, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+    t.assert_equal("partial-only excludes longcat history", sizeof(uint32_t), partial.data.size());
+}
+
 int main() {
     testing t(std::cout);
     t.test("longcat sequence memory lifecycle", test_lifecycle);
+    t.test("longcat atomic memory context", test_atomic_context);
     return t.summary();
 }

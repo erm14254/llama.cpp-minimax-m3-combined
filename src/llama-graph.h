@@ -713,6 +713,7 @@ public:
     // one I32 [n_tokens] tensor per embedder
     static constexpr int NGRAM_MAX_EMBEDDERS = 12;
     ggml_tensor * ngram_ids[NGRAM_MAX_EMBEDDERS] = {};
+    ggml_tensor * lookup_masks[NGRAM_MAX_EMBEDDERS] = {};
     ggml_tensor * preserve_base = nullptr;
 
     const int32_t n_embedders;
@@ -788,6 +789,11 @@ struct llm_graph_params {
     // return true if the "other" params would result in a graph with the same topology as with the current params
     //   having the same topology allows us to reuse the graph in some cases
     bool allow_reuse(const llm_graph_params & other) const {
+        // LongCat batch contexts own transactional working histories. A graph
+        // input must never retain the pointer from a destroyed prior context.
+        if (longcat_history != other.longcat_history) {
+            return false;
+        }
         // first check the ubatch
         bool can_reuse_ubatch =
             ubatch.equal_seqs() == other.ubatch.equal_seqs() &&

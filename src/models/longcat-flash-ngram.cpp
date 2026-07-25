@@ -360,6 +360,8 @@ llama_model_longcat_flash_ngram::graph::graph(
         for (uint32_t j = 0; j < n_ngram; j++) {
             inp->ngram_ids[j] = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
             ggml_set_input(inp->ngram_ids[j]);
+            inp->lookup_masks[j] = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_tokens);
+            ggml_set_input(inp->lookup_masks[j]);
         }
 
         // For each embedder: lookup embedding table, project to hidden_size, accumulate
@@ -370,6 +372,7 @@ llama_model_longcat_flash_ngram::graph::graph(
             cb(emb, "ngram_emb", j);
 
             ggml_tensor * proj = ggml_mul_mat(ctx0, model.ngram_proj[j], emb);
+            proj = ggml_mul(ctx0, proj, ggml_reshape_2d(ctx0, inp->lookup_masks[j], 1, n_tokens));
             cb(proj, "ngram_proj", j);
 
             inpL = ggml_add(ctx0, inpL, proj);

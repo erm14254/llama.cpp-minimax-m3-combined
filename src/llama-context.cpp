@@ -1382,6 +1382,10 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         return nullptr;
     }
 
+    if (auto * longcat = dynamic_cast<llama_memory_longcat_context *>(mctx)) {
+        longcat->commit();
+    }
+
     ret = GGML_STATUS_SUCCESS;
 
     return res;
@@ -1876,7 +1880,14 @@ int llama_context::decode(const llama_batch & batch_inp) {
 
                 LLAMA_LOG_WARN("%s: removing memory module entries for seq_id = %d, pos = [%d, +inf)\n", __func__, s, pos_min[s]);
 
-                memory->seq_rm(s, pos_min[s], -1);
+                if (auto * longcat = dynamic_cast<llama_memory_longcat *>(memory.get())) {
+                    // Graph input changed only the context's pending history;
+                    // roll back the already-applied underlying KV without
+                    // touching the committed LongCat history.
+                    longcat->rollback_underlying(s, pos_min[s], -1);
+                } else {
+                    memory->seq_rm(s, pos_min[s], -1);
+                }
             }
 
             switch (status) {
@@ -2437,8 +2448,8 @@ llm_graph_params llama_context::graph_params(
         /*.cb          =*/ graph_get_cb(),
         /*.res         =*/ res,
     };
-    if (auto * longcat = dynamic_cast<llama_memory_longcat *>(memory.get())) {
-        params.longcat_history = &longcat->history;
+    if (auto * longcat = dynamic_cast<const llama_memory_longcat_context *>(mctx)) {
+        params.longcat_history = &const_cast<llama_memory_longcat_context *>(longcat)->pending_history();
     }
     return params;
 }

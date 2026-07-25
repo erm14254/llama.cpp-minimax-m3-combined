@@ -8,8 +8,22 @@ static bool in_range(llama_pos pos, llama_pos p0, llama_pos p1) {
     return (p0 < 0 || pos >= p0) && (p1 < 0 || pos < p1);
 }
 
+llama_memory_longcat_context::llama_memory_longcat_context(
+        llama_memory_longcat & owner, llama_memory_context_ptr base)
+    : owner(owner), base(std::move(base)), pending(owner.history) {}
+
+bool llama_memory_longcat_context::next() { applied = false; return base->next(); }
+bool llama_memory_longcat_context::apply() { applied = base->apply(); return applied; }
+const llama_ubatch & llama_memory_longcat_context::get_ubatch() const { return base->get_ubatch(); }
+llama_memory_status llama_memory_longcat_context::get_status() const { return base->get_status(); }
+void llama_memory_longcat_context::commit() {
+    GGML_ASSERT(applied);
+    owner.history = pending;
+}
+
 llama_memory_context_ptr llama_memory_longcat::init_batch(llama_batch_allocr & b, uint32_t n, bool e) {
-    return base->init_batch(b, n, e);
+    auto context = base->init_batch(b, n, e);
+    return context ? std::make_unique<llama_memory_longcat_context>(*this, std::move(context)) : nullptr;
 }
 
 llama_memory_context_ptr llama_memory_longcat::init_full() {
@@ -58,6 +72,10 @@ bool llama_memory_longcat::seq_rm(llama_seq_id s, llama_pos p0, llama_pos p1) {
         ++it;
     }
     return true;
+}
+
+bool llama_memory_longcat::rollback_underlying(llama_seq_id s, llama_pos p0, llama_pos p1) {
+    return base->seq_rm(s, p0, p1);
 }
 
 void llama_memory_longcat::seq_cp(llama_seq_id src, llama_seq_id dst, llama_pos p0, llama_pos p1) {
@@ -115,6 +133,9 @@ void llama_memory_longcat::seq_div(llama_seq_id s, llama_pos p0, llama_pos p1, i
 
 void llama_memory_longcat::state_write(llama_io_write_i & io, llama_seq_id s, llama_state_seq_flags flags) const {
     base->state_write(io, s, flags);
+    if (flags & LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) {
+        return;
+    }
     uint32_t n_seq = s < 0 ? history.size() : history.count(s);
     io.write(&n_seq, sizeof(n_seq));
     for (const auto & [id, values] : history) {
@@ -133,6 +154,9 @@ void llama_memory_longcat::state_write(llama_io_write_i & io, llama_seq_id s, ll
 
 void llama_memory_longcat::state_read(llama_io_read_i & io, llama_seq_id s, llama_state_seq_flags flags) {
     base->state_read(io, s, flags);
+    if (flags & LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) {
+        return;
+    }
     if (s < 0) {
         history.clear();
     } else {
