@@ -11,12 +11,12 @@ CPP_TO_REFERENCE = {
     "inp_embd": "base_embedding", "inp_embd_ngram": "fused_pre_trunk_embedding",
     "l_out-0": "physical_block_00", "l_out-1": "physical_block_01",
     "l_out-2": "physical_block_02", "l_out-27": "physical_block_27",
-    "result_norm": "final_normalized_hidden_state",
+    "h_nextn": "final_normalized_hidden_state",
     "final_logits": "complete_final_position_logits",
 }
 for i in range(12):
     CPP_TO_REFERENCE[f"ngram_proj-{i}"] = f"ngram_projection_raw_{i:02d}"
-DIRECT_NAMES = set(CPP_TO_REFERENCE) - {"final_logits"}
+DIRECT_NAMES = set(CPP_TO_REFERENCE)
 INTEGER_SUFFIXES = ("input_ids", "attention_mask", "position_ids", "cache_position")
 
 
@@ -90,6 +90,11 @@ def exact_result(reference, candidate):
             "reference": reference.tolist(), "candidate": candidate.tolist()}
 
 
+def require_finite_logits(logits, case):
+    if not np.isfinite(logits).all():
+        raise ValueError(f"{case}: complete C++ direct logits contain NaN or infinity")
+
+
 def reference_key(npz, case, suffix, required=True):
     matches = [name for name in npz.files if name.startswith(case + "/") and name.endswith("/" + suffix)]
     if len(matches) != 1:
@@ -146,6 +151,7 @@ def compare_case(npz, metadata, case, capture_dir, precision, policy):
     # Every case derives decoding summaries from the direct-forward logits,
     # using the reference's reversed argsort tie rule.
     raw_logits = np.fromfile(capture_dir / "final_logits.f32.raw", dtype=np.float32).reshape(1, -1)
+    require_finite_logits(raw_logits, prefix)
     order = np.argsort(raw_logits, axis=-1)[:, ::-1]
     top_ids = order[:, :10].astype(np.int64)
     top_values = np.take_along_axis(raw_logits, top_ids, axis=-1)
@@ -179,15 +185,21 @@ def compare_case(npz, metadata, case, capture_dir, precision, policy):
     return {"inputs": exact, "floating_arrays": arrays, "exact_decoding": integer_results, "passed": passed}
 
 
-def main():
+def build_parser():
     p = argparse.ArgumentParser()
     p.add_argument("--model", type=Path, required=True)
     p.add_argument("--reference-dir", type=Path, required=True)
     p.add_argument("--precision", choices=("bf16", "f16"), required=True)
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--capture-exe", type=Path, required=True)
+    p.add_argument("--n-gpu-layers", type=int, default=0)
+    p.add_argument("--threads", type=int, default=0)
     p.add_argument("--tolerance-policy", type=Path, default=Path(__file__).parent / "fixtures/longcat-next/stage1-tolerances.json")
-    args = p.parse_args()
+    return p
+
+
+def main():
+    args = build_parser().parse_args()
     metadata = json.loads((args.reference_dir / f"longcat-next-core-{args.precision}.json").read_text(encoding="ascii"))
     npz = np.load(args.reference_dir / f"longcat-next-core-{args.precision}.npz", allow_pickle=False)
     policy = json.loads(args.tolerance_policy.read_text(encoding="ascii"))
@@ -198,7 +210,8 @@ def main():
     if greedy_cases != {"tokenizer_prompt_0", "tokenizer_prompt_1"}:
         raise ValueError(f"expected eight-token greedy references for both tokenizer prompts, got {greedy_cases}")
     subprocess.run([str(args.capture_exe), "--model", str(args.model), "--case-manifest", str(manifest_path),
-                    "--output-dir", str(args.output_dir)], check=True)
+                    "--output-dir", str(args.output_dir), "--n-gpu-layers", str(args.n_gpu_layers),
+                    "--threads", str(args.threads)], check=True)
     reports = {case["name"]: compare_case(npz, metadata, case, args.output_dir / case["name"], args.precision, policy) for case in cases}
     overall = all(row["passed"] for row in reports.values())
     report = {"precision": args.precision, "tolerance_policy": str(args.tolerance_policy), "cases": reports, "passed": overall}

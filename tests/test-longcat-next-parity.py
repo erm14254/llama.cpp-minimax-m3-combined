@@ -31,6 +31,13 @@ class ParityHarnessTests(unittest.TestCase):
         self.assertEqual(many.shape, (1, 2, 3))
         np.testing.assert_array_equal(many, [[[0, 1, 2], [3, 4, 5]]])
 
+    def test_final_normalized_multi_token_rank_is_not_output_selected(self):
+        final = self.raw(range(12), "f32", (4, 3, 1, 1))
+        self.assertEqual(final.shape, (1, 3, 4))
+        self.assertEqual(PARITY.CPP_TO_REFERENCE["h_nextn"], "final_normalized_hidden_state")
+        self.assertNotIn("result_norm", PARITY.CPP_TO_REFERENCE)
+        self.assertIn("final_logits", PARITY.DIRECT_NAMES)
+
     def test_logits_retains_batch_rank(self):
         self.assertEqual(self.raw(range(5), "f32", (5, 1, 1, 1), "logits").shape, (1, 5))
 
@@ -50,6 +57,8 @@ class ParityHarnessTests(unittest.TestCase):
         self.assertFalse(PARITY.floating_result(np.array([1.]), np.array([1.001]), {"atol": 0, "rtol": 0})["passed"])
         with self.assertRaisesRegex(ValueError, "finite"):
             PARITY.floating_result(np.array([1.]), np.array([np.inf]), {"atol": 1, "rtol": 1})
+        with self.assertRaisesRegex(ValueError, "complete C\\+\\+ direct logits"):
+            PARITY.require_finite_logits(np.array([[0.0, np.nan]]), "case")
 
     def test_reversed_argsort_tie_prefers_larger_id(self):
         logits = np.array([[0., 2., 2., 1.]])
@@ -101,6 +110,14 @@ class ParityHarnessTests(unittest.TestCase):
         self.assertTrue(PARITY.exact_result([1, 2, 3], [1, 2, 3])["passed"])
         self.assertFalse(PARITY.exact_result([1, 2, 3], [1, 2, 4])["passed"])
         self.assertFalse(PARITY.exact_result([10] * 8, [10] * 7 + [11])["passed"])
+
+    def test_runtime_placement_argument_defaults_and_overrides(self):
+        required = ["--model", "m", "--reference-dir", "r", "--precision", "bf16",
+                    "--output-dir", "o", "--capture-exe", "capture"]
+        defaults = PARITY.build_parser().parse_args(required)
+        self.assertEqual((defaults.n_gpu_layers, defaults.threads), (0, 0))
+        custom = PARITY.build_parser().parse_args(required + ["--n-gpu-layers", "99", "--threads", "8"])
+        self.assertEqual((custom.n_gpu_layers, custom.threads), (99, 8))
 
 
 if __name__ == "__main__":

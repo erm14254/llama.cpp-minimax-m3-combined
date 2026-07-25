@@ -21,7 +21,7 @@ struct capture_state {
 };
 
 static bool wanted(const std::string & name) {
-    return name == "inp_embd" || name == "inp_embd_ngram" || name == "result_norm" ||
+    return name == "inp_embd" || name == "inp_embd_ngram" || name == "h_nextn" ||
            name.rfind("ngram_proj-", 0) == 0 || name == "l_out-0" || name == "l_out-1" ||
            name == "l_out-2" || name == "l_out-27";
 }
@@ -70,7 +70,9 @@ static int self_test() {
     return 0;
 }
 
-static int run_case(llama_model * model, const json & spec, const fs::path & root, uint32_t n_ctx) {
+static int run_case(
+        llama_model * model, const json & spec, const fs::path & root,
+        uint32_t n_ctx, int32_t threads) {
     const auto ids = spec.at("input_ids").get<std::vector<llama_token>>();
     const auto mask = spec.at("attention_mask").get<std::vector<int32_t>>();
     const auto positions = spec.at("position_ids").get<std::vector<llama_pos>>();
@@ -85,6 +87,10 @@ static int run_case(llama_model * model, const json & spec, const fs::path & roo
     cp.n_batch = n_ctx;
     cp.n_ubatch = n_ctx;
     cp.n_seq_max = ids.size() + 1;
+    if (threads > 0) {
+        cp.n_threads = threads;
+        cp.n_threads_batch = threads;
+    }
     cp.cb_eval = capture_cb;
     cp.cb_eval_user_data = &state;
     llama_context * ctx = llama_init_from_model(model, cp);
@@ -157,14 +163,18 @@ static int run_case(llama_model * model, const json & spec, const fs::path & roo
 int main(int argc, char ** argv) {
     if (argc == 2 && std::string(argv[1]) == "--self-test") return self_test();
     fs::path model_path, manifest_path, output;
+    int32_t n_gpu_layers = 0;
+    int32_t threads = 0;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string key = argv[i];
         if (key == "--model") model_path = argv[i + 1];
         else if (key == "--case-manifest") manifest_path = argv[i + 1];
         else if (key == "--output-dir") output = argv[i + 1];
+        else if (key == "--n-gpu-layers") n_gpu_layers = std::stoi(argv[i + 1]);
+        else if (key == "--threads") threads = std::stoi(argv[i + 1]);
         else return 2;
     }
-    if (model_path.empty() || manifest_path.empty() || output.empty()) return 2;
+    if (model_path.empty() || manifest_path.empty() || output.empty() || n_gpu_layers < 0 || threads < 0) return 2;
     json manifest;
     std::ifstream(manifest_path) >> manifest;
     size_t longest = 0;
@@ -172,11 +182,13 @@ int main(int argc, char ** argv) {
     const uint32_t n_ctx = longest + 8 + 16; // eight generated tokens plus safety margin
     fs::create_directories(output);
     llama_backend_init();
-    llama_model * model = llama_model_load_from_file(model_path.string().c_str(), llama_model_default_params());
+    auto model_params = llama_model_default_params();
+    model_params.n_gpu_layers = n_gpu_layers;
+    llama_model * model = llama_model_load_from_file(model_path.string().c_str(), model_params);
     if (!model) return 3;
     int result = 0;
     for (const auto & spec : manifest.at("cases")) {
-        result = run_case(model, spec, output, n_ctx);
+        result = run_case(model, spec, output, n_ctx, threads);
         if (result != 0) break;
     }
     llama_model_free(model);

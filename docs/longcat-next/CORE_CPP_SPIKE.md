@@ -26,7 +26,14 @@ the real C++ capture/comparator with paths such as:
 ```bat
 python tests\test-longcat-next-local-parity.py --model D:\LongCat-Next\longcat-next-bf16.gguf ^
   --reference-dir D:\LongCat-Next-reference\bf16-candidate-15b7fe8c --precision bf16 ^
-  --output-dir D:\LongCat-Next-reference\cpp-bf16 --capture-exe build\bin\longcat-next-capture.exe
+  --output-dir D:\LongCat-Next-reference\cpp-bf16 --capture-exe build\bin\longcat-next-capture.exe ^
+  --n-gpu-layers 0 --threads 0
+```
+
+After CPU parity succeeds, the accelerator form changes only placement controls:
+
+```bat
+python tests\test-longcat-next-local-parity.py --model D:\LongCat-Next\longcat-next-bf16.gguf --reference-dir D:\LongCat-Next-reference\bf16-candidate-15b7fe8c --precision bf16 --output-dir D:\LongCat-Next-reference\cpp-bf16-gpu --capture-exe build\bin\longcat-next-capture.exe --n-gpu-layers 99 --threads 8
 ```
 
 The accepted reference contract is 433 arrays per precision, two byte-identical
@@ -39,7 +46,8 @@ are compared with the accepted fixtures.
 The callback mapping is stable and explicit: `inp_embd` is the base embedding,
 `ngram_proj-0..11` are the masked raw projections, `inp_embd_ngram` is the fused
 pre-trunk embedding, `l_out-0/1/2/27` are physical blocks 0, 1, 2, and 27, and
-`result_norm` is the final normalized hidden state. Captures are lossless raw arrays
+`h_nextn` is the all-token final normalized hidden state. `result_norm` is not used
+because it is output-row selected. Captures are lossless raw arrays
 with a dtype/shape manifest. The machine-readable report records errors, the frozen per-array tolerances, normalized
 violations, and pass/fail results.
 
@@ -54,6 +62,10 @@ final hidden surfaces compare only positions selected by `attention_mask`.
 `tests/fixtures/longcat-next/stage1-tolerances.json` freezes the BF16/F16 combined
 absolute-relative criterion before local execution. A failure requires diagnosis;
 the checked thresholds must not be widened after inspecting C++ results.
+
+The documented command is CPU-first (`--n-gpu-layers 0 --threads 0`). A subsequent
+accelerator run uses the same harness with, for example, `--n-gpu-layers 99`; a
+positive `--threads` value sets both decode and batch thread counts.
 
 Image/audio inputs and heads, MTMD, server integration, MTP, decoders, quantization
 tuning, custom accelerator kernels, and performance claims remain out of scope.
