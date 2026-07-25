@@ -1,0 +1,84 @@
+{
+  "fixture_schema_version": 1,
+  "source_revisions": {
+    "meituan-longcat/LongCat-Next": "49dc718151f9943a9dca2c1169541934bb85d83e",
+    "meituan-longcat/LongCat-Next-inference": "70ab100beecaaa77c1f45c0cf9ec89a4faf20fd8",
+    "huggingface/meituan-longcat/LongCat-Next": "0cf0631862402ff36366e513e4023d22e7e5c84c",
+    "llama.cpp_evidence_baseline": "555881ebc8b0fc0402b30e09258a32a7bfd13c52"
+  },
+  "identities": {
+    "config.json_sha256": "9115e9785603b04382a45ebece9092235281f309f56f35eb4e43bcf53150b2a2",
+    "tokenizer_config.json_sha256": "22dddd0eb59965adf6e4861a7c8a9ed803595cd16bc86ed6e2d4ed915b9718d4",
+    "model_index_expected_payload_bytes": 150825367872
+  },
+  "required_software": {
+    "python": "3.10 (official README environment; generator also records the executing patch version)",
+    "transformers": "4.57.1",
+    "torch": "record exact installed version for weight-backed fixtures",
+    "safetensors": "record exact installed version for weight-backed fixtures",
+    "numpy": "record exact installed version for weight-backed fixtures"
+  },
+  "deterministic_seeds": {
+    "python": 20260725,
+    "torch": 20260725,
+    "numpy": 20260725
+  },
+  "expected_outputs": {
+    "ngram_hash_ids": {
+      "shape": "[sequence_length, 12]",
+      "dtype": "int64",
+      "comparison": "exact"
+    },
+    "ngram_lookup_mask": {
+      "shape": "[sequence_length, 12]",
+      "dtype": "bool",
+      "comparison": "exact"
+    },
+    "base_embedding": {
+      "shape": "[batch, sequence_length, 3072]",
+      "dtype": "BF16 or F16",
+      "status": "pending checkpoint"
+    },
+    "ngram_contributions": {
+      "shape": "[12, batch, sequence_length, 3072]",
+      "dtype": "BF16 or F16",
+      "status": "pending checkpoint"
+    },
+    "selected_hidden_states": {
+      "shape": "[4, batch, sequence_length, 3072] for blocks 0,1,2,27",
+      "dtype": "BF16 or F16",
+      "status": "pending checkpoint"
+    },
+    "selected_logits": {
+      "shape": "[batch, selected_positions, selected_token_ids]",
+      "dtype": "BF16 or F16",
+      "status": "pending checkpoint"
+    },
+    "greedy_continuation_ids": {
+      "shape": "[batch, generated_length]",
+      "dtype": "int64",
+      "comparison": "exact",
+      "status": "pending checkpoint"
+    }
+  },
+  "numerical_tolerances": {
+    "BF16": {
+      "absolute": null,
+      "relative": null,
+      "status": "pending pre-runtime selection"
+    },
+    "F16": {
+      "absolute": null,
+      "relative": null,
+      "status": "pending pre-runtime selection"
+    },
+    "policy": "Select and review tolerances before inspecting any C++ runtime result; never widen them in response to a failure."
+  },
+  "fixture_files": {
+    "ngram-cases.json": {
+      "sha256": "81559f15c326c421a426c46c9020d97687f363caf639ffebb75ecee020e67db6",
+      "bytes": 81977,
+      "contains_model_weights": false
+    }
+  }
+}
