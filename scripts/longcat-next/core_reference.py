@@ -859,9 +859,9 @@ def run_core_generation(args, weight_free_fixture):
                 "ngram_analytical_reconstruction_reports": reconstruction_reports,
                 "module_anchors": {
                     "base_embedding": "model.model.embed_tokens forward output",
-                    "ngram_projection_raw": "model.model.ngram_embeddings.post_projs[0..11] outputs",
-                    "ngram_contributions": "raw projection outputs with official conditional /13 scaling applied",
-                    "fused_pre_trunk": "input to model.model.layers[0]",
+                    "ngram_projection_raw": "model.model.ngram_embeddings.post_projs[0..11] directly captured outputs",
+                    "ngram_analytical_f32_contributions": "float32 analytical decomposition derived from raw projections; not an official captured intermediate",
+                    "fused_pre_trunk_embedding": "input to model.model.layers[0]; directly captured parity authority",
                     "physical_blocks_0_2": "inputs to logical layers 0/1 input_layernorm[1]",
                     "physical_blocks_1_27": "outputs of logical layers 0/13",
                     "final_norm": "model.model.norm output",
