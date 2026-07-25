@@ -523,13 +523,29 @@ def tokenizer_backend_pretokenizer_sha256(tokenizer):
 
 
 def tokenizer_provenance(tokenizer, model_dir):
-    tokenizer_class = tokenizer.__class__.__name__
-    require(tokenizer_class == "BloomTokenizer",
-            f"pinned LongCat tokenizer class must be BloomTokenizer, got {tokenizer_class}")
-    return {"tokenizer_class": tokenizer_class,
+    root = Path(model_dir)
+    config = read_json(root / "tokenizer_config.json", "tokenizer config")
+    declared_class = config.get("tokenizer_class")
+    require(declared_class == "BloomTokenizer",
+            f"pinned declared tokenizer class must be BloomTokenizer, got {declared_class!r}")
+    runtime_class = tokenizer.__class__.__name__
+    runtime_is_fast = getattr(tokenizer, "is_fast", None)
+    require(runtime_class == "BloomTokenizerFast" and runtime_is_fast is True,
+            "pinned LongCat tokenizer must execute as BloomTokenizerFast with is_fast=true; "
+            f"got {runtime_class} with is_fast={runtime_is_fast!r}")
+    slow_class = getattr(tokenizer, "slow_tokenizer_class", None)
+    slow_class_name = getattr(slow_class, "__name__", None) if slow_class is not None else None
+    if slow_class_name is not None:
+        require(slow_class_name == "BloomTokenizer",
+                f"BloomTokenizerFast slow_tokenizer_class must be BloomTokenizer, got {slow_class_name}")
+    return {"declared_tokenizer_class": declared_class,
+            "runtime_tokenizer_class": runtime_class,
+            "runtime_tokenizer_is_fast": runtime_is_fast,
+            "runtime_slow_tokenizer_class": slow_class_name,
             "tokenizer_source_directory": str(Path(model_dir).resolve()),
             "fix_mistral_regex": False,
-            "tokenizer_json_sha256": file_sha256(Path(model_dir) / "tokenizer.json"),
+            "tokenizer_config_json_sha256": file_sha256(root / "tokenizer_config.json"),
+            "tokenizer_json_sha256": file_sha256(root / "tokenizer.json"),
             "backend_pre_tokenizer_state_sha256":
                 tokenizer_backend_pretokenizer_sha256(tokenizer)}
 

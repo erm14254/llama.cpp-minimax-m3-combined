@@ -255,17 +255,47 @@ class CoreHelperTests(unittest.TestCase):
         pretokenizer = types.SimpleNamespace(__getstate__=lambda: state)
         backend = types.SimpleNamespace(pre_tokenizer=pretokenizer)
         BloomTokenizer = type("BloomTokenizer", (), {})
-        tokenizer = BloomTokenizer()
+        BloomTokenizerFast = type("BloomTokenizerFast", (), {})
+        tokenizer = BloomTokenizerFast()
+        tokenizer.is_fast = True
+        tokenizer.slow_tokenizer_class = BloomTokenizer
         tokenizer.backend_tokenizer = backend
         before = core.tokenizer_backend_pretokenizer_sha256(tokenizer)
         after = core.tokenizer_backend_pretokenizer_sha256(tokenizer)
         self.assertEqual(before, after)
         with tempfile.TemporaryDirectory() as temp:
             Path(temp, "tokenizer.json").write_text("{}", encoding="ascii")
+            Path(temp, "tokenizer_config.json").write_text(
+                json.dumps({"tokenizer_class": "BloomTokenizer"}), encoding="ascii")
             provenance = core.tokenizer_provenance(tokenizer, temp)
-        self.assertEqual(provenance["tokenizer_class"], "BloomTokenizer")
+        self.assertEqual(provenance["declared_tokenizer_class"], "BloomTokenizer")
+        self.assertEqual(provenance["runtime_tokenizer_class"], "BloomTokenizerFast")
+        self.assertTrue(provenance["runtime_tokenizer_is_fast"])
+        self.assertEqual(provenance["runtime_slow_tokenizer_class"], "BloomTokenizer")
         self.assertIs(provenance["fix_mistral_regex"], False)
         self.assertEqual(provenance["backend_pre_tokenizer_state_sha256"], before)
+        self.assertNotIn("use_fast", kwargs)
+
+    def test_tokenizer_provenance_rejects_unrelated_runtime_and_wrong_declaration(self):
+        pretokenizer = types.SimpleNamespace(__getstate__=lambda: b"state")
+        backend = types.SimpleNamespace(pre_tokenizer=pretokenizer)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            root.joinpath("tokenizer.json").write_text("{}", encoding="ascii")
+            root.joinpath("tokenizer_config.json").write_text(
+                json.dumps({"tokenizer_class": "BloomTokenizer"}), encoding="ascii")
+            unrelated = type("UnrelatedTokenizerFast", (), {})()
+            unrelated.is_fast = True
+            unrelated.backend_tokenizer = backend
+            with self.assertRaisesRegex(core.CoreFixtureError, "BloomTokenizerFast"):
+                core.tokenizer_provenance(unrelated, root)
+            root.joinpath("tokenizer_config.json").write_text(
+                json.dumps({"tokenizer_class": "MistralTokenizer"}), encoding="ascii")
+            bloom = type("BloomTokenizerFast", (), {})()
+            bloom.is_fast = True
+            bloom.backend_tokenizer = backend
+            with self.assertRaisesRegex(core.CoreFixtureError, "declared tokenizer class"):
+                core.tokenizer_provenance(bloom, root)
 
     def test_direct_and_greedy_prompt_ids_must_match(self):
         for name, ids in (("prompt_0", [1, 7, 9]), ("prompt_1", [1, 8, 10])):

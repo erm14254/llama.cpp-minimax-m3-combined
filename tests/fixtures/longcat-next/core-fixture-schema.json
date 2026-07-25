@@ -11,7 +11,17 @@
     "serialized_activation_dtype": {"type": "string"},
     "source_dtypes": {"type": "object", "additionalProperties": {"type": "string"}},
     "checkpoint": {"type": "object"},
-    "tokenizer": {"type": "object"},
+    "tokenizer": {
+      "type": "object",
+      "required": ["declared_tokenizer_class", "runtime_tokenizer_class", "runtime_tokenizer_is_fast", "runtime_slow_tokenizer_class", "tokenizer_source_directory", "fix_mistral_regex", "tokenizer_config_json_sha256", "tokenizer_json_sha256", "backend_pre_tokenizer_state_sha256", "prompts"],
+      "properties": {
+        "declared_tokenizer_class": {"const": "BloomTokenizer"},
+        "runtime_tokenizer_class": {"const": "BloomTokenizerFast"},
+        "runtime_tokenizer_is_fast": {"const": true},
+        "runtime_slow_tokenizer_class": {"enum": ["BloomTokenizer", null]},
+        "fix_mistral_regex": {"const": false}
+      }
+    },
     "dtype_provenance": {"type": "object"},
     "fixture_generation_settings": {"type": "object"},
     "software_versions": {"type": "object"},

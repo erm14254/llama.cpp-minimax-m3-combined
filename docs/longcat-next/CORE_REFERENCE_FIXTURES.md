@@ -203,12 +203,16 @@ accept GB, GiB, MB, or MiB strings. Increase the output ceiling only after revie
 which derived arrays require it; the hard ceiling is 256 MiB. Use --hash-shards on a
 core run to include all 15 shard hashes, at the cost of reading the full 150 GB first.
 
-The pinned checkpoint is `model_type=longcat_next` with `BloomTokenizer`; it is not a
-Mistral tokenizer. The harness passes `fix_mistral_regex=False` to Transformers 4.57.6
-so its large-local-tokenizer false-positive path cannot rewrite the pinned
-tokenizer.json pre-tokenizer. Metadata records the tokenizer class, source directory,
-tokenizer.json hash, backend pre-tokenizer state hash, exact prompts, and input IDs;
-direct-forward and greedy tokenization must match exactly.
+The pinned checkpoint is `model_type=longcat_next` and declares `BloomTokenizer`; it
+is not a Mistral tokenizer. AutoTokenizer normally materializes the pinned
+tokenizer.json as `BloomTokenizerFast` with `is_fast=true`. The harness records these
+declared and executed identities separately, plus the slow-tokenizer class name when
+available; the expected `Fast` suffix is not an identity mismatch and `use_fast=False`
+is not forced. It passes `fix_mistral_regex=False` to Transformers 4.57.6 so its
+large-local-tokenizer false-positive path cannot rewrite the pinned pre-tokenizer.
+Metadata records both tokenizer file hashes, the source directory, backend
+pre-tokenizer state hash, exact prompts, and input IDs; direct-forward and greedy
+tokenization must match exactly.
 
 Model loading uses the Transformers 4.57.6 `dtype` argument rather than deprecated
 `torch_dtype`. Before capture, the requested BF16/F16 dtype must match both the
@@ -219,13 +223,19 @@ The model's original generation configuration is never mutated.
 
 ### Expected workstation messages
 
-The tokenizer `fix_mistral_regex` warning, deprecated `torch_dtype` warning, missing
-FlashAttention dtype warning, and ignored `temperature`/`top_p`/`top_k` warning would
-indicate a harness regression and should no longer appear. The audio autocast and
-diffusers `LoRACompatibleLinear` FutureWarnings, visual/audio offset diagnostic
-prints, and Accelerate messages about parameters on the meta device due to CPU
-offload are non-blocking for this text-core fixture run; do not edit official
-checkpoint code merely to suppress them.
+The tokenizer `fix_mistral_regex` warning, deprecated `torch_dtype` warning, and
+ignored `temperature`/`top_p`/`top_k` warning would indicate a harness regression and
+should no longer appear. This pinned remote-code/composite model may still emit the
+configuration-time warning that FlashAttention 2 lacks a specified torch dtype even
+though the harness passes Transformers 4.57.6's explicit `dtype` argument. Treat that
+warning as a non-blocking false positive only when the later authoritative gate
+confirms both `model.dtype` and the base embedding weight match the requested BF16 or
+F16 dtype. Any gate mismatch remains fatal; do not restore deprecated `torch_dtype`
+or suppress warnings globally. The audio autocast and diffusers
+`LoRACompatibleLinear` FutureWarnings, visual/audio offset diagnostic prints, and
+Accelerate messages about parameters on the meta device due to CPU offload are also
+non-blocking for this text-core fixture run; do not edit official checkpoint code
+merely to suppress them.
 
 ## Captured official anchors
 
