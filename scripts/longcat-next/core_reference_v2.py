@@ -368,6 +368,19 @@ def install_trunk_finite_hooks(model, checker, serialize_blocks=(0, 1, 2, 27), c
                 torch = checker.torch_module
             common = {"module_name": name, "logical_layer": logical,
                       "physical_block": physical}
+            router_bias = getattr(module.classifier, "bias", None)
+            settings = {
+                "schema_version": SCHEMA_VERSION, "case": checker.case,
+                "logical_layer": logical, "physical_block": physical,
+                "module_name": name, "operation": "router_configuration",
+                "role": "configuration", "top_k": int(module.top_k),
+                "n_routed_experts": int(module.n_routed_experts),
+                "norm_topk_prob": bool(module.norm_topk_prob),
+                "routed_scaling_factor": float(module.routed_scaling_factor),
+                "router_bias": router_bias is not None,
+                "process_id": os.getpid(), "run_index": checker.run_index,
+            }
+            checker.checks.append(settings)
             replay = []
             def inspect(value, operation, role=None):
                 report = checker.inspect_tensor(
@@ -379,38 +392,65 @@ def install_trunk_finite_hooks(model, checker, serialize_blocks=(0, 1, 2, 27), c
             weight = inspect(module.classifier.weight, "classifier_weight")
             bias = inspect(module.e_score_correction_bias, "e_score_correction_bias")
             flattened = router_input.view(-1, router_input.shape[-1])
+            # The pinned implementation deliberately omits classifier.bias.
             router_logits = inspect(torch.nn.functional.linear(
                 flattened.float(), weight.float()), "router_logits")
             scores = inspect(router_logits.softmax(dim=-1), "softmax_scores")
-            scores_for_choice = inspect(scores + bias, "scores_for_choice")
-            k = int(topk_indices.shape[-1])
+            scores_for_choice = inspect(
+                scores.view(-1, module.n_routed_experts) + bias.unsqueeze(0),
+                "scores_for_choice")
+            require(int(module.top_k) == int(topk_indices.shape[-1]),
+                    f"{name}: configured top_k differs from original output")
             replay_indices = inspect(torch.topk(
-                scores_for_choice, k=k, dim=-1)[1], "topk_indices")
+                scores_for_choice, k=module.top_k, dim=-1, sorted=False)[1],
+                "topk_indices")
             gathered = inspect(scores.gather(1, replay_indices), "topk_weights_gathered")
-            denominator = inspect(gathered.sum(dim=-1, keepdim=True) + 1e-20,
-                                  "topk_denominator")
-            normalized = inspect(gathered / denominator, "topk_weights_normalized")
-            scaling = getattr(module, "routed_scaling_factor", None)
-            require(scaling is not None, f"{name} lacks routed_scaling_factor")
-            scaled = inspect(normalized * scaling, "topk_weights_scaled")
+            if module.norm_topk_prob:
+                denominator = inspect(gathered.sum(dim=-1, keepdim=True) + 1e-20,
+                                      "topk_denominator")
+                normalized = inspect(gathered / denominator, "topk_weights_normalized")
+                replay_final = inspect(
+                    normalized * module.routed_scaling_factor, "topk_weights_scaled")
+            else:
+                replay_final = gathered
 
-            replay_report = replay[-1]
-            same_invalid_classification = all(
-                replay_report[key] == original_report[key]
-                for key in ("finite_count", "nan_count", "positive_infinity_count",
-                            "negative_infinity_count"))
-            indices_equal = bool(torch.equal(replay_indices, topk_indices))
-            if not (same_invalid_classification and indices_equal):
+            reasons = []
+            if not torch.equal(replay_indices, topk_indices):
+                reasons.append("indices_order")
+            if tuple(replay_final.shape) != tuple(original_weights.shape):
+                reasons.append("shape")
+            if replay_final.dtype != original_weights.dtype:
+                reasons.append("dtype")
+            if not reasons:
+                original_finite = torch.isfinite(original_weights)
+                replay_finite = torch.isfinite(replay_final)
+                if not torch.equal(original_finite, replay_finite):
+                    reasons.append("finite_mask")
+                classification_equal = (
+                    torch.equal(torch.isnan(original_weights), torch.isnan(replay_final)) and
+                    torch.equal(torch.isposinf(original_weights), torch.isposinf(replay_final)) and
+                    torch.equal(torch.isneginf(original_weights), torch.isneginf(replay_final)))
+                if not classification_equal:
+                    reasons.append("nonfinite_classification")
+                if torch.equal(original_finite, replay_finite):
+                    if bool(original_finite.all().item()):
+                        left_bytes = original_weights.detach().contiguous().view(torch.uint8)
+                        right_bytes = replay_final.detach().contiguous().view(torch.uint8)
+                        if not torch.equal(left_bytes, right_bytes):
+                            reasons.append("finite_values")
+                    elif not torch.equal(original_weights[original_finite],
+                                         replay_final[replay_finite]):
+                        reasons.append("finite_values")
+            if reasons:
                 checker.checks.append({
                     "schema_version": SCHEMA_VERSION, "case": checker.case,
                     "logical_layer": logical, "physical_block": physical,
                     "module_name": name, "operation": "router_replay_mismatch",
-                    "role": "replay_mismatch", "replay_indices_equal": indices_equal,
-                    "invalid_classification_equal": same_invalid_classification,
+                    "role": "replay_mismatch", "reasons": reasons,
                     "process_id": os.getpid(), "run_index": checker.run_index})
             first_invalid = next((row for row in replay
                                   if row["finite_count"] != row["total_elements"]), None)
-            if first_invalid is None or not (same_invalid_classification and indices_equal):
+            if first_invalid is None or reasons:
                 checker.fail_report(
                     first_invalid or original_report,
                     f"{name}: router diagnostic replay mismatch; refusing false attribution")
