@@ -69,6 +69,10 @@ class FakeTensor:
     def contiguous(self): return self
     def all(self): return FakeTensor(self.value.all())
     def float(self): return FakeTensor(self.value.astype(np.float32), "torch.float32")
+    def type(self, dtype):
+        if dtype == FakeTorch.float32:
+            return FakeTensor(self.value.astype(np.float32), "torch.float32")
+        raise TypeError(f"unsupported fake dtype {dtype}")
     def softmax(self, dim=-1):
         if FakeTensor.softmax_override is not None:
             return FakeTensor(FakeTensor.softmax_override)
@@ -90,6 +94,7 @@ class FakeTensor:
 
 class FakeTorch:
     linear_override = None
+    float32 = "torch.float32"
     uint8 = "torch.uint8"
     topk_sorted_calls = []
     @staticmethod
@@ -172,21 +177,38 @@ def write_valid_worker(run_dir, run_index, precision="bf16", backend="default"):
     return arrays
 
 
-def synthetic_router_model(scaling=1.0, norm_topk_prob=True):
+def synthetic_router_model(scaling=1.0):
     model = Model()
     router = Module()
     router.classifier = type("Classifier", (), {
         "weight": FakeTensor(np.eye(3)), "bias": None})()
+    router.config = type("Config", (), {"hidden_size": 3})()
     router.e_score_correction_bias = FakeTensor(np.zeros(3, dtype=np.float32))
     router.top_k = 2
     router.n_routed_experts = 3
-    router.norm_topk_prob = norm_topk_prob
     router.routed_scaling_factor = scaling
+    router.router_bias = False
     model.model.named_modules = lambda: [("layers.4.mlp.router", router)]
     return model, router
 
 
 class CoreV2Tests(unittest.TestCase):
+    def setUp(self):
+        self.original_router_runtime_identity = v2.router_runtime_identity
+        v2.router_runtime_identity = lambda module: {
+            "runtime_router_class": "LongcatFlashTopkRouter",
+            "runtime_router_module": "transformers.models.longcat_flash.modeling_longcat_flash",
+            "transformers_version": "4.57.6",
+            "runtime_router_source_path": "/synthetic/modeling_longcat_flash.py",
+            "runtime_router_source_sha256": "0" * 64,
+            "replay_variant": "transformers-4.57.6-unconditional-scale",
+        }
+
+    def tearDown(self):
+        v2.router_runtime_identity = self.original_router_runtime_identity
+        FakeTorch.linear_override = None
+        FakeTensor.softmax_override = None
+
     def test_numpy_nonfinite_is_never_reproducible(self):
         for bad in (np.array([np.nan], np.float32), np.array([np.inf], np.float32),
                     np.array([-np.inf], np.float32)):
@@ -222,8 +244,8 @@ class CoreV2Tests(unittest.TestCase):
         self.assertEqual(recorder.blocks, list(range(28)))
 
     def _run_invalid_router(self, temporary, original_weights, scaling=1.0,
-                            norm_topk_prob=True, original_indices=None):
-        model, router = synthetic_router_model(scaling, norm_topk_prob)
+                            original_indices=None):
+        model, router = synthetic_router_model(scaling)
         checker = v2.TorchFiniteChecker(temporary, "case", "default", 0, FakeTorch)
         v2.install_trunk_finite_hooks(model, checker, serialize_blocks=())
         hidden = FakeTensor([[1.0, 2.0, 3.0]])
@@ -252,53 +274,44 @@ class CoreV2Tests(unittest.TestCase):
                                  if row.get("operation") == "router_configuration")
             self.assertEqual(configuration["top_k"], 2)
             self.assertEqual(configuration["n_routed_experts"], 3)
-            self.assertTrue(configuration["norm_topk_prob"])
             self.assertEqual(configuration["routed_scaling_factor"], 1.0)
             self.assertFalse(configuration["router_bias"])
+            self.assertFalse(configuration["classifier_bias_present"])
+            self.assertEqual(configuration["config_hidden_size"], 3)
+            self.assertFalse(configuration["norm_topk_prob_attribute_present"])
+            self.assertEqual(configuration["transformers_version"], "4.57.6")
+            self.assertEqual(configuration["replay_variant"],
+                             "transformers-4.57.6-unconditional-scale")
+            self.assertEqual(configuration["runtime_router_source_path"],
+                             "/synthetic/modeling_longcat_flash.py")
+            self.assertEqual(configuration["runtime_router_source_sha256"], "0" * 64)
             FakeTorch.linear_override = None
 
     def test_router_softmax_is_exact_first_failure(self):
-        for norm_topk_prob in (False, True):
-            with self.subTest(norm_topk_prob=norm_topk_prob), tempfile.TemporaryDirectory() as temporary:
-                FakeTorch.linear_override = None
-                FakeTensor.softmax_override = [[np.nan, np.nan, np.nan]]
-                failure, _ = self._run_invalid_router(
-                    temporary, [[np.nan, np.nan]], norm_topk_prob=norm_topk_prob)
-                self.assertEqual(failure["operation"], "softmax_scores")
-                FakeTensor.softmax_override = None
-
-    def test_router_logits_is_exact_first_failure_for_both_normalization_branches(self):
-        for norm_topk_prob in (False, True):
-            with self.subTest(norm_topk_prob=norm_topk_prob), tempfile.TemporaryDirectory() as temporary:
-                FakeTorch.linear_override = [[np.nan, np.nan, np.nan]]
-                failure, _ = self._run_invalid_router(
-                    temporary, [[np.nan, np.nan]], norm_topk_prob=norm_topk_prob)
-                self.assertEqual(failure["operation"], "router_logits")
-                FakeTorch.linear_override = None
-
-    def test_router_without_normalization_stops_at_gather(self):
         with tempfile.TemporaryDirectory() as temporary:
-            FakeTorch.linear_override = [[np.nan, np.nan, np.nan]]
-            failure, trace = self._run_invalid_router(
-                temporary, [[np.nan, np.nan]], norm_topk_prob=False)
-            self.assertEqual(failure["operation"], "router_logits")
-            operations = [row.get("operation") for row in trace["checks"]]
-            self.assertIn("topk_weights_gathered", operations)
-            for operation in ("topk_denominator", "topk_weights_normalized",
-                              "topk_weights_scaled"):
-                self.assertNotIn(operation, operations)
-            FakeTorch.linear_override = None
+            FakeTensor.softmax_override = [[np.nan, np.nan, np.nan]]
+            failure, _ = self._run_invalid_router(temporary, [[np.nan, np.nan]])
+            self.assertEqual(failure["operation"], "softmax_scores")
 
-    def test_router_gather_normalize_and_scale_boundaries_are_distinct(self):
+    def test_pinned_router_sequence_scales_without_normalization(self):
         with tempfile.TemporaryDirectory() as temporary:
             FakeTorch.linear_override = None
             FakeTensor.softmax_override = None
             failure, trace = self._run_invalid_router(temporary, [[np.inf, np.inf]], scaling=np.inf)
             self.assertEqual(failure["operation"], "topk_weights_scaled")
             operations = [row.get("operation") for row in trace["checks"]]
-            for operation in ("topk_weights_gathered", "topk_denominator",
-                              "topk_weights_normalized", "topk_weights_scaled"):
+            for operation in ("router_input", "classifier_weight", "e_score_correction_bias",
+                              "router_logits", "softmax_scores", "scores_for_choice",
+                              "topk_indices", "topk_weights_gathered", "topk_weights_scaled"):
                 self.assertIn(operation, operations)
+            self.assertNotIn("topk_denominator", operations)
+            self.assertNotIn("topk_weights_normalized", operations)
+
+    def test_router_logits_is_exact_first_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            FakeTorch.linear_override = [[np.nan, np.nan, np.nan]]
+            failure, _ = self._run_invalid_router(temporary, [[np.nan, np.nan]])
+            self.assertEqual(failure["operation"], "router_logits")
 
     def test_router_replay_mismatch_refuses_attribution(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -326,13 +339,37 @@ class CoreV2Tests(unittest.TestCase):
             # NumPy's test top-k selects the NaN and 0.3 entries. The original
             # has the same one-NaN aggregate, but at the opposite output index.
             self._run_invalid_router(
-                temporary, [[1.0, np.nan]], norm_topk_prob=False,
+                temporary, [[1.0, np.nan]],
                 original_indices=[[0, 2]])
             trace = json.loads((Path(temporary) / "finite-trace.json").read_text())
             mismatch = next(row for row in trace["checks"]
                             if row.get("operation") == "router_replay_mismatch")
             self.assertIn("finite_mask", mismatch["reasons"])
             FakeTensor.softmax_override = None
+
+    def test_router_instrumentation_error_persists_both_failure_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            model, router = synthetic_router_model()
+            del router.config
+            checker = v2.TorchFiniteChecker(temporary, "case", "default", 0, FakeTorch)
+            v2.install_trunk_finite_hooks(model, checker, serialize_blocks=())
+            hidden = FakeTensor([[1.0, 2.0, 3.0]])
+            router.pre[0](router, (hidden,))
+            indices = FakeTensor([[2, 1]])
+            with self.assertRaisesRegex(v2.V2Error, "internal attribution failed"):
+                router.post[0](router, (hidden,),
+                               (indices, FakeTensor([[np.nan, np.nan]])))
+            first = Path(temporary) / "first-nonfinite.json"
+            trace_path = Path(temporary) / "finite-trace.json"
+            self.assertTrue(first.is_file())
+            self.assertTrue(trace_path.is_file())
+            first_report = json.loads(first.read_text())
+            self.assertEqual(first_report["role"], "topk_weights")
+            trace = json.loads(trace_path.read_text())
+            error = next(row for row in trace["checks"]
+                         if row.get("operation") == "router_instrumentation_error")
+            self.assertEqual(error["attribution_status"], "replay_failed")
+            self.assertEqual(error["exception_type"], "AttributeError")
 
     def test_sdpa_numpy_causal_mask_scale_and_gqa(self):
         q = np.array([[[[1., 0.], [0., 1.]], [[1., 0.], [0., 1.]]]])

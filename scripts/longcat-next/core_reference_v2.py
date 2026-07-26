@@ -9,6 +9,7 @@ checkpoint-free.
 import contextlib
 import datetime
 import hashlib
+import importlib
 import importlib.metadata
 import json
 import math
@@ -74,6 +75,33 @@ def atomic_json(path, value):
         stream.write(payload)
         temporary = Path(stream.name)
     temporary.replace(path)
+
+
+PINNED_TRANSFORMERS_VERSION = "4.57.6"
+PINNED_ROUTER_REPLAY_VARIANT = "transformers-4.57.6-unconditional-scale"
+
+
+def router_runtime_identity(module):
+    """Pin router replay to the installed Transformers implementation."""
+    runtime_module = type(module).__module__
+    runtime_class = type(module).__qualname__
+    version = importlib.metadata.version("transformers")
+    require(version == PINNED_TRANSFORMERS_VERSION,
+            f"router replay requires Transformers {PINNED_TRANSFORMERS_VERSION}, got {version}")
+    require(runtime_module == "transformers.models.longcat_flash.modeling_longcat_flash",
+            f"unexpected LongCat router module: {runtime_module}")
+    source_module = importlib.import_module(runtime_module)
+    source_path = Path(source_module.__file__).resolve()
+    require(source_path.name == "modeling_longcat_flash.py",
+            f"unexpected LongCat router source: {source_path}")
+    return {
+        "runtime_router_class": runtime_class,
+        "runtime_router_module": runtime_module,
+        "transformers_version": version,
+        "runtime_router_source_path": str(source_path),
+        "runtime_router_source_sha256": sha256_file(source_path),
+        "replay_variant": PINNED_ROUTER_REPLAY_VARIANT,
+    }
 
 
 def numpy_finite_report(name, value):
@@ -368,79 +396,91 @@ def install_trunk_finite_hooks(model, checker, serialize_blocks=(0, 1, 2, 27), c
                 torch = checker.torch_module
             common = {"module_name": name, "logical_layer": logical,
                       "physical_block": physical}
-            router_bias = getattr(module.classifier, "bias", None)
-            settings = {
-                "schema_version": SCHEMA_VERSION, "case": checker.case,
-                "logical_layer": logical, "physical_block": physical,
-                "module_name": name, "operation": "router_configuration",
-                "role": "configuration", "top_k": int(module.top_k),
-                "n_routed_experts": int(module.n_routed_experts),
-                "norm_topk_prob": bool(module.norm_topk_prob),
-                "routed_scaling_factor": float(module.routed_scaling_factor),
-                "router_bias": router_bias is not None,
-                "process_id": os.getpid(), "run_index": checker.run_index,
-            }
-            checker.checks.append(settings)
             replay = []
-            def inspect(value, operation, role=None):
-                report = checker.inspect_tensor(
-                    value, **common, operation=operation, role=role or operation)
-                replay.append(report)
-                return value
-
-            router_input = inspect(hidden_states, "router_input")
-            weight = inspect(module.classifier.weight, "classifier_weight")
-            bias = inspect(module.e_score_correction_bias, "e_score_correction_bias")
-            flattened = router_input.view(-1, router_input.shape[-1])
-            # The pinned implementation deliberately omits classifier.bias.
-            router_logits = inspect(torch.nn.functional.linear(
-                flattened.float(), weight.float()), "router_logits")
-            scores = inspect(router_logits.softmax(dim=-1), "softmax_scores")
-            scores_for_choice = inspect(
-                scores.view(-1, module.n_routed_experts) + bias.unsqueeze(0),
-                "scores_for_choice")
-            require(int(module.top_k) == int(topk_indices.shape[-1]),
-                    f"{name}: configured top_k differs from original output")
-            replay_indices = inspect(torch.topk(
-                scores_for_choice, k=module.top_k, dim=-1, sorted=False)[1],
-                "topk_indices")
-            gathered = inspect(scores.gather(1, replay_indices), "topk_weights_gathered")
-            if module.norm_topk_prob:
-                denominator = inspect(gathered.sum(dim=-1, keepdim=True) + 1e-20,
-                                      "topk_denominator")
-                normalized = inspect(gathered / denominator, "topk_weights_normalized")
-                replay_final = inspect(
-                    normalized * module.routed_scaling_factor, "topk_weights_scaled")
-            else:
-                replay_final = gathered
-
             reasons = []
-            if not torch.equal(replay_indices, topk_indices):
-                reasons.append("indices_order")
-            if tuple(replay_final.shape) != tuple(original_weights.shape):
-                reasons.append("shape")
-            if replay_final.dtype != original_weights.dtype:
-                reasons.append("dtype")
-            if not reasons:
-                original_finite = torch.isfinite(original_weights)
-                replay_finite = torch.isfinite(replay_final)
-                if not torch.equal(original_finite, replay_finite):
-                    reasons.append("finite_mask")
-                classification_equal = (
-                    torch.equal(torch.isnan(original_weights), torch.isnan(replay_final)) and
-                    torch.equal(torch.isposinf(original_weights), torch.isposinf(replay_final)) and
-                    torch.equal(torch.isneginf(original_weights), torch.isneginf(replay_final)))
-                if not classification_equal:
-                    reasons.append("nonfinite_classification")
-                if torch.equal(original_finite, replay_finite):
-                    if bool(original_finite.all().item()):
-                        left_bytes = original_weights.detach().contiguous().view(torch.uint8)
-                        right_bytes = replay_final.detach().contiguous().view(torch.uint8)
-                        if not torch.equal(left_bytes, right_bytes):
+            try:
+                identity = router_runtime_identity(module)
+                settings = {
+                    "schema_version": SCHEMA_VERSION, "case": checker.case,
+                    "logical_layer": logical, "physical_block": physical,
+                    "module_name": name, "operation": "router_configuration",
+                    "role": "configuration", "top_k": int(module.top_k),
+                    "n_routed_experts": int(module.n_routed_experts),
+                    "routed_scaling_factor": float(module.routed_scaling_factor),
+                    "router_bias": bool(module.router_bias),
+                    "classifier_bias_present": getattr(module.classifier, "bias", None) is not None,
+                    "config_hidden_size": int(module.config.hidden_size),
+                    "norm_topk_prob_attribute_present": hasattr(module, "norm_topk_prob"),
+                    "process_id": os.getpid(), "run_index": checker.run_index,
+                    **identity,
+                }
+                require(not settings["norm_topk_prob_attribute_present"],
+                        f"{name}: pinned router unexpectedly defines norm_topk_prob")
+                checker.checks.append(settings)
+
+                def inspect(value, operation, role=None):
+                    report = checker.inspect_tensor(
+                        value, **common, operation=operation, role=role or operation)
+                    replay.append(report)
+                    return value
+
+                router_input = inspect(hidden_states, "router_input")
+                weight = inspect(module.classifier.weight, "classifier_weight")
+                bias = inspect(module.e_score_correction_bias, "e_score_correction_bias")
+                flattened = router_input.view(-1, module.config.hidden_size)
+                # Transformers 4.57.6 omits classifier.bias even when router_bias is true.
+                router_logits = inspect(torch.nn.functional.linear(
+                    flattened.type(torch.float32), weight.type(torch.float32)), "router_logits")
+                scores = inspect(router_logits.softmax(dim=-1), "softmax_scores")
+                scores_for_choice = inspect(
+                    scores.view(-1, module.n_routed_experts) + bias.unsqueeze(0),
+                    "scores_for_choice")
+                require(int(module.top_k) == int(topk_indices.shape[-1]),
+                        f"{name}: configured top_k differs from original output")
+                replay_indices = inspect(torch.topk(
+                    scores_for_choice, k=module.top_k, dim=-1, sorted=False)[1],
+                    "topk_indices")
+                gathered = inspect(scores.gather(1, replay_indices), "topk_weights_gathered")
+                replay_final = inspect(
+                    gathered * module.routed_scaling_factor, "topk_weights_scaled")
+
+                if not torch.equal(replay_indices, topk_indices):
+                    reasons.append("indices_order")
+                if tuple(replay_final.shape) != tuple(original_weights.shape):
+                    reasons.append("shape")
+                if replay_final.dtype != original_weights.dtype:
+                    reasons.append("dtype")
+                if not reasons:
+                    original_finite = torch.isfinite(original_weights)
+                    replay_finite = torch.isfinite(replay_final)
+                    if not torch.equal(original_finite, replay_finite):
+                        reasons.append("finite_mask")
+                    classification_equal = (
+                        torch.equal(torch.isnan(original_weights), torch.isnan(replay_final)) and
+                        torch.equal(torch.isposinf(original_weights), torch.isposinf(replay_final)) and
+                        torch.equal(torch.isneginf(original_weights), torch.isneginf(replay_final)))
+                    if not classification_equal:
+                        reasons.append("nonfinite_classification")
+                    if torch.equal(original_finite, replay_finite):
+                        if bool(original_finite.all().item()):
+                            left_bytes = original_weights.detach().contiguous().view(torch.uint8)
+                            right_bytes = replay_final.detach().contiguous().view(torch.uint8)
+                            if not torch.equal(left_bytes, right_bytes):
+                                reasons.append("finite_values")
+                        elif not torch.equal(original_weights[original_finite],
+                                             replay_final[replay_finite]):
                             reasons.append("finite_values")
-                    elif not torch.equal(original_weights[original_finite],
-                                         replay_final[replay_finite]):
-                        reasons.append("finite_values")
+            except Exception as error:
+                checker.checks.append({
+                    "schema_version": SCHEMA_VERSION, "case": checker.case,
+                    "logical_layer": logical, "physical_block": physical,
+                    "module_name": name, "operation": "router_instrumentation_error",
+                    "role": "instrumentation", "attribution_status": "replay_failed",
+                    "exception_type": type(error).__name__, "exception_message": str(error),
+                    "process_id": os.getpid(), "run_index": checker.run_index})
+                checker.fail_report(
+                    original_report,
+                    f"{name}: original router output was non-finite but internal attribution failed")
             if reasons:
                 checker.checks.append({
                     "schema_version": SCHEMA_VERSION, "case": checker.case,
