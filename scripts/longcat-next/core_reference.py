@@ -605,20 +605,44 @@ def resolve_effective_greedy_policy(model, generation_config, overrides):
 
 
 def generate_with_greedy_policy(model, encoded, generation_config, policy,
-                                prompt_name, repeat_index):
+                                prompt_name, repeat_index, finite_checker=None,
+                                attention_backend="default"):
     overrides = policy["explicit_call_overrides"]
     effective = resolve_effective_greedy_policy(model, generation_config, overrides)
     mode = "sampling" if effective["do_sample"] else "greedy"
     require(mode == "greedy", f"effective decoding method for {prompt_name} is {mode}, not greedy")
+    handles = []
     try:
-        generated = model.generate(
-            **encoded, generation_config=generation_config, **overrides)
+        if finite_checker is not None:
+            import torch
+            handles = v2.install_trunk_finite_hooks(
+                model, finite_checker, serialize_blocks=(), capture={})
+            handles.extend(v2.install_output_finite_hooks(
+                model, finite_checker, "generation", prompt_name))
+            sdpa_context = v2.instrument_sdpa(torch, finite_checker, attention_backend)
+        else:
+            import contextlib
+            sdpa_context = contextlib.nullcontext()
+        with sdpa_context:
+            generated = model.generate(
+                **encoded, generation_config=generation_config,
+                output_scores=True, **overrides)
+        if finite_checker is not None:
+            scores = getattr(generated, "scores", None)
+            require(scores is not None, "greedy generation did not return requested scores")
+            for step, score in enumerate(scores):
+                finite_checker.check(score, module_name="generation.scores",
+                                     operation="generation", role="score",
+                                     prompt=prompt_name, generation_step=step)
     except Exception as exc:
         raise CoreFixtureError(
             "generation failed; no fixture was written; "
             f"prompt={prompt_name}; repeat_index={repeat_index}; "
             f"requested_policy={json.dumps(overrides, sort_keys=True)}; "
             f"effective_decoding_mode={mode}; {type(exc).__name__}: {exc}") from exc
+    finally:
+        for handle in handles:
+            handle.remove()
     return generated, effective
 
 
@@ -707,7 +731,7 @@ def summarize_forward_logits(output, selected_logit_ids, include_complete=False,
     import numpy as np
     require(hasattr(output, "logits") and output.logits is not None,
             "official direct forward did not return logits")
-    logits, source_dtype = tensor_array(output.logits)
+    logits, source_dtype = tensor_array(output.logits, "final_logits")
     require(logits.ndim == 3,
             f"official logits must have shape [batch, sequence, vocabulary], got rank {logits.ndim}")
     require(logits.shape[-1] == 131125,
@@ -794,6 +818,11 @@ def write_core_outputs(output_dir, stem, arrays, metadata, reproducibility, max_
     require(not any(path.name.lower().endswith(WEIGHT_SUFFIXES) for path in root.iterdir()),
             "output directory contains a model-weight filename")
     validation = v2.validate_array_inventory(arrays, error_type=CoreFixtureError)
+    if metadata.get("kind") == "longcat-next-core-reference":
+        contract = v2.load_accepted_contract(
+            Path(__file__).with_name("core-accepted-contract-v2.json"))
+        validation.update(v2.validate_accepted_arrays(
+            arrays, metadata["precision"], contract, CoreFixtureError))
     npz = deterministic_npz_bytes(arrays)
     metadata = dict(metadata)
     metadata["arrays"] = array_metadata(arrays)
@@ -901,13 +930,25 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_
     def save(name, value):
         if isinstance(value, tuple):
             value = value[0]
-        array, dtype = tensor_array(value)
+        array, dtype = tensor_array(value, name)
         captured[name] = array
         source_dtypes[name] = dtype
 
+    # Register finite hooks before capture hooks so final norm/lm_head/model
+    # outputs are rejected on-device before any CPU or NumPy conversion.
+    handles.extend(v2.install_output_finite_hooks(model, finite_checker))
+    handles.extend(v2.install_trunk_finite_hooks(
+        model, finite_checker, serialize_blocks=(), capture={}))
+    handles.append(modules["base_embedding"].register_forward_hook(
+        lambda module, args, output: finite_checker.check(
+            output, module_name="model.model.embed_tokens", operation="forward", role="output")))
     handles.append(modules["base_embedding"].register_forward_hook(
         lambda module, args, output: save("base_embedding", output)))
     for index, projection in enumerate(modules["ngram_projections"]):
+        handles.append(projection.register_forward_hook(
+            lambda module, args, output, index=index: finite_checker.check(
+                output, module_name=f"model.model.ngram_embeddings.post_projs.{index}",
+                operation="forward", role="output")))
         handles.append(projection.register_forward_hook(
             lambda module, args, output, index=index: save(f"ngram_projection_raw_{index:02d}", output)))
     for block, module in modules["physical_block_inputs"].items():
@@ -920,10 +961,6 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_
         lambda module, args: save("fused_pre_trunk_embedding", args[0])))
     handles.append(modules["final_norm"].register_forward_hook(
         lambda module, args, output: save("final_normalized_hidden_state", output)))
-    if finite_checker is not None:
-        handles.extend(v2.install_trunk_finite_hooks(
-            model, finite_checker, serialize_blocks=(), capture={}))
-
     prepared = prepare_case_inputs(case_name, input_ids)
     device = modules["base_embedding"].weight.device
     ids = torch.tensor(prepared["input_ids"], dtype=torch.long, device=device)
@@ -991,6 +1028,7 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_
 
 
 def run_core_worker_generation(args, weight_free_fixture, diagnostic=False):
+    worker_started_utc = v2.utc_now()
     validate_core_options(args.precision, args.placement, args.repeat_count, args.max_output_bytes)
     inspection = validate_checkpoint(args.model_dir, args.hash_shards)
     enforce_offline_environment()
@@ -1072,10 +1110,16 @@ def run_core_worker_generation(args, weight_free_fixture, diagnostic=False):
                 f"prompt_{index}", prompt_input_ids[f"prompt_{index}"], greedy_input_ids)
             device = resolve_capture_modules(model)["base_embedding"].weight.device
             encoded = {key: value.to(device) for key, value in encoded.items()}
+            generation_checker = v2.TorchFiniteChecker(
+                Path(args.output_dir) / "diagnostics" / f"generation-prompt-{index}",
+                f"generation_prompt_{index}", args.attention_backend,
+                getattr(args, "run_index", 0))
             with torch.inference_mode():
                 generated, effective_policy = generate_with_greedy_policy(
                     model, encoded, greedy_generation_config, greedy_policy,
-                    f"prompt_{index}", repeat)
+                    f"prompt_{index}", repeat, generation_checker,
+                    args.attention_backend)
+            generation_checker.write_trace()
             if "effective_resolved_greedy_policy" not in greedy_policy:
                 greedy_policy["effective_resolved_greedy_policy"] = effective_policy
             else:
@@ -1117,20 +1161,25 @@ def run_core_worker_generation(args, weight_free_fixture, diagnostic=False):
     provenance = v2.collect_provenance(
         Path(__file__).resolve().parents[2], args.model_dir, args.precision,
         args.attention_backend, getattr(args, "run_index", 0),
-        [Path(__file__), Path(__file__).with_name("make-reference-fixtures.py")], model,
+        [Path(__file__), Path(__file__).with_name("core_reference_v2.py"),
+         Path(__file__).with_name("make-reference-fixtures.py"),
+         Path(__file__).with_name("checkpoint-shards-v2.json"),
+         Path(__file__).with_name("core-accepted-contract-v2.json")], model,
         {"effective_precision": dtype_provenance["effective_model_dtype"],
          "effective_attention_backend": attention_provenance,
          "shard_manifest_sha256": v2.sha256_file(args.shard_manifest),
          "flash_attention_wheel_identity": dependency_report["flash_attention"],
          "autocast_during_direct_forward": False,
          "local_monkey_patches": ["scoped SDPA finite instrumentation"],
-         "end_utc": v2.utc_now()})
+         "start_utc": worker_started_utc, "end_utc": None})
     metadata = {"schema_version": CORE_SCHEMA_VERSION,
                 "kind": ("longcat-next-core-diagnostic" if diagnostic else
                          "longcat-next-core-reference"),
                 "precision": args.precision, "serialized_activation_dtype": "float32 except integer arrays",
                 "runtime_profile": args.runtime_profile,
-                "source_dtypes": source_dtypes, "checkpoint": inspection,
+                "source_dtypes": source_dtypes,
+                "checkpoint": {**inspection, "repository": v2.PINNED_MODEL_REPOSITORY,
+                               "revision": v2.PINNED_MODEL_REVISION},
                 "software_versions": {"transformers": EXPECTED_TRANSFORMERS,
                                       "torch": torch.__version__},
                 "dependency_preflight": dependency_report,
@@ -1169,8 +1218,14 @@ def run_core_worker(args, weight_free_fixture):
     paths["npz"].replace(target)
     paths["metadata"].replace(Path(args.output_dir) / "metadata.json")
     paths["reproducibility"].replace(Path(args.output_dir) / "worker-reproducibility.json")
-    arrays, validation = v2.load_worker_arrays(args.output_dir)
+    metadata_path = Path(args.output_dir) / "metadata.json"
+    contract = v2.load_accepted_contract(Path(__file__).with_name("core-accepted-contract-v2.json"))
+    arrays, validation = v2.load_worker_arrays(
+        args.output_dir, precision=args.precision, contract=contract)
     v2.atomic_json(Path(args.output_dir) / "validation.json", validation)
+    metadata = json.loads(metadata_path.read_text(encoding="ascii"))
+    metadata["provenance"]["end_utc"] = v2.utc_now()
+    v2.atomic_json(metadata_path, metadata)
     return {"arrays": target, "metadata": Path(args.output_dir) / "metadata.json"}
 
 
@@ -1199,6 +1254,8 @@ def run_core_diagnose(args, weight_free_fixture):
 def run_core_generation(args, weight_free_fixture):
     """Acceptance parent: start independent worker processes then atomically promote."""
     require(args.repeat_count >= 2, "core acceptance requires at least two independent processes")
+    require(args.attention_backend != "sdpa-f32",
+            "diagnostic sdpa-f32 is forbidden for accepted candidates")
     require(Path(args.output_dir).name != "bf16-candidate-15b7fe8c",
             "refusing to overwrite the rejected schema-v1 candidate")
     expected_name = re.compile(
@@ -1223,4 +1280,9 @@ def run_core_generation(args, weight_free_fixture):
         if args.flash_wheel_path:
             command += ["--flash-wheel-path", str(args.flash_wheel_path)]
         commands.append(command)
-    return v2.orchestrate_workers(args.output_dir, commands)
+    implementations = [Path(__file__), Path(__file__).with_name("core_reference_v2.py"),
+                       script, Path(__file__).with_name("checkpoint-shards-v2.json"),
+                       Path(__file__).with_name("core-accepted-contract-v2.json")]
+    return v2.orchestrate_workers(
+        args.output_dir, commands, args.precision, args.attention_backend,
+        Path(__file__).with_name("core-accepted-contract-v2.json"), implementations)

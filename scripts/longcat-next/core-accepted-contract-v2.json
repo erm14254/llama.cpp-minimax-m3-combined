@@ -1,0 +1,26 @@
+{
+  "schema_version": 2,
+  "expected_array_count": 433,
+  "hidden_size": 3072,
+  "vocabulary_size": 131125,
+  "selected_logit_count": 57,
+  "top_k": 10,
+  "generated_tokens": 8,
+  "direct_cases": [
+    "bos_left_zero",
+    "literal_zero",
+    "maximum_text_token",
+    "eos_window_position_0",
+    "eos_window_position_1",
+    "eos_window_position_2",
+    "eos_window_position_3",
+    "prompt_at_once_vs_token_at_a_time",
+    "tokenizer_prompt_0",
+    "tokenizer_prompt_1"
+  ],
+  "complete_logits_case": "tokenizer_prompt_0",
+  "greedy_arrays": ["greedy_ids/prompt_0", "greedy_ids/prompt_1"],
+  "integer_surfaces": ["input_ids", "attention_mask", "position_ids", "cache_position", "topk_token_ids", "argmax_token_id"],
+  "hidden_surfaces": ["base_embedding", "fused_pre_trunk_embedding", "physical_block_00", "physical_block_01", "physical_block_02", "physical_block_27", "final_normalized_hidden_state"],
+  "analytical_surfaces": ["ngram_analytical_f32_reconstruction", "ngram_analytical_f32_reconstruction_error", "ngram_analytical_f32_max_absolute_error", "ngram_analytical_f32_max_relative_error"]
+}

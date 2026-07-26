@@ -11,6 +11,11 @@ the 14-layer text trunk is checked on-device. A scoped SDPA wrapper checks Q, K,
 V, floating masks, and output, and restores the original function on every exit.
 The first failing tensor is atomically recorded in `first-nonfinite.json`.
 `sdpa-f32` is diagnostic-only and is prohibited for acceptance.
+`core-accepted-contract-v2.json` freezes all 433 names, dtypes, ranks, fixed
+dimensions, sequence-length rules, ten case prefixes, complete-logit placement,
+and both greedy outputs. Parent acceptance validates worker metadata and this
+contract, then publishes canonical root NPZ/JSON/reproducibility files while
+retaining every independent run.
 
 The pinned shard manifest is `scripts/longcat-next/checkpoint-shards-v2.json`.
 Its sizes and SHA-256 OIDs come from the official Hugging Face Git-LFS pointer
@@ -38,7 +43,7 @@ python scripts\longcat-next\make-reference-fixtures.py --mode core-diagnose --mo
 
 python scripts\longcat-next\make-reference-fixtures.py --mode core --model-dir D:\LongCat-Next --output-dir D:\LongCat-Next-reference\bf16-candidate-%GEN%-default-v2 --precision bf16 --placement auto --offload-dir D:\LongCat-Next-offload --attention-backend default --repeat-count 2 > D:\LongCat-Next-reference\bf16-candidate-%GEN%-default-v2.log 2>&1
 
-python -c "import json,pathlib,numpy as np; p=pathlib.Path(r'D:\LongCat-Next-reference\bf16-candidate-%GEN%-default-v2'); v=json.loads((p/'candidate-validation.json').read_text()); assert v['whole_candidate_finite'] and v['exact_inventory_count']==433; runs=list((p/'runs').glob('run-*')); assert len(runs)>=2; [(__import__('builtins').exec('with np.load(r/\"arrays.npz\",allow_pickle=False) as z: assert len(z.files)==433; assert all(np.isfinite(z[k]).all() for k in z.files if z[k].dtype.kind==\"f\")')) for r in runs]; print(json.dumps(v,indent=2))" > D:\LongCat-Next-reference\bf16-candidate-%GEN%-default-v2-validation.log 2>&1
+python scripts\longcat-next\make-reference-fixtures.py --mode core-validate --candidate-dir D:\LongCat-Next-reference\bf16-candidate-%GEN%-default-v2 > D:\LongCat-Next-reference\bf16-candidate-%GEN%-default-v2-validation.json 2> D:\LongCat-Next-reference\bf16-candidate-%GEN%-default-v2-validation.stderr.log
 ```
 
 The eager command is needed only if the default diagnostic fails. Acceptance

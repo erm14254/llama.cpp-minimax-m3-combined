@@ -240,7 +240,8 @@ def parse_args(argv=None):
     parser.add_argument("--tokenizer-config", type=Path)
     parser.add_argument("--output-dir", type=Path, default=Path("longcat-next-reference-output"))
     parser.add_argument("--mode", choices=("ngram", "inspect", "preflight", "core",
-                                            "core-worker", "core-diagnose"), default="ngram")
+                                            "core-worker", "core-diagnose", "core-validate"),
+                        default="ngram")
     parser.add_argument("--model-dir", type=Path,
                         help="local official checkpoint for inspection/core fixtures; never downloaded")
     parser.add_argument("--max-output-bytes", type=int)
@@ -265,10 +266,24 @@ def parse_args(argv=None):
                         default=Path(__file__).with_name("checkpoint-shards-v2.json"))
     parser.add_argument("--skip-source-scan", action="store_true",
                         help="diagnosis only; disqualifies output from acceptance")
+    parser.add_argument("--candidate-dir", type=Path)
     return parser.parse_args(argv)
 
 
 def run(args):
+    if args.mode == "core-validate":
+        require(args.candidate_dir is not None, "core-validate requires --candidate-dir")
+        core = load_core_reference()
+        implementation_paths = [Path(__file__), Path(__file__).with_name("core_reference.py"),
+                                Path(__file__).with_name("core_reference_v2.py"),
+                                Path(__file__).with_name("checkpoint-shards-v2.json"),
+                                Path(__file__).with_name("core-accepted-contract-v2.json")]
+        try:
+            return core.v2.validate_candidate(
+                args.candidate_dir, Path(__file__).with_name("core-accepted-contract-v2.json"),
+                implementation_paths), 0
+        except (core.v2.V2Error, OSError, ValueError, json.JSONDecodeError) as exc:
+            raise FixtureError(str(exc)) from exc
     if args.mode in ("inspect", "preflight", "core", "core-worker", "core-diagnose"):
         require(args.model_dir is not None, f"{args.mode} mode requires --model-dir")
         core = load_core_reference()
@@ -340,9 +355,15 @@ def main(argv=None):
     try:
         result, size = run(args)
     except (FixtureError, subprocess.CalledProcessError) as exc:
+        if args.mode == "core-validate":
+            print(json.dumps({"schema_version": 2, "valid": False,
+                              "error": str(exc)}, indent=2, sort_keys=True))
+            return 1
         print(f"fixture error: {exc}", file=sys.stderr)
         return 1
     if args.mode in ("inspect", "preflight"):
+        print(json.dumps(result, indent=2, sort_keys=True))
+    elif args.mode == "core-validate":
         print(json.dumps(result, indent=2, sort_keys=True))
     elif args.mode in ("core", "core-worker", "core-diagnose"):
         if isinstance(result, dict):

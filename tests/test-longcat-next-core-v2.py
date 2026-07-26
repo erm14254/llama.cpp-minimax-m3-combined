@@ -6,6 +6,8 @@ import json
 import subprocess
 import tempfile
 import unittest
+import hashlib
+import struct
 from pathlib import Path
 
 import numpy as np
@@ -44,7 +46,8 @@ class Recorder:
 
 
 class FakeTensor:
-    def __init__(self, value): self.value = np.asarray(value); self.dtype = self.value.dtype; self.device = "cpu"
+    def __init__(self, value, dtype=None):
+        self.value = np.asarray(value); self.dtype = dtype or self.value.dtype; self.device = "cpu"
     @property
     def shape(self): return self.value.shape
     def is_floating_point(self): return self.value.dtype.kind == "f"
@@ -75,6 +78,55 @@ class FakeTorch:
     def isneginf(value): return FakeTensor(np.isneginf(value.value))
     @staticmethod
     def nonzero(value, as_tuple=False): return FakeTensor(np.argwhere(value.value))
+
+
+CONTRACT_PATH = ROOT / "scripts/longcat-next/core-accepted-contract-v2.json"
+IMPLEMENTATIONS = [ROOT / "scripts/longcat-next" / name for name in (
+    "make-reference-fixtures.py", "core_reference.py", "core_reference_v2.py",
+    "checkpoint-shards-v2.json", "core-accepted-contract-v2.json")]
+
+
+def contract_arrays(precision="bf16"):
+    contract = v2.load_accepted_contract(CONTRACT_PATH)
+    expected = v2.expected_array_contract(precision, contract)
+    activation = np.float32 if precision == "bf16" else np.float16
+    arrays = {}
+    for name, rule in expected.items():
+        case = name.split("/", 1)[0]
+        shape = tuple(1 if dim == "tokens" else 9 if dim == "prompt_plus_generated" else dim
+                      for dim in rule["shape"])
+        dtype = np.int64 if rule["dtype"] == "int64" else (
+            np.float32 if rule["dtype"] == "float32" else activation)
+        arrays[name] = np.zeros(shape, dtype=dtype)
+    return arrays
+
+
+def write_valid_worker(run_dir, run_index, precision="bf16", backend="default"):
+    arrays = contract_arrays(precision)
+    np.savez(run_dir / "arrays.npz", **arrays)
+    identities = {path.name: v2.sha256_file(path) for path in IMPLEMENTATIONS}
+    provenance = {name: None for name in v2.PROVENANCE_REQUIRED_FIELDS}
+    provenance.update({"run_index": run_index, "process_id": 1000 + run_index,
+                       "requested_precision": precision,
+                       "effective_precision": ("torch.bfloat16" if precision == "bf16" else "torch.float16"),
+                       "requested_attention_backend": backend,
+                       "effective_attention_backend": {"requested_backend": backend,
+                                                       "effective_implementation": "sdpa"},
+                       "script_sha256": identities,
+                       "shard_manifest_sha256": identities["checkpoint-shards-v2.json"],
+                       "start_utc": "2026-01-01T00:00:00Z", "end_utc": "2026-01-01T00:01:00Z"})
+    provenance["sdpa_backend_controls"] = {"effective_kernel_identity": "synthetic"}
+    metadata = {"schema_version": 2, "kind": "longcat-next-core-reference",
+                "precision": precision, "checkpoint": {"revision": v2.PINNED_MODEL_REVISION},
+                "source_weight_validation": {"all_finite": True},
+                "whole_candidate_validation": {"all_finite": True}, "provenance": provenance,
+                "arrays": {name: v2.array_metadata_for(value) for name, value in arrays.items()}}
+    (run_dir / "metadata.json").write_text(json.dumps(metadata), encoding="ascii")
+    (run_dir / "worker-reproducibility.json").write_text(
+        json.dumps({"schema_version": 2, "repeat_count": 1}), encoding="ascii")
+    (run_dir / "validation.json").write_text(
+        json.dumps({"all_finite": True, "contract_valid": True}), encoding="ascii")
+    return arrays
 
 
 class CoreV2Tests(unittest.TestCase):
@@ -143,33 +195,112 @@ class CoreV2Tests(unittest.TestCase):
                 raise RuntimeError("boom")
         self.assertIs(functional.scaled_dot_product_attention, original)
 
+    def test_two_attention_context_assigns_sdpa_to_physical_block(self):
+        model = Model()
+        attention = [Module(), Module()]
+        model.model.named_modules = lambda: [
+            ("layers.7.self_attn.0", attention[0]),
+            ("layers.7.self_attn.1", attention[1])]
+        class Checker:
+            def __init__(self): self.rows = []
+            def check(self, value, **context): self.rows.append(context)
+        checker = Checker()
+        v2.install_trunk_finite_hooks(model, checker, serialize_blocks=())
+        def original(q, k, value, **kwargs): return value
+        functional = type("Functional", (), {"scaled_dot_product_attention": staticmethod(original)})()
+        torch = type("Torch", (), {"nn": type("NN", (), {"functional": functional})()})()
+        with v2.instrument_sdpa(torch, checker, "default"):
+            for module in attention:
+                module.pre[0](module, (1,))
+                functional.scaled_dot_product_attention(1, 2, 3)
+                module.post[0](module, (), 3)
+        sdpa_outputs = [row for row in checker.rows
+                        if row.get("operation") == "scaled_dot_product_attention" and
+                        row.get("role") == "output"]
+        self.assertEqual([row["physical_block"] for row in sdpa_outputs], [14, 15])
+        self.assertEqual(sdpa_outputs[1]["module_name"], "model.model.layers.7.self_attn.1")
+
+    def test_finite_trunk_nonfinite_lm_head_reports_lm_head(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            model = Module(); model.model = type("Trunk", (), {"norm": Module()})(); model.lm_head = Module()
+            checker = v2.TorchFiniteChecker(temporary, "case", "default", 0, FakeTorch)
+            v2.install_output_finite_hooks(model, checker)
+            model.model.norm.post[0](model.model.norm, (), FakeTensor([1.0]))
+            with self.assertRaisesRegex(v2.V2Error, "model.lm_head"):
+                model.lm_head.post[0](model.lm_head, (), FakeTensor([np.nan]))
+            report = json.loads((Path(temporary) / "first-nonfinite.json").read_text())
+            self.assertEqual(report["module_name"], "model.lm_head")
+
+    def test_generation_step_two_nonfinite_score_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            checker = v2.TorchFiniteChecker(temporary, "generation_prompt_1", "default", 0, FakeTorch)
+            checker.check(FakeTensor([1.0]), module_name="generation.scores",
+                          operation="generation", role="score", prompt="prompt_1", generation_step=0)
+            with self.assertRaises(v2.V2Error):
+                checker.check(FakeTensor([np.nan]), module_name="generation.scores",
+                              operation="generation", role="score", prompt="prompt_1",
+                              generation_step=2)
+            report = json.loads((Path(temporary) / "first-nonfinite.json").read_text())
+            self.assertEqual((report["prompt"], report["generation_step"]), ("prompt_1", 2))
+
     def test_manifest_is_pinned_official_lfs_metadata(self):
         manifest = v2.load_shard_manifest(
             ROOT / "scripts/longcat-next/checkpoint-shards-v2.json")
         self.assertEqual(len(manifest["shards"]), 15)
         self.assertEqual(sum(row["bytes"] for row in manifest["shards"]), 150827115056)
 
-    def test_tiny_safetensors_source_scan_rejects_nonfinite(self):
-        from safetensors.numpy import save_file
+    def test_bf16_safetensors_source_scan_preserves_dtype_and_rejects_nonfinite(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); shards = []
+            root = Path(temporary); shards = []; tensors = {}
+            values = ([1.0], [np.nan], [np.inf], [-np.inf])
+            bf16_bits = (0x3f80, 0x7fc0, 0x7f80, 0xff80)
             for index in range(15):
                 path = root / f"model-{index + 1:05d}-of-00015.safetensors"
-                save_file({"weight": np.array([index], np.float32)}, path)
+                value = values[index] if index < len(values) else [float(index)]
+                # A real Safetensors envelope declaring BF16; the injected opener
+                # avoids requiring a heavyweight Torch install in this unit test.
+                header = json.dumps({"weight": {"dtype": "BF16", "shape": [1],
+                                                  "data_offsets": [0, 2]}}).encode("utf-8")
+                header += b" " * ((8 - len(header) % 8) % 8)
+                raw = bf16_bits[index] if index < len(bf16_bits) else 0x4000
+                path.write_bytes(struct.pack("<Q", len(header)) + header + struct.pack("<H", raw))
+                tensors[path.name] = FakeTensor(value, "torch.bfloat16")
                 shards.append({"filename": path.name, "bytes": path.stat().st_size,
                                "lfs_sha256": v2.sha256_file(path)})
             manifest = {"schema_version": 1, "repository": v2.PINNED_MODEL_REPOSITORY,
                         "revision": v2.PINNED_MODEL_REVISION, "shards": shards}
             manifest_path = root / "manifest.json"
             manifest_path.write_text(json.dumps(manifest), encoding="ascii")
-            report = v2.verify_and_scan_source(root, manifest_path, root / "reports")
-            self.assertEqual(report["tensor_count"], 15)
-            bad = root / shards[0]["filename"]
-            save_file({"weight": np.array([np.nan], np.float32)}, bad)
-            shards[0].update(bytes=bad.stat().st_size, lfs_sha256=v2.sha256_file(bad))
-            manifest_path.write_text(json.dumps(manifest), encoding="ascii")
+            class Opened:
+                def __init__(self, tensor): self.tensor = tensor
+                def __enter__(self): return self
+                def __exit__(self, *args): pass
+                def keys(self): return ["weight"]
+                def get_tensor(self, name): return self.tensor
+            def opener(path, framework, device):
+                self.assertEqual((framework, device), ("pt", "cpu"))
+                return Opened(tensors[Path(path).name])
+            original = dict(tensors)
+            tensors.update({name: FakeTensor([1.0], "torch.bfloat16") for name in tensors})
+            finite = v2.verify_and_scan_source(
+                root, manifest_path, root / "finite-reports", opener, FakeTorch)
+            self.assertEqual(finite["dtype_counts"], {"torch.bfloat16": 15})
+            tensors[shards[1]["filename"]] = original[shards[1]["filename"]]
             with self.assertRaises(v2.V2Error):
-                v2.verify_and_scan_source(root, manifest_path, root / "bad-reports")
+                v2.verify_and_scan_source(root, manifest_path, root / "reports", opener, FakeTorch)
+            failure = json.loads((root / "reports/source-scan/first-nonfinite-source.json").read_text())
+            self.assertEqual(failure["dtype"], "torch.bfloat16")
+            self.assertEqual(failure["nan_count"], 1)
+            for filename, count_key in ((shards[2]["filename"], "positive_infinity_count"),
+                                        (shards[3]["filename"], "negative_infinity_count")):
+                tensors.update({name: FakeTensor([1.0], "torch.bfloat16") for name in tensors})
+                tensors[filename] = original[filename]
+                with self.assertRaises(v2.V2Error):
+                    v2.verify_and_scan_source(root, manifest_path,
+                                              root / ("reports-" + filename), opener, FakeTorch)
+                report = json.loads((root / ("reports-" + filename) / "source-scan" /
+                                     "first-nonfinite-source.json").read_text())
+                self.assertEqual(report[count_key], 1)
 
     def test_independent_workers_are_retained_and_promoted_atomically(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -177,23 +308,64 @@ class CoreV2Tests(unittest.TestCase):
             commands = [["fake", "--output-dir", "{run_dir}"] for _ in range(2)]
             def runner(command, **kwargs):
                 run_dir = Path(command[command.index("--output-dir") + 1])
-                arrays = {f"a{i:03d}": np.array([i], np.float32) for i in range(433)}
-                np.savez(run_dir / "arrays.npz", **arrays)
-                (run_dir / "metadata.json").write_text("{}", encoding="ascii")
+                write_valid_worker(run_dir, int(run_dir.name[-2:]))
                 return subprocess.CompletedProcess(command, 0)
-            v2.orchestrate_workers(final, commands, runner=runner)
+            v2.orchestrate_workers(final, commands, "bf16", "default",
+                                   CONTRACT_PATH, IMPLEMENTATIONS, runner=runner)
             self.assertTrue((final / "candidate-validation.json").is_file())
             self.assertTrue((final / "runs/run-00/arrays.npz").is_file())
             self.assertTrue((final / "runs/run-01/arrays.npz").is_file())
             report = json.loads((final / "candidate-validation.json").read_text())
             self.assertTrue(report["whole_candidate_finite"])
+            self.assertTrue((final / "longcat-next-core-bf16.npz").is_file())
+            self.assertTrue((final / "longcat-next-core-bf16.json").is_file())
+            self.assertTrue((final / "longcat-next-core-reproducibility.json").is_file())
+            with np.load(final / "longcat-next-core-bf16.npz", allow_pickle=False) as root_npz:
+                self.assertEqual(len(root_npz.files), 433)
+            root_metadata = json.loads((final / "longcat-next-core-bf16.json").read_text())
+            self.assertEqual(root_metadata["kind"], "longcat-next-core-reference")
+            validated = v2.validate_candidate(final, CONTRACT_PATH, IMPLEMENTATIONS)
+            self.assertTrue(validated["valid"])
+            cli = subprocess.run([
+                __import__("sys").executable,
+                str(ROOT / "scripts/longcat-next/make-reference-fixtures.py"),
+                "--mode", "core-validate", "--candidate-dir", str(final)],
+                text=True, capture_output=True)
+            self.assertEqual(cli.returncode, 0, cli.stderr)
+            self.assertIs(json.loads(cli.stdout)["valid"], True)
+            (final / "longcat-next-core-bf16.npz").write_bytes(b"corrupt")
+            invalid = subprocess.run(cli.args, text=True, capture_output=True)
+            self.assertNotEqual(invalid.returncode, 0)
+            self.assertIs(json.loads(invalid.stdout)["valid"], False)
+
+    def test_empty_worker_metadata_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            final = Path(temporary) / "candidate"
+            def runner(command, **kwargs):
+                run_dir = Path(command[command.index("--output-dir") + 1])
+                write_valid_worker(run_dir, int(run_dir.name[-2:]))
+                (run_dir / "metadata.json").write_text("{}", encoding="ascii")
+                return subprocess.CompletedProcess(command, 0)
+            with self.assertRaises(v2.V2Error):
+                v2.orchestrate_workers(final, [["x", "--output-dir", "{run_dir}"]] * 2,
+                                       "bf16", "default", CONTRACT_PATH,
+                                       IMPLEMENTATIONS, runner=runner)
+            self.assertFalse(final.exists())
+
+    def test_count_correct_wrong_contract_name_is_rejected(self):
+        arrays = contract_arrays()
+        arrays["arbitrary/replacement"] = arrays.pop(next(iter(arrays)))
+        with self.assertRaisesRegex(v2.V2Error, "accepted array names differ"):
+            v2.validate_accepted_arrays(
+                arrays, "bf16", v2.load_accepted_contract(CONTRACT_PATH))
 
     def test_failed_worker_never_creates_final_candidate(self):
         with tempfile.TemporaryDirectory() as temporary:
             final = Path(temporary) / "candidate"
             def failed(command, **kwargs): return subprocess.CompletedProcess(command, 9)
             with self.assertRaises(v2.V2Error):
-                v2.orchestrate_workers(final, [["bad"], ["bad"]], runner=failed)
+                v2.orchestrate_workers(final, [["bad"], ["bad"]], "bf16", "default",
+                                       CONTRACT_PATH, IMPLEMENTATIONS, runner=failed)
             self.assertFalse(final.exists())
 
     def test_accepted_contract_is_433(self):
