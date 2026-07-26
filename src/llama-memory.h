@@ -1,11 +1,13 @@
 #pragma once
 
 #include "llama.h"
+#include "llama-arch.h"
 #include "llama-graph.h"
 
 #include <map>
 #include <memory>
 #include <functional>
+#include <string>
 
 struct llama_ubatch;
 
@@ -26,6 +28,11 @@ struct llama_memory_params {
 
     llama_memory_t mem_other;
 };
+
+// Resolve architecture-specific cache constraints before constructing memory.
+// Returns false and sets error when the requested cache is unsupported.
+bool llama_memory_params_resolve(
+        llm_arch arch, llama_memory_params & params, bool & promoted, std::string & error);
 
 enum llama_memory_status {
     LLAMA_MEMORY_STATUS_SUCCESS = 0,

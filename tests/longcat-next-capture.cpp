@@ -112,6 +112,8 @@ static llama_context_params capture_context_params(
     // direct-forward ubatch, so every callback surface contains all token rows.
     params.kv_unified = true;
     params.flash_attn_type = flash_attn;
+    // These are the requested cache types. The context constructor applies
+    // architecture-specific resolution, including LongCat-Next F16 -> BF16.
     apply_cache_type(params, cache_type);
     if (threads > 0) {
         params.n_threads = threads;
