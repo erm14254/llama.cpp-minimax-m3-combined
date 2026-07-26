@@ -972,6 +972,7 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_
             "direct forward requires official multimodal generation status in text mode")
     try:
         with torch.inference_mode(), torch.autocast(device_type=device.type, enabled=False), \
+             v2.instrument_router_linear(torch), \
              v2.instrument_sdpa(torch, finite_checker, attention_backend) as sdpa_observation:
             output = call_text_forward(model, {
                     "input_ids": ids.clone(), "attention_mask": attention,

@@ -33,6 +33,9 @@ DEFAULT_DIAGNOSTIC_CASES = (
     "prompt_at_once_vs_token_at_a_time",
 )
 CURRENT_ATTENTION_CONTEXT = contextvars.ContextVar("longcat_attention_context", default=None)
+CURRENT_ROUTER_CONTEXT = contextvars.ContextVar("longcat_router_context", default=None)
+CURRENT_ROUTER_LINEAR_SESSION = contextvars.ContextVar(
+    "longcat_router_linear_session", default=None)
 PROVENANCE_REQUIRED_FIELDS = frozenset({
     "generator_schema_version", "script_sha256", "llama_cpp", "checkpoint",
     "python", "operating_system", "torch", "cuda", "packages", "environment",
@@ -102,6 +105,79 @@ def router_runtime_identity(module):
         "runtime_router_source_sha256": sha256_file(source_path),
         "replay_variant": PINNED_ROUTER_REPLAY_VARIANT,
     }
+
+
+def _router_instrumentation_error(checker, context, error, original_report=None):
+    report = {
+        "schema_version": SCHEMA_VERSION, "case": checker.case,
+        "logical_layer": context.get("logical_layer"),
+        "physical_block": context.get("physical_block"),
+        "module_name": context.get("module_name"),
+        "operation": "router_instrumentation_error", "role": "instrumentation",
+        "attribution_status": "replay_failed", "exception_type": type(error).__name__,
+        "exception_message": str(error), "process_id": os.getpid(),
+        "run_index": checker.run_index,
+    }
+    checker.checks.append(report)
+    checker.fail_report(
+        original_report or report,
+        f"{context.get('module_name')}: original router output was non-finite "
+        "but internal attribution failed")
+
+
+@contextlib.contextmanager
+def instrument_router_linear(torch):
+    """Observe the live 4.57.6 router projection without changing its result."""
+    functional = torch.nn.functional
+    original = functional.linear
+    session = {"invocation_count": 0}
+    session_token = CURRENT_ROUTER_LINEAR_SESSION.set(session)
+
+    def wrapped(input_tensor, weight, bias=None):
+        active = CURRENT_ROUTER_CONTEXT.get()
+        if active is None:
+            return original(input_tensor, weight, bias)
+        checker = active["checker"]
+        common = {"module_name": active["module_name"],
+                  "logical_layer": active["logical_layer"],
+                  "physical_block": active["physical_block"]}
+        try:
+            active["linear_call_count"] += 1
+            require(active["linear_call_count"] == 1,
+                    f"{active['module_name']}: expected exactly one router F.linear call")
+            require(bias is None,
+                    f"{active['module_name']}: pinned router F.linear bias must be None")
+            checker.checks.append({
+                "schema_version": SCHEMA_VERSION, "case": checker.case,
+                **common, "operation": "router_linear", "role": "classifier_bias_argument",
+                "value": None, "process_id": os.getpid(), "run_index": checker.run_index,
+            })
+            checker.check(input_tensor, **common, operation="router_linear",
+                          role="router_linear_input")
+            checker.check(weight, **common, operation="router_linear",
+                          role="classifier_weight_runtime")
+            correction_bias = active["module"].e_score_correction_bias.detach().clone()
+            checker.check(correction_bias, **common, operation="router_runtime_parameter",
+                          role="e_score_correction_bias_runtime")
+            active["correction_bias"] = correction_bias
+            output = original(input_tensor, weight, bias)
+            checker.check(output, **common, operation="router_logits", role="router_logits")
+            active["router_logits"] = output
+            return output
+        except V2Error as error:
+            if checker.first_nonfinite is not None:
+                raise
+            _router_instrumentation_error(checker, common, error)
+        except Exception as error:
+            _router_instrumentation_error(checker, common, error)
+
+    functional.linear = wrapped
+    try:
+        yield session
+    finally:
+        functional.linear = original
+        CURRENT_ROUTER_CONTEXT.set(None)
+        CURRENT_ROUTER_LINEAR_SESSION.reset(session_token)
 
 
 def numpy_finite_report(name, value):
@@ -356,7 +432,7 @@ def install_trunk_finite_hooks(model, checker, serialize_blocks=(0, 1, 2, 27), c
     handles = []
 
     attention_tokens = {}
-    router_inputs = {}
+    router_tokens = {}
 
     def router_context(name):
         import re
@@ -369,42 +445,22 @@ def install_trunk_finite_hooks(model, checker, serialize_blocks=(0, 1, 2, 27), c
     def router_pre(name, logical, physical):
         def hook(module, args):
             require(args, f"{name} router forward-pre has no input")
-            router_inputs.setdefault(id(module), []).append(args[0])
-            checker.check(args[0], module_name=name, logical_layer=logical,
-                          physical_block=physical, operation="router_input", role="router_input")
-        return hook
-
-    def router_post(name, logical, physical):
-        def hook(module, args, output):
-            hidden_states = router_inputs[id(module)].pop()
-            if output is None:
-                return
-            require(isinstance(output, (tuple, list)) and len(output) == 2,
-                    f"{name} must return (topk_indices, topk_weights)")
-            topk_indices, original_weights = output
-            checker.check(topk_indices, module_name=name, logical_layer=logical,
-                          physical_block=physical, operation="router_output", role="topk_indices")
-            original_report = checker.inspect_tensor(
-                original_weights, module_name=name, logical_layer=logical,
-                physical_block=physical, operation="router_output", role="topk_weights")
-            if original_report["finite_count"] == original_report["total_elements"]:
-                return
-
-            if checker.torch_module is None:
-                import torch
-            else:
-                torch = checker.torch_module
             common = {"module_name": name, "logical_layer": logical,
                       "physical_block": physical}
-            replay = []
-            reasons = []
+            input_report = checker.inspect_tensor(
+                args[0], **common, operation="router_input", role="router_input")
+            if input_report["finite_count"] != input_report["total_elements"]:
+                checker.fail_report(input_report)
+            session = CURRENT_ROUTER_LINEAR_SESSION.get()
+            if session is None:
+                return
             try:
+                session["invocation_count"] += 1
                 identity = router_runtime_identity(module)
                 settings = {
                     "schema_version": SCHEMA_VERSION, "case": checker.case,
-                    "logical_layer": logical, "physical_block": physical,
-                    "module_name": name, "operation": "router_configuration",
-                    "role": "configuration", "top_k": int(module.top_k),
+                    **common, "operation": "router_configuration", "role": "configuration",
+                    "top_k": int(module.top_k),
                     "n_routed_experts": int(module.n_routed_experts),
                     "routed_scaling_factor": float(module.routed_scaling_factor),
                     "router_bias": bool(module.router_bias),
@@ -417,23 +473,71 @@ def install_trunk_finite_hooks(model, checker, serialize_blocks=(0, 1, 2, 27), c
                 require(not settings["norm_topk_prob_attribute_present"],
                         f"{name}: pinned router unexpectedly defines norm_topk_prob")
                 checker.checks.append(settings)
+                active = {"module": module, **common, "checker": checker,
+                          "invocation_index": session["invocation_count"] - 1,
+                          "input_check_sequence": input_report["check_sequence"],
+                          "correction_bias": None, "router_logits": None,
+                          "linear_call_count": 0}
+                token = CURRENT_ROUTER_CONTEXT.set(active)
+                router_tokens.setdefault(id(module), []).append((token, active))
+            except V2Error as error:
+                if checker.first_nonfinite is not None:
+                    raise
+                _router_instrumentation_error(checker, common, error)
+            except Exception as error:
+                _router_instrumentation_error(checker, common, error)
+        return hook
 
+    def router_post(name, logical, physical):
+        def hook(module, args, output):
+            try:
+                common = {"module_name": name, "logical_layer": logical,
+                          "physical_block": physical}
+                entries = router_tokens.get(id(module), [])
+                active = entries[-1][1] if entries else None
+                if output is None:
+                    return
+                require(isinstance(output, (tuple, list)) and len(output) == 2,
+                        f"{name} must return (topk_indices, topk_weights)")
+                topk_indices, original_weights = output
+                checker.check(topk_indices, **common, operation="router_output",
+                              role="topk_indices")
+                original_report = checker.inspect_tensor(
+                    original_weights, **common, operation="router_output", role="topk_weights")
+                if active is None:
+                    if original_report["finite_count"] != original_report["total_elements"]:
+                        checker.fail_report(original_report)
+                    return
+                require(active["linear_call_count"] == 1,
+                        f"{name}: expected exactly one intercepted router F.linear call, "
+                        f"got {active['linear_call_count']}")
+                if original_report["finite_count"] == original_report["total_elements"]:
+                    return
+                require(active["router_logits"] is not None,
+                        f"{name}: intercepted router logits are missing")
+                require(active["correction_bias"] is not None,
+                        f"{name}: live correction bias capture is missing")
+                if checker.torch_module is None:
+                    import torch
+                else:
+                    torch = checker.torch_module
+                replay = []
+                reasons = []
                 def inspect(value, operation, role=None):
                     report = checker.inspect_tensor(
                         value, **common, operation=operation, role=role or operation)
                     replay.append(report)
                     return value
 
-                router_input = inspect(hidden_states, "router_input")
-                weight = inspect(module.classifier.weight, "classifier_weight")
-                bias = inspect(module.e_score_correction_bias, "e_score_correction_bias")
-                flattened = router_input.view(-1, module.config.hidden_size)
-                # Transformers 4.57.6 omits classifier.bias even when router_bias is true.
-                router_logits = inspect(torch.nn.functional.linear(
-                    flattened.type(torch.float32), weight.type(torch.float32)), "router_logits")
-                scores = inspect(router_logits.softmax(dim=-1), "softmax_scores")
+                checker.checks.append({
+                    "schema_version": SCHEMA_VERSION, "case": checker.case, **common,
+                    "operation": "router_replay_input_reference", "role": "router_input",
+                    "input_check_sequence": active["input_check_sequence"],
+                    "process_id": os.getpid(), "run_index": checker.run_index})
+                scores = inspect(active["router_logits"].softmax(dim=-1), "softmax_scores")
                 scores_for_choice = inspect(
-                    scores.view(-1, module.n_routed_experts) + bias.unsqueeze(0),
+                    scores.view(-1, module.n_routed_experts) +
+                    active["correction_bias"].unsqueeze(0),
                     "scores_for_choice")
                 require(int(module.top_k) == int(topk_indices.shape[-1]),
                         f"{name}: configured top_k differs from original output")
@@ -470,31 +574,36 @@ def install_trunk_finite_hooks(model, checker, serialize_blocks=(0, 1, 2, 27), c
                         elif not torch.equal(original_weights[original_finite],
                                              replay_final[replay_finite]):
                             reasons.append("finite_values")
+                if reasons:
+                    checker.checks.append({
+                        "schema_version": SCHEMA_VERSION, "case": checker.case, **common,
+                        "operation": "router_replay_mismatch", "role": "replay_mismatch",
+                        "reasons": reasons, "process_id": os.getpid(),
+                        "run_index": checker.run_index})
+                first_invalid = next((row for row in replay
+                                      if row["finite_count"] != row["total_elements"]), None)
+                if first_invalid is None or reasons:
+                    checker.fail_report(
+                        first_invalid or original_report,
+                        f"{name}: router diagnostic replay mismatch; refusing false attribution")
+                checker.fail_report(first_invalid)
+            except V2Error as error:
+                if checker.first_nonfinite is not None:
+                    raise
+                original = locals().get("original_report")
+                _router_instrumentation_error(checker, {
+                    "module_name": name, "logical_layer": logical,
+                    "physical_block": physical}, error, original)
             except Exception as error:
-                checker.checks.append({
-                    "schema_version": SCHEMA_VERSION, "case": checker.case,
-                    "logical_layer": logical, "physical_block": physical,
-                    "module_name": name, "operation": "router_instrumentation_error",
-                    "role": "instrumentation", "attribution_status": "replay_failed",
-                    "exception_type": type(error).__name__, "exception_message": str(error),
-                    "process_id": os.getpid(), "run_index": checker.run_index})
-                checker.fail_report(
-                    original_report,
-                    f"{name}: original router output was non-finite but internal attribution failed")
-            if reasons:
-                checker.checks.append({
-                    "schema_version": SCHEMA_VERSION, "case": checker.case,
-                    "logical_layer": logical, "physical_block": physical,
-                    "module_name": name, "operation": "router_replay_mismatch",
-                    "role": "replay_mismatch", "reasons": reasons,
-                    "process_id": os.getpid(), "run_index": checker.run_index})
-            first_invalid = next((row for row in replay
-                                  if row["finite_count"] != row["total_elements"]), None)
-            if first_invalid is None or reasons:
-                checker.fail_report(
-                    first_invalid or original_report,
-                    f"{name}: router diagnostic replay mismatch; refusing false attribution")
-            checker.fail_report(first_invalid)
+                original = locals().get("original_report")
+                _router_instrumentation_error(checker, {
+                    "module_name": name, "logical_layer": logical,
+                    "physical_block": physical}, error, original)
+            finally:
+                entries = router_tokens.get(id(module), [])
+                if entries:
+                    token, _ = entries.pop()
+                    CURRENT_ROUTER_CONTEXT.reset(token)
         return hook
 
     def derive_context(name):

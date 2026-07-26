@@ -56,6 +56,7 @@ class FakeTensor:
     def sum(self): return FakeTensor(self.value.sum())
     def item(self): return self.value.item()
     def detach(self): return self
+    def clone(self): return FakeTensor(self.value.copy(), self.dtype)
     def cpu(self): return self
     def tolist(self): return self.value.tolist()
     def min(self): return FakeTensor(self.value.min())
@@ -118,7 +119,14 @@ class FakeTorch:
     def equal(left, right): return np.array_equal(left.value, right.value)
 
 
-def fake_linear(hidden, weight):
+class MetaLikeWeight:
+    def __getattr__(self, name):
+        raise RuntimeError(f"meta-like offloaded parameter accessed: {name}")
+
+
+def fake_linear(hidden, weight, bias=None):
+    if bias is not None:
+        raise AssertionError("synthetic pinned router must omit linear bias")
     if FakeTorch.linear_override is not None:
         return FakeTensor(FakeTorch.linear_override)
     return FakeTensor(hidden.value @ weight.value.T)
@@ -244,17 +252,35 @@ class CoreV2Tests(unittest.TestCase):
         self.assertEqual(recorder.blocks, list(range(28)))
 
     def _run_invalid_router(self, temporary, original_weights, scaling=1.0,
-                            original_indices=None):
+                            original_indices=None, offload_after_linear=True,
+                            linear_calls=1, simulate_accelerate_offload=True):
         model, router = synthetic_router_model(scaling)
         checker = v2.TorchFiniteChecker(temporary, "case", "default", 0, FakeTorch)
         v2.install_trunk_finite_hooks(model, checker, serialize_blocks=())
         hidden = FakeTensor([[1.0, 2.0, 3.0]])
-        router.pre[0](router, (hidden,))
         indices = (FakeTorch.topk(FakeTensor(np.zeros((1, 3))), 2,
                                   dim=-1, sorted=False)[1]
                    if original_indices is None else FakeTensor(original_indices))
+        resident_weight = router.classifier.weight
+        resident_correction_bias = router.e_score_correction_bias
+        if simulate_accelerate_offload:
+            router.classifier.weight = MetaLikeWeight()
+            router.e_score_correction_bias = MetaLikeWeight()
         with self.assertRaises(v2.V2Error):
-            router.post[0](router, (hidden,), (indices, FakeTensor(original_weights)))
+            with v2.instrument_router_linear(FakeTorch):
+                router.pre[0](router, (hidden,))
+                if simulate_accelerate_offload:
+                    router.classifier.weight = resident_weight
+                    router.e_score_correction_bias = resident_correction_bias
+                for _ in range(linear_calls):
+                    FakeTorch.nn.functional.linear(
+                        hidden.view(-1, router.config.hidden_size).type(FakeTorch.float32),
+                        router.classifier.weight.type(FakeTorch.float32))
+                if offload_after_linear:
+                    router.classifier.weight = MetaLikeWeight()
+                    router.e_score_correction_bias = MetaLikeWeight()
+                router.post[0](router, (hidden,),
+                               (indices, FakeTensor(np.asarray(original_weights, np.float32))))
         return json.loads((Path(temporary) / "first-nonfinite.json").read_text()), \
             json.loads((Path(temporary) / "finite-trace.json").read_text())
 
@@ -267,7 +293,6 @@ class CoreV2Tests(unittest.TestCase):
             self.assertEqual((failure["logical_layer"], failure["physical_block"]), (4, 8))
             self.assertEqual(failure["operation"], "router_logits")
             roles = [row.get("role") for row in trace["checks"]]
-            self.assertIn("topk_weights", roles)
             self.assertTrue(any(row.get("operation") == "router_input" for row in trace["checks"]))
             self.assertEqual(FakeTorch.topk_sorted_calls[-1], False)
             configuration = next(row for row in trace["checks"]
@@ -285,6 +310,11 @@ class CoreV2Tests(unittest.TestCase):
             self.assertEqual(configuration["runtime_router_source_path"],
                              "/synthetic/modeling_longcat_flash.py")
             self.assertEqual(configuration["runtime_router_source_sha256"], "0" * 64)
+            operations = [row.get("operation") for row in trace["checks"]]
+            self.assertEqual(operations.count("router_input"), 1)
+            for role in ("router_linear_input", "classifier_weight_runtime", "router_logits",
+                         "e_score_correction_bias_runtime"):
+                self.assertTrue(any(row.get("role") == role for row in trace["checks"]), role)
             FakeTorch.linear_override = None
 
     def test_router_softmax_is_exact_first_failure(self):
@@ -300,8 +330,7 @@ class CoreV2Tests(unittest.TestCase):
             failure, trace = self._run_invalid_router(temporary, [[np.inf, np.inf]], scaling=np.inf)
             self.assertEqual(failure["operation"], "topk_weights_scaled")
             operations = [row.get("operation") for row in trace["checks"]]
-            for operation in ("router_input", "classifier_weight", "e_score_correction_bias",
-                              "router_logits", "softmax_scores", "scores_for_choice",
+            for operation in ("router_input", "router_logits", "softmax_scores", "scores_for_choice",
                               "topk_indices", "topk_weights_gathered", "topk_weights_scaled"):
                 self.assertIn(operation, operations)
             self.assertNotIn("topk_denominator", operations)
@@ -313,19 +342,75 @@ class CoreV2Tests(unittest.TestCase):
             failure, _ = self._run_invalid_router(temporary, [[np.nan, np.nan]])
             self.assertEqual(failure["operation"], "router_logits")
 
-    def test_router_replay_mismatch_refuses_attribution(self):
+    def test_nonfinite_live_classifier_weight_is_exact_first_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
-            FakeTorch.linear_override = [[np.nan, np.nan, np.nan]]
+            model, router = synthetic_router_model()
+            router.classifier.weight = FakeTensor([[np.nan, 0.0, 0.0]] * 3)
+            checker = v2.TorchFiniteChecker(temporary, "case", "default", 0, FakeTorch)
+            v2.install_trunk_finite_hooks(model, checker, serialize_blocks=())
+            hidden = FakeTensor([[1.0, 2.0, 3.0]])
+            original_linear = FakeTorch.nn.functional.linear
+            with self.assertRaises(v2.V2Error), v2.instrument_router_linear(FakeTorch):
+                router.pre[0](router, (hidden,))
+                FakeTorch.nn.functional.linear(
+                    hidden.type(FakeTorch.float32),
+                    router.classifier.weight.type(FakeTorch.float32))
+            failure = json.loads((Path(temporary) / "first-nonfinite.json").read_text())
+            self.assertEqual(failure["role"], "classifier_weight_runtime")
+            self.assertIsNone(v2.CURRENT_ROUTER_CONTEXT.get())
+            self.assertIs(FakeTorch.nn.functional.linear, original_linear)
+
+    def test_exactly_one_router_linear_call_is_required(self):
+        for calls in (0, 2):
+            with self.subTest(calls=calls), tempfile.TemporaryDirectory() as temporary:
+                _, trace = self._run_invalid_router(
+                    temporary, [[np.nan, np.nan]], linear_calls=calls)
+                error = next(row for row in trace["checks"]
+                             if row.get("operation") == "router_instrumentation_error")
+                self.assertIn("exactly one", error["exception_message"])
+                self.assertIsNone(v2.CURRENT_ROUTER_CONTEXT.get())
+
+    def test_finite_router_path_restores_context_and_linear(self):
+        with tempfile.TemporaryDirectory() as temporary:
             model, router = synthetic_router_model()
             checker = v2.TorchFiniteChecker(temporary, "case", "default", 0, FakeTorch)
             v2.install_trunk_finite_hooks(model, checker, serialize_blocks=())
             hidden = FakeTensor([[1.0, 2.0, 3.0]])
-            router.pre[0](router, (hidden,))
+            original_linear = FakeTorch.nn.functional.linear
+            with v2.instrument_router_linear(FakeTorch):
+                router.pre[0](router, (hidden,))
+                logits = FakeTorch.nn.functional.linear(
+                    hidden.type(FakeTorch.float32),
+                    router.classifier.weight.type(FakeTorch.float32))
+                scores = logits.softmax(dim=-1)
+                indices = FakeTorch.topk(scores, 2, dim=-1, sorted=False)[1]
+                weights = scores.gather(1, indices) * router.routed_scaling_factor
+                router.classifier.weight = MetaLikeWeight()
+                router.e_score_correction_bias = MetaLikeWeight()
+                router.post[0](router, (hidden,), (indices, weights))
+            self.assertIs(FakeTorch.nn.functional.linear, original_linear)
+            self.assertIsNone(v2.CURRENT_ROUTER_CONTEXT.get())
+            self.assertFalse((Path(temporary) / "first-nonfinite.json").exists())
+
+    def test_router_replay_mismatch_refuses_attribution(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            FakeTorch.linear_override = None
+            model, router = synthetic_router_model()
+            checker = v2.TorchFiniteChecker(temporary, "case", "default", 0, FakeTorch)
+            v2.install_trunk_finite_hooks(model, checker, serialize_blocks=())
+            hidden = FakeTensor([[1.0, 2.0, 3.0]])
             # Replay order is [2, 1]; preserve the same IDs and count but
             # reverse them to prove ordering is part of exact reproduction.
             wrong_indices = FakeTensor([[1, 2]])
             with self.assertRaisesRegex(v2.V2Error, "replay mismatch"):
-                router.post[0](router, (hidden,), (wrong_indices, FakeTensor([[np.nan, np.nan]])))
+                with v2.instrument_router_linear(FakeTorch):
+                    router.pre[0](router, (hidden,))
+                    FakeTorch.nn.functional.linear(
+                        hidden.type(FakeTorch.float32),
+                        router.classifier.weight.type(FakeTorch.float32))
+                    router.classifier.weight = MetaLikeWeight()
+                    router.post[0](router, (hidden,),
+                                   (wrong_indices, FakeTensor([[np.nan, np.nan]])))
             trace = json.loads((Path(temporary) / "finite-trace.json").read_text())
             mismatch = next(row for row in trace["checks"]
                             if row.get("operation") == "router_replay_mismatch")
@@ -335,7 +420,7 @@ class CoreV2Tests(unittest.TestCase):
     def test_router_replay_rejects_different_mixed_finite_mask(self):
         with tempfile.TemporaryDirectory() as temporary:
             FakeTorch.linear_override = None
-            FakeTensor.softmax_override = [[np.nan, 0.2, 0.3]]
+            FakeTensor.softmax_override = np.asarray([[np.nan, 0.2, 0.3]], np.float32)
             # NumPy's test top-k selects the NaN and 0.3 entries. The original
             # has the same one-NaN aggregate, but at the opposite output index.
             self._run_invalid_router(
@@ -350,15 +435,19 @@ class CoreV2Tests(unittest.TestCase):
     def test_router_instrumentation_error_persists_both_failure_files(self):
         with tempfile.TemporaryDirectory() as temporary:
             model, router = synthetic_router_model()
-            del router.config
             checker = v2.TorchFiniteChecker(temporary, "case", "default", 0, FakeTorch)
             v2.install_trunk_finite_hooks(model, checker, serialize_blocks=())
             hidden = FakeTensor([[1.0, 2.0, 3.0]])
-            router.pre[0](router, (hidden,))
             indices = FakeTensor([[2, 1]])
             with self.assertRaisesRegex(v2.V2Error, "internal attribution failed"):
-                router.post[0](router, (hidden,),
-                               (indices, FakeTensor([[np.nan, np.nan]])))
+                with v2.instrument_router_linear(FakeTorch):
+                    router.pre[0](router, (hidden,))
+                    FakeTorch.nn.functional.linear(
+                        hidden.type(FakeTorch.float32),
+                        router.classifier.weight.type(FakeTorch.float32))
+                    del router.n_routed_experts
+                    router.post[0](router, (hidden,),
+                                   (indices, FakeTensor([[np.nan, np.nan]])))
             first = Path(temporary) / "first-nonfinite.json"
             trace_path = Path(temporary) / "finite-trace.json"
             self.assertTrue(first.is_file())
