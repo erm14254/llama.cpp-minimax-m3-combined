@@ -502,6 +502,7 @@ llama_model_longcat_flash_ngram::graph::graph(
             cur = build_attn(inp_attn_k,
                     model.layers[il].wo, NULL, model.layers[il].wo_s,
                     Qcur, Kcur, Vcur, nullptr, nullptr, model.layers[il].wv_b, kq_scale, il);
+            cb(cur, "attn_out", il);
         }
 
         if (il == n_layer - 1 && inp_out_ids && cparams.embeddings_nextn_masked) {

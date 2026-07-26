@@ -9,6 +9,8 @@
 #include <cassert>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
+#include <cstdio>
 #include <limits>
 #include <map>
 #include <stdexcept>
@@ -1747,6 +1749,26 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
         set_input_kq_mask_impl<ggml_fp16_t>(args, (ggml_fp16_t *) dst->data, causal_attn);
     } else {
         set_input_kq_mask_impl<float>(args, (float *) dst->data, causal_attn);
+    }
+
+    if (const char * diag = getenv("LLAMA_LONGCAT_MASK_DIAG"); diag && strcmp(diag, "1") == 0) {
+        for (uint32_t i = 0; i < n_tokens; ++i) {
+            int64_t kept = 0;
+            int first[4] = { -1, -1, -1, -1 };
+            for (int64_t j = 0; j < n_kv; ++j) {
+                const float value = dst->type == GGML_TYPE_F16
+                    ? ggml_fp16_to_fp32(((ggml_fp16_t *) dst->data)[i*n_kv + j])
+                    : ((float *) dst->data)[i*n_kv + j];
+                if (std::isfinite(value)) {
+                    if (kept < 4) first[kept] = (int) j;
+                    ++kept;
+                }
+            }
+            fprintf(stderr, "LCNEXT_MASK_DIAG query=%u seq=%d pos=%d kept=%lld n_kv=%lld first=[%d,%d,%d,%d]\n",
+                    i, ubatch->seq_id[i][0], ubatch->pos[i], (long long) kept, (long long) n_kv,
+                    first[0], first[1], first[2], first[3]);
+            fflush(stderr);
+        }
     }
 
     //const int64_t t_end = ggml_time_us();

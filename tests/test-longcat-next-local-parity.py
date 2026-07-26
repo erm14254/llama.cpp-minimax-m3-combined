@@ -20,6 +20,36 @@ DIRECT_NAMES = set(CPP_TO_REFERENCE)
 INTEGER_SUFFIXES = ("input_ids", "attention_mask", "position_ids", "cache_position")
 
 
+def validate_reference_finiteness(npz, output_dir):
+    invalid = {}
+    scanned = 0
+    for key in npz.files:
+        value = np.asarray(npz[key])
+        if value.dtype.kind != "f":
+            continue
+        scanned += 1
+        bad = np.argwhere(~np.isfinite(value))
+        if bad.size:
+            invalid[key] = {"non_finite_count": int(bad.shape[0]),
+                            "nan_count": int(np.isnan(value).sum()),
+                            "positive_infinity_count": int(np.isposinf(value).sum()),
+                            "negative_infinity_count": int(np.isneginf(value).sum()),
+                            "first_affected_indices": bad[:8].tolist()}
+    report = {"scanned_floating_arrays": scanned, "invalid_arrays": invalid,
+              "passed": not invalid}
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "reference-validation.json").write_text(
+        json.dumps(report, indent=2) + "\n", encoding="ascii")
+    return report
+
+
+def run_capture_after_validation(validation, command, runner=subprocess.run):
+    if not validation["passed"]:
+        keys = ", ".join(sorted(validation["invalid_arrays"]))
+        raise ValueError(f"invalid parity reference contains non-finite arrays: {keys}")
+    return runner(command, check=True)
+
+
 def read_manifest(path):
     rows = {}
     for number, line in enumerate(path.read_text(encoding="ascii").splitlines(), 1):
@@ -194,6 +224,9 @@ def build_parser():
     p.add_argument("--capture-exe", type=Path, required=True)
     p.add_argument("--n-gpu-layers", type=int, default=0)
     p.add_argument("--threads", type=int, default=0)
+    p.add_argument("--flash-attn", choices=("auto", "disabled", "enabled"), default="auto")
+    p.add_argument("--layer0-diagnostic", type=int, choices=(0, 1), default=0)
+    p.add_argument("--case", action="append", default=[], help="capture only this reference case (repeatable)")
     p.add_argument("--tolerance-policy", type=Path, default=Path(__file__).parent / "fixtures/longcat-next/stage1-tolerances.json")
     return p
 
@@ -204,14 +237,27 @@ def main():
     npz = np.load(args.reference_dir / f"longcat-next-core-{args.precision}.npz", allow_pickle=False)
     policy = json.loads(args.tolerance_policy.read_text(encoding="ascii"))
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    validation = validate_reference_finiteness(npz, args.output_dir)
     manifest_path = args.output_dir / "case-manifest.json"
     cases = make_case_manifest(npz, manifest_path)
+    if args.case:
+        selected = set(args.case)
+        cases = [case for case in cases if case["reference_prefix"] in selected]
+        missing = selected - {case["reference_prefix"] for case in cases}
+        if missing:
+            raise ValueError(f"unknown requested cases: {sorted(missing)}")
+        manifest_path.write_text(json.dumps({"schema_version": 1, "cases": cases}, indent=2) + "\n", encoding="ascii")
     greedy_cases = {case["reference_prefix"] for case in cases if case["greedy_eight_tokens"]}
-    if greedy_cases != {"tokenizer_prompt_0", "tokenizer_prompt_1"}:
+    if not args.case and greedy_cases != {"tokenizer_prompt_0", "tokenizer_prompt_1"}:
         raise ValueError(f"expected eight-token greedy references for both tokenizer prompts, got {greedy_cases}")
-    subprocess.run([str(args.capture_exe), "--model", str(args.model), "--case-manifest", str(manifest_path),
+    command = [str(args.capture_exe), "--model", str(args.model), "--case-manifest", str(manifest_path),
                     "--output-dir", str(args.output_dir), "--n-gpu-layers", str(args.n_gpu_layers),
-                    "--threads", str(args.threads)], check=True)
+                    "--threads", str(args.threads), "--flash-attn", args.flash_attn,
+                    "--layer0-diagnostic", str(args.layer0_diagnostic)]
+    try:
+        run_capture_after_validation(validation, command)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     reports = {case["name"]: compare_case(npz, metadata, case, args.output_dir / case["name"], args.precision, policy) for case in cases}
     overall = all(row["passed"] for row in reports.values())
     report = {"precision": args.precision, "tolerance_policy": str(args.tolerance_policy), "cases": reports, "passed": overall}

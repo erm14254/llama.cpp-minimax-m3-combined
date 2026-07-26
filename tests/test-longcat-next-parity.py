@@ -21,6 +21,39 @@ class ParityHarnessTests(unittest.TestCase):
         self.assertEqual(PARITY.DIRECT_NAMES, expected)
         self.assertEqual(len(PARITY.DIRECT_NAMES), 20)
 
+    def test_reference_finiteness_preflight_writes_report(self):
+        class Fixture:
+            files = ["finite", "invalid", "integer"]
+            data = {"finite": np.array([1.0]), "invalid": np.array([0.0, np.nan]),
+                    "integer": np.array([1], dtype=np.int64)}
+            def __getitem__(self, key): return self.data[key]
+        with tempfile.TemporaryDirectory() as td:
+            report = PARITY.validate_reference_finiteness(Fixture(), Path(td))
+            self.assertFalse(report["passed"])
+            self.assertEqual(report["invalid_arrays"]["invalid"]["non_finite_count"], 1)
+            self.assertTrue((Path(td) / "reference-validation.json").is_file())
+
+    def test_finite_reference_preflight_passes(self):
+        class Fixture:
+            files = ["finite"]
+            def __getitem__(self, key): return np.array([1.0, 2.0])
+        with tempfile.TemporaryDirectory() as td:
+            validation = PARITY.validate_reference_finiteness(Fixture(), Path(td))
+            self.assertTrue(validation["passed"])
+            called = []
+            PARITY.run_capture_after_validation(
+                validation, ["capture"], runner=lambda *args, **kwargs: called.append((args, kwargs)))
+            self.assertEqual(called[0][0], (["capture"],))
+            self.assertTrue(called[0][1]["check"])
+
+    def test_invalid_reference_prevents_capture_invocation(self):
+        called = []
+        with self.assertRaisesRegex(ValueError, "bad/key"):
+            PARITY.run_capture_after_validation(
+                {"passed": False, "invalid_arrays": {"bad/key": {}}}, ["capture"],
+                runner=lambda *args, **kwargs: called.append(args))
+        self.assertEqual(called, [])
+
     def raw(self, values, dtype, dims, kind="hidden"):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "x.raw"

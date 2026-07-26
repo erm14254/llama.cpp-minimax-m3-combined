@@ -17,7 +17,9 @@ using json = nlohmann::json;
 struct capture_state {
     fs::path dir;
     std::ofstream manifest;
+    std::ofstream layer0_manifest;
     bool direct_forward = true;
+    bool layer0_diagnostic = false;
 };
 
 static bool wanted(const std::string & name) {
@@ -26,20 +28,34 @@ static bool wanted(const std::string & name) {
            name == "l_out-2" || name == "l_out-27";
 }
 
+static bool wanted_layer0(const std::string & name) {
+    static const std::vector<std::string> names = {
+        "attn_norm-0", "q_scaled-0", "kv_cmpr_scaled-0", "q_nope_absorbed_perm-0",
+        "Qcur-0", "Kcur-0", "Vcur-0", "attn_out-0", "ffn_inp-0", "ffn_norm-0",
+        "ffn_out-0", "l_out-0"};
+    return std::find(names.begin(), names.end(), name) != names.end();
+}
+
+static void write_capture(ggml_tensor * tensor, const fs::path & dir, std::ofstream & manifest, const std::string & prefix) {
+    std::string file = prefix + tensor->name + ".raw";
+    for (char & c : file) if (!std::isalnum((unsigned char) c) && c != '-' && c != '_') c = '_';
+    std::vector<uint8_t> bytes(ggml_nbytes(tensor));
+    ggml_backend_tensor_get(tensor, bytes.data(), 0, bytes.size());
+    std::ofstream(dir / file, std::ios::binary).write((char *) bytes.data(), bytes.size());
+    manifest << tensor->name << '\t' << ggml_type_name(tensor->type) << '\t';
+    for (int i = 0; i < GGML_MAX_DIMS; ++i) manifest << (i ? "," : "") << tensor->ne[i];
+    manifest << '\t' << file << '\n';
+}
+
 static bool capture_cb(ggml_tensor * tensor, bool ask, void * opaque) {
     auto & state = *static_cast<capture_state *>(opaque);
     const std::string name = tensor->name;
-    if (!state.direct_forward || !wanted(name)) return false;
+    const bool normal = wanted(name);
+    const bool diagnostic = state.layer0_diagnostic && wanted_layer0(name);
+    if (!state.direct_forward || (!normal && !diagnostic)) return false;
     if (ask) return true;
-    std::string file = name;
-    for (char & c : file) if (!std::isalnum((unsigned char) c) && c != '-' && c != '_') c = '_';
-    file += ".raw";
-    std::vector<uint8_t> bytes(ggml_nbytes(tensor));
-    ggml_backend_tensor_get(tensor, bytes.data(), 0, bytes.size());
-    std::ofstream(state.dir / file, std::ios::binary).write((char *) bytes.data(), bytes.size());
-    state.manifest << name << '\t' << ggml_type_name(tensor->type) << '\t';
-    for (int i = 0; i < GGML_MAX_DIMS; ++i) state.manifest << (i ? "," : "") << tensor->ne[i];
-    state.manifest << '\t' << file << '\n';
+    if (normal) write_capture(tensor, state.dir, state.manifest, "");
+    if (diagnostic) write_capture(tensor, state.dir, state.layer0_manifest, "diag_");
     return true;
 }
 
@@ -56,7 +72,7 @@ static llama_seq_id sequence_for_mask(size_t index, int32_t attended) {
 }
 
 static llama_context_params capture_context_params(
-        uint32_t n_ctx, size_t token_count, int32_t threads, capture_state * state) {
+        uint32_t n_ctx, size_t token_count, int32_t threads, llama_flash_attn_type flash_attn, capture_state * state) {
     auto params = llama_context_default_params();
     params.n_ctx = n_ctx;
     params.n_batch = n_ctx;
@@ -66,6 +82,7 @@ static llama_context_params capture_context_params(
     // preserves those semantics while keeping the complete capture case in one
     // direct-forward ubatch, so every callback surface contains all token rows.
     params.kv_unified = true;
+    params.flash_attn_type = flash_attn;
     if (threads > 0) {
         params.n_threads = threads;
         params.n_threads_batch = threads;
@@ -79,7 +96,7 @@ static int self_test() {
     const float tied[] = { 0.0f, 2.0f, 2.0f, 1.0f };
     if (argmax_large_tie(tied, 4) != 2) return 20;
     if (sequence_for_mask(0, 0) == sequence_for_mask(1, 0) || sequence_for_mask(2, 1) != 0) return 21;
-    capture_state state { {}, {}, false };
+    capture_state state { {}, {}, {}, false, false };
     ggml_tensor dummy = {};
     snprintf(dummy.name, sizeof(dummy.name), "inp_embd");
     if (capture_cb(&dummy, true, &state)) return 22;
@@ -87,16 +104,19 @@ static int self_test() {
     // distinct output namespaces in the single model-owning main loop.
     const std::vector<std::string> case_names = { "case_a", "case_b" };
     if (case_names[0] == case_names[1]) return 23;
-    const auto params = capture_context_params(37, 5, 3, &state);
+    const auto params = capture_context_params(37, 5, 3, LLAMA_FLASH_ATTN_TYPE_DISABLED, &state);
     if (!params.kv_unified) return 24;
     if (params.n_seq_max != 6 || params.n_batch != 37 || params.n_ubatch != 37) return 25;
     if (params.cb_eval != capture_cb || params.cb_eval_user_data != &state) return 26;
+    if (params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED) return 27;
+    if (capture_context_params(37, 5, 3, LLAMA_FLASH_ATTN_TYPE_AUTO, &state).flash_attn_type != LLAMA_FLASH_ATTN_TYPE_AUTO) return 28;
+    if (capture_context_params(37, 5, 3, LLAMA_FLASH_ATTN_TYPE_ENABLED, &state).flash_attn_type != LLAMA_FLASH_ATTN_TYPE_ENABLED) return 29;
     return 0;
 }
 
 static int run_case(
         llama_model * model, const json & spec, const fs::path & root,
-        uint32_t n_ctx, int32_t threads) {
+        uint32_t n_ctx, int32_t threads, llama_flash_attn_type flash_attn, bool layer0_diagnostic) {
     const auto ids = spec.at("input_ids").get<std::vector<llama_token>>();
     const auto mask = spec.at("attention_mask").get<std::vector<int32_t>>();
     const auto positions = spec.at("position_ids").get<std::vector<llama_pos>>();
@@ -105,8 +125,11 @@ static int run_case(
 
     const fs::path dir = root / spec.at("name").get<std::string>();
     fs::create_directories(dir);
-    capture_state state { dir, std::ofstream(dir / "captures.tsv", std::ios::trunc), true };
-    auto cp = capture_context_params(n_ctx, ids.size(), threads, &state);
+    capture_state state { dir, std::ofstream(dir / "captures.tsv", std::ios::trunc), {}, true, layer0_diagnostic };
+    if (layer0_diagnostic) {
+        state.layer0_manifest.open(dir / "layer0-diagnostics.tsv", std::ios::trunc);
+    }
+    auto cp = capture_context_params(n_ctx, ids.size(), threads, flash_attn, &state);
     llama_context * ctx = llama_init_from_model(model, cp);
     if (!ctx) return 11;
 
@@ -179,6 +202,8 @@ int main(int argc, char ** argv) {
     fs::path model_path, manifest_path, output;
     int32_t n_gpu_layers = 0;
     int32_t threads = 0;
+    llama_flash_attn_type flash_attn = LLAMA_FLASH_ATTN_TYPE_AUTO;
+    bool layer0_diagnostic = false;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string key = argv[i];
         if (key == "--model") model_path = argv[i + 1];
@@ -186,6 +211,17 @@ int main(int argc, char ** argv) {
         else if (key == "--output-dir") output = argv[i + 1];
         else if (key == "--n-gpu-layers") n_gpu_layers = std::stoi(argv[i + 1]);
         else if (key == "--threads") threads = std::stoi(argv[i + 1]);
+        else if (key == "--flash-attn") {
+            const std::string value = argv[i + 1];
+            if (value == "auto") flash_attn = LLAMA_FLASH_ATTN_TYPE_AUTO;
+            else if (value == "disabled") flash_attn = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+            else if (value == "enabled") flash_attn = LLAMA_FLASH_ATTN_TYPE_ENABLED;
+            else return 2;
+        } else if (key == "--layer0-diagnostic") {
+            const std::string value = argv[i + 1];
+            if (value != "0" && value != "1") return 2;
+            layer0_diagnostic = value == "1";
+        }
         else return 2;
     }
     if (model_path.empty() || manifest_path.empty() || output.empty() || n_gpu_layers < 0 || threads < 0) return 2;
@@ -202,7 +238,7 @@ int main(int argc, char ** argv) {
     if (!model) return 3;
     int result = 0;
     for (const auto & spec : manifest.at("cases")) {
-        result = run_case(model, spec, output, n_ctx, threads);
+        result = run_case(model, spec, output, n_ctx, threads, flash_attn, layer0_diagnostic);
         if (result != 0) break;
     }
     llama_model_free(model);
