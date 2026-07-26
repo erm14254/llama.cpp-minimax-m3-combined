@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iomanip>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -22,6 +23,32 @@ struct capture_state {
     bool layer0_diagnostic = false;
 };
 
+enum class capture_cache_type {
+    DEFAULT,
+    F16,
+    BF16,
+    F32,
+};
+
+static bool parse_cache_type(const std::string & value, capture_cache_type & result) {
+    if (value == "default") result = capture_cache_type::DEFAULT;
+    else if (value == "f16") result = capture_cache_type::F16;
+    else if (value == "bf16") result = capture_cache_type::BF16;
+    else if (value == "f32") result = capture_cache_type::F32;
+    else return false;
+    return true;
+}
+
+static void apply_cache_type(llama_context_params & params, capture_cache_type cache_type) {
+    if (cache_type == capture_cache_type::DEFAULT) {
+        return;
+    }
+    const ggml_type type = cache_type == capture_cache_type::F16  ? GGML_TYPE_F16 :
+                           cache_type == capture_cache_type::BF16 ? GGML_TYPE_BF16 : GGML_TYPE_F32;
+    params.type_k = type;
+    params.type_v = type;
+}
+
 static bool wanted(const std::string & name) {
     return name == "inp_embd" || name == "inp_embd_ngram" || name == "h_nextn" ||
            name.rfind("ngram_proj-", 0) == 0 || name == "l_out-0" || name == "l_out-1" ||
@@ -31,8 +58,9 @@ static bool wanted(const std::string & name) {
 static bool wanted_layer0(const std::string & name) {
     static const std::vector<std::string> names = {
         "attn_norm-0", "q_scaled-0", "kv_cmpr_scaled-0", "q_nope_absorbed_perm-0",
-        "Qcur-0", "Kcur-0", "Vcur-0", "attn_out-0", "ffn_inp-0", "ffn_norm-0",
-        "ffn_out-0", "l_out-0"};
+        "Qcur-0", "Kcur-0", "Vcur-0", "kq-0", "kq_soft_max-0", "kqv-0",
+        "kqv_mla-0", "fattn_mla-0", "kqv_out-0", "attn_out-0", "ffn_inp-0",
+        "ffn_norm-0", "ffn_out-0", "l_out-0"};
     return std::find(names.begin(), names.end(), name) != names.end();
 }
 
@@ -72,7 +100,8 @@ static llama_seq_id sequence_for_mask(size_t index, int32_t attended) {
 }
 
 static llama_context_params capture_context_params(
-        uint32_t n_ctx, size_t token_count, int32_t threads, llama_flash_attn_type flash_attn, capture_state * state) {
+        uint32_t n_ctx, size_t token_count, int32_t threads, llama_flash_attn_type flash_attn,
+        capture_cache_type cache_type, capture_state * state) {
     auto params = llama_context_default_params();
     params.n_ctx = n_ctx;
     params.n_batch = n_ctx;
@@ -83,6 +112,7 @@ static llama_context_params capture_context_params(
     // direct-forward ubatch, so every callback surface contains all token rows.
     params.kv_unified = true;
     params.flash_attn_type = flash_attn;
+    apply_cache_type(params, cache_type);
     if (threads > 0) {
         params.n_threads = threads;
         params.n_threads_batch = threads;
@@ -104,19 +134,44 @@ static int self_test() {
     // distinct output namespaces in the single model-owning main loop.
     const std::vector<std::string> case_names = { "case_a", "case_b" };
     if (case_names[0] == case_names[1]) return 23;
-    const auto params = capture_context_params(37, 5, 3, LLAMA_FLASH_ATTN_TYPE_DISABLED, &state);
+    const auto params = capture_context_params(
+        37, 5, 3, LLAMA_FLASH_ATTN_TYPE_DISABLED, capture_cache_type::DEFAULT, &state);
     if (!params.kv_unified) return 24;
     if (params.n_seq_max != 6 || params.n_batch != 37 || params.n_ubatch != 37) return 25;
     if (params.cb_eval != capture_cb || params.cb_eval_user_data != &state) return 26;
     if (params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED) return 27;
-    if (capture_context_params(37, 5, 3, LLAMA_FLASH_ATTN_TYPE_AUTO, &state).flash_attn_type != LLAMA_FLASH_ATTN_TYPE_AUTO) return 28;
-    if (capture_context_params(37, 5, 3, LLAMA_FLASH_ATTN_TYPE_ENABLED, &state).flash_attn_type != LLAMA_FLASH_ATTN_TYPE_ENABLED) return 29;
+    if (capture_context_params(37, 5, 3, LLAMA_FLASH_ATTN_TYPE_AUTO,
+            capture_cache_type::DEFAULT, &state).flash_attn_type != LLAMA_FLASH_ATTN_TYPE_AUTO) return 28;
+    if (capture_context_params(37, 5, 3, LLAMA_FLASH_ATTN_TYPE_ENABLED,
+            capture_cache_type::DEFAULT, &state).flash_attn_type != LLAMA_FLASH_ATTN_TYPE_ENABLED) return 29;
+    const auto defaults = llama_context_default_params();
+    if (params.type_k != defaults.type_k || params.type_v != defaults.type_v) return 30;
+    for (const auto & row : std::vector<std::pair<capture_cache_type, ggml_type>> {
+            {capture_cache_type::F16, GGML_TYPE_F16},
+            {capture_cache_type::BF16, GGML_TYPE_BF16},
+            {capture_cache_type::F32, GGML_TYPE_F32}}) {
+        const auto typed = capture_context_params(
+            37, 5, 3, LLAMA_FLASH_ATTN_TYPE_AUTO, row.first, &state);
+        if (typed.type_k != row.second || typed.type_v != row.second) return 31;
+    }
+    capture_cache_type parsed = capture_cache_type::DEFAULT;
+    if (!parse_cache_type("default", parsed) || parsed != capture_cache_type::DEFAULT) return 32;
+    if (!parse_cache_type("f16", parsed) || parsed != capture_cache_type::F16) return 33;
+    if (!parse_cache_type("bf16", parsed) || parsed != capture_cache_type::BF16) return 34;
+    if (!parse_cache_type("f32", parsed) || parsed != capture_cache_type::F32) return 35;
+    if (parse_cache_type("invalid", parsed)) return 36;
+    for (const char * name : {"kq-0", "kq_soft_max-0", "kqv-0", "kqv_mla-0",
+            "fattn_mla-0", "kqv_out-0", "attn_out-0"}) {
+        if (!wanted_layer0(name)) return 37;
+    }
+    if (wanted_layer0("q-0") || wanted_layer0("kq-1")) return 38;
     return 0;
 }
 
 static int run_case(
         llama_model * model, const json & spec, const fs::path & root,
-        uint32_t n_ctx, int32_t threads, llama_flash_attn_type flash_attn, bool layer0_diagnostic) {
+        uint32_t n_ctx, int32_t threads, llama_flash_attn_type flash_attn,
+        capture_cache_type cache_type, bool layer0_diagnostic) {
     const auto ids = spec.at("input_ids").get<std::vector<llama_token>>();
     const auto mask = spec.at("attention_mask").get<std::vector<int32_t>>();
     const auto positions = spec.at("position_ids").get<std::vector<llama_pos>>();
@@ -129,7 +184,7 @@ static int run_case(
     if (layer0_diagnostic) {
         state.layer0_manifest.open(dir / "layer0-diagnostics.tsv", std::ios::trunc);
     }
-    auto cp = capture_context_params(n_ctx, ids.size(), threads, flash_attn, &state);
+    auto cp = capture_context_params(n_ctx, ids.size(), threads, flash_attn, cache_type, &state);
     llama_context * ctx = llama_init_from_model(model, cp);
     if (!ctx) return 11;
 
@@ -203,6 +258,7 @@ int main(int argc, char ** argv) {
     int32_t n_gpu_layers = 0;
     int32_t threads = 0;
     llama_flash_attn_type flash_attn = LLAMA_FLASH_ATTN_TYPE_AUTO;
+    capture_cache_type cache_type = capture_cache_type::DEFAULT;
     bool layer0_diagnostic = false;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string key = argv[i];
@@ -217,6 +273,8 @@ int main(int argc, char ** argv) {
             else if (value == "disabled") flash_attn = LLAMA_FLASH_ATTN_TYPE_DISABLED;
             else if (value == "enabled") flash_attn = LLAMA_FLASH_ATTN_TYPE_ENABLED;
             else return 2;
+        } else if (key == "--cache-type") {
+            if (!parse_cache_type(argv[i + 1], cache_type)) return 2;
         } else if (key == "--layer0-diagnostic") {
             const std::string value = argv[i + 1];
             if (value != "0" && value != "1") return 2;
@@ -238,7 +296,7 @@ int main(int argc, char ** argv) {
     if (!model) return 3;
     int result = 0;
     for (const auto & spec : manifest.at("cases")) {
-        result = run_case(model, spec, output, n_ctx, threads, flash_attn, layer0_diagnostic);
+        result = run_case(model, spec, output, n_ctx, threads, flash_attn, cache_type, layer0_diagnostic);
         if (result != 0) break;
     }
     llama_model_free(model);
