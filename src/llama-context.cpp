@@ -15,7 +15,6 @@
 
 #include <cinttypes>
 #include <cmath>
-#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -1327,14 +1326,7 @@ bool llama_context::set_adapter_cvec(
 }
 
 llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, llm_graph_type gtype, llama_memory_context_i * mctx, ggml_status & ret) {
-    fprintf(stderr, "LCNEXT_DIAG process_ubatch enter n_tokens=%u mctx=%p\n", ubatch.n_tokens, (void *) mctx);
-    fflush(stderr);
-    fprintf(stderr, "LCNEXT_DIAG mctx_apply before\n");
-    fflush(stderr);
-    const bool memory_applied = !mctx || mctx->apply();
-    fprintf(stderr, "LCNEXT_DIAG mctx_apply after success=%d\n", memory_applied ? 1 : 0);
-    fflush(stderr);
-    if (!memory_applied) {
+    if (mctx && !mctx->apply()) {
         LLAMA_LOG_ERROR("%s: failed to apply memory context\n", __func__);
         ret = GGML_STATUS_FAILED;
         return nullptr;
@@ -1347,12 +1339,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     // in order to correctly reuse a graph, it's full topology has to be uniquely determined by these parameters
     const auto gparams = graph_params(res, ubatch, mctx, gtype);
 
-    fprintf(stderr, "LCNEXT_DIAG can_reuse before disabled=%d\n", graph_reuse_disable ? 1 : 0);
-    fflush(stderr);
-    const bool can_reuse = !graph_reuse_disable && res->can_reuse(gparams);
-    fprintf(stderr, "LCNEXT_DIAG can_reuse after result=%d\n", can_reuse ? 1 : 0);
-    fflush(stderr);
-    if (can_reuse) {
+    if (!graph_reuse_disable && res->can_reuse(gparams)) {
         //LLAMA_LOG_DEBUG("%s: reusing previous graph\n", __func__);
 
         // with pipeline parallelism, the previous graph_compute_async may still be running
@@ -1371,11 +1358,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
         //const auto t_start_us = ggml_time_us();
 
-        fprintf(stderr, "LCNEXT_DIAG build_graph before\n");
-        fflush(stderr);
         gf = model.build_graph(gparams);
-        fprintf(stderr, "LCNEXT_DIAG build_graph after gf=%p\n", (void *) gf);
-        fflush(stderr);
 
         //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
 
@@ -1385,12 +1368,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
             return nullptr;
         }
 
-        fprintf(stderr, "LCNEXT_DIAG alloc_graph before gf=%p\n", (void *) gf);
-        fflush(stderr);
-        const bool graph_allocated = ggml_backend_sched_alloc_graph(sched.get(), gf);
-        fprintf(stderr, "LCNEXT_DIAG alloc_graph after success=%d\n", graph_allocated ? 1 : 0);
-        fflush(stderr);
-        if (!graph_allocated) {
+        if (!ggml_backend_sched_alloc_graph(sched.get(), gf)) {
             LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
             ret = GGML_STATUS_ALLOC_FAILED;
             return nullptr;
@@ -1402,21 +1380,12 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         //const auto t_start_us = ggml_time_us();
 
         // FIXME this call causes a crash if any model inputs were not used in the graph and were therefore not allocated
-        fprintf(stderr, "LCNEXT_DIAG set_inputs before\n");
-        fflush(stderr);
         res->set_inputs(&ubatch);
-        fprintf(stderr, "LCNEXT_DIAG set_inputs after\n");
-        fflush(stderr);
 
         //LLAMA_LOG_INFO("graph set inputs time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
     }
 
-    fprintf(stderr, "LCNEXT_DIAG graph_compute before gf=%p batched=%d\n",
-            (void *) res->get_gf(), ubatch.n_tokens > 1 ? 1 : 0);
-    fflush(stderr);
     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
-    fprintf(stderr, "LCNEXT_DIAG graph_compute after status=%d\n", (int) status);
-    fflush(stderr);
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
         ret = status;
@@ -1424,11 +1393,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     }
 
     if (auto * longcat = dynamic_cast<llama_memory_longcat_context *>(mctx)) {
-        fprintf(stderr, "LCNEXT_DIAG longcat_commit before context=%p\n", (void *) longcat);
-        fflush(stderr);
         longcat->commit();
-        fprintf(stderr, "LCNEXT_DIAG longcat_commit after\n");
-        fflush(stderr);
     }
 
     ret = GGML_STATUS_SUCCESS;
