@@ -55,6 +55,26 @@ static llama_seq_id sequence_for_mask(size_t index, int32_t attended) {
     return attended ? 0 : (llama_seq_id) index + 1;
 }
 
+static llama_context_params capture_context_params(
+        uint32_t n_ctx, size_t token_count, int32_t threads, capture_state * state) {
+    auto params = llama_context_default_params();
+    params.n_ctx = n_ctx;
+    params.n_batch = n_ctx;
+    params.n_ubatch = n_ctx;
+    params.n_seq_max = token_count + 1;
+    // Auxiliary sequence IDs still isolate masked padding. A unified KV cache
+    // preserves those semantics while keeping the complete capture case in one
+    // direct-forward ubatch, so every callback surface contains all token rows.
+    params.kv_unified = true;
+    if (threads > 0) {
+        params.n_threads = threads;
+        params.n_threads_batch = threads;
+    }
+    params.cb_eval = capture_cb;
+    params.cb_eval_user_data = state;
+    return params;
+}
+
 static int self_test() {
     const float tied[] = { 0.0f, 2.0f, 2.0f, 1.0f };
     if (argmax_large_tie(tied, 4) != 2) return 20;
@@ -67,6 +87,10 @@ static int self_test() {
     // distinct output namespaces in the single model-owning main loop.
     const std::vector<std::string> case_names = { "case_a", "case_b" };
     if (case_names[0] == case_names[1]) return 23;
+    const auto params = capture_context_params(37, 5, 3, &state);
+    if (!params.kv_unified) return 24;
+    if (params.n_seq_max != 6 || params.n_batch != 37 || params.n_ubatch != 37) return 25;
+    if (params.cb_eval != capture_cb || params.cb_eval_user_data != &state) return 26;
     return 0;
 }
 
@@ -82,17 +106,7 @@ static int run_case(
     const fs::path dir = root / spec.at("name").get<std::string>();
     fs::create_directories(dir);
     capture_state state { dir, std::ofstream(dir / "captures.tsv", std::ios::trunc), true };
-    auto cp = llama_context_default_params();
-    cp.n_ctx = n_ctx;
-    cp.n_batch = n_ctx;
-    cp.n_ubatch = n_ctx;
-    cp.n_seq_max = ids.size() + 1;
-    if (threads > 0) {
-        cp.n_threads = threads;
-        cp.n_threads_batch = threads;
-    }
-    cp.cb_eval = capture_cb;
-    cp.cb_eval_user_data = &state;
+    auto cp = capture_context_params(n_ctx, ids.size(), threads, &state);
     llama_context * ctx = llama_init_from_model(model, cp);
     if (!ctx) return 11;
 
