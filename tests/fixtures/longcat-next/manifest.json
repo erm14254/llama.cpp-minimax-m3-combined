@@ -83,11 +83,11 @@
   },
   "local_core_fixture_schemas": {
     "core-fixture-schema.json": {
-      "sha256": "c4fae91c797ebd6257f86b83a0e2c0cd7f02dbfec7a1b1e59bcf3f42c3d0aeb0",
+      "sha256": "8e9986b53f5bbe96b467b93bf0c200648158b863377a4867dd0bb241592a66d9",
       "contains_generated_activations": false
     },
     "core-reproducibility-schema.json": {
-      "sha256": "0298519a3d74c308d1786f134e92861524cbe20e8a4f8f9ca793b624063f3e4d",
+      "sha256": "01f68fd8f8c259908b2eb6833ccf023ef3d24acc8b94f464efb6987ea884b758",
       "contains_generated_activations": false
     }
   },

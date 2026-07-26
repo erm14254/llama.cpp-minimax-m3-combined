@@ -29,6 +29,10 @@ implementation. Generation fails unless they match exactly for every case.
 The two core-*.json schema files define local-only weight-backed metadata and
 official reproducibility reports. They contain no generated activations. Actual
 longcat-next-core-*.npz/json files remain outside the repository pending review.
+Those core documents now use schema version 2. Acceptance still contains exactly
+433 arrays per precision; diagnostic hooks finite-check all 28 physical blocks
+without expanding the accepted inventory. See
+`docs/longcat-next/REFERENCE_GENERATOR_V2.md`.
 
 The manifest preserves the official-pinned runtime versions separately from the
 Blackwell-compatible execution policy. Local core metadata must record exact installed

@@ -12,6 +12,7 @@ import random
 import re
 import sys
 import zipfile
+import importlib.util
 from copy import deepcopy
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -22,7 +23,12 @@ EXPECTED_SHARDS = 15
 EXPECTED_SHARD_BYTES = 150827115056
 EXPECTED_TRANSFORMERS = "4.57.6"
 OFFICIAL_FLASH_ATTN = "2.7.4.post1"
-CORE_SCHEMA_VERSION = 1
+CORE_SCHEMA_VERSION = 2
+
+_V2_SPEC = importlib.util.spec_from_file_location(
+    "longcat_next_core_reference_v2", Path(__file__).with_name("core_reference_v2.py"))
+v2 = importlib.util.module_from_spec(_V2_SPEC)
+_V2_SPEC.loader.exec_module(v2)
 REQUIRED_FILES = (
     "config.json", "tokenizer_config.json", "tokenizer.json",
     "generation_config.json",
@@ -721,6 +727,7 @@ def summarize_forward_logits(output, selected_logit_ids, include_complete=False,
 
 def deterministic_npz_bytes(arrays):
     import numpy as np
+    v2.validate_array_inventory(arrays, error_type=CoreFixtureError)
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as archive:
         for name in sorted(arrays):
@@ -737,9 +744,11 @@ def deterministic_npz_bytes(arrays):
 def array_metadata(arrays):
     result = {}
     for name, value in sorted(arrays.items()):
+        finite = v2.validate_numpy_array(name, value, CoreFixtureError)
         data = value.tobytes(order="C")
         result[name] = {"shape": list(value.shape), "serialized_dtype": str(value.dtype),
-                        "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
+                        "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data),
+                        "finite": finite}
     return result
 
 
@@ -747,6 +756,8 @@ def compare_runs(runs):
     import numpy as np
     require(len(runs) >= 1, "at least one official run is required")
     baseline = runs[0]
+    for index, run in enumerate(runs):
+        v2.validate_array_inventory(run, error_type=CoreFixtureError)
     reports = {}
     for name, reference in baseline.items():
         require(all(name in run for run in runs), f"repeated run is missing activation {name}")
@@ -782,9 +793,11 @@ def write_core_outputs(output_dir, stem, arrays, metadata, reproducibility, max_
     root.mkdir(parents=True, exist_ok=True)
     require(not any(path.name.lower().endswith(WEIGHT_SUFFIXES) for path in root.iterdir()),
             "output directory contains a model-weight filename")
+    validation = v2.validate_array_inventory(arrays, error_type=CoreFixtureError)
     npz = deterministic_npz_bytes(arrays)
     metadata = dict(metadata)
     metadata["arrays"] = array_metadata(arrays)
+    metadata["whole_candidate_validation"] = validation
     json_bytes = (json.dumps(metadata, indent=2, sort_keys=True) + "\n").encode("ascii")
     repro_bytes = (json.dumps(reproducibility, indent=2, sort_keys=True) + "\n").encode("ascii")
     total = len(npz) + len(json_bytes) + len(repro_bytes)
@@ -799,15 +812,19 @@ def write_core_outputs(output_dir, stem, arrays, metadata, reproducibility, max_
         temporary.replace(path)
     return paths
 
-def tensor_array(tensor):
+def tensor_array(tensor, name="captured_tensor"):
     import numpy as np
     if isinstance(tensor, np.ndarray):
-        return np.ascontiguousarray(tensor), str(tensor.dtype)
+        result = np.ascontiguousarray(tensor)
+        v2.validate_numpy_array(name, result, CoreFixtureError)
+        return result, str(tensor.dtype)
     value = tensor.detach().cpu()
     source_dtype = str(value.dtype).replace("torch.", "")
     if source_dtype == "bfloat16":
         value = value.float()
-    return value.contiguous().numpy(), source_dtype
+    result = value.contiguous().numpy()
+    v2.validate_numpy_array(name, result, CoreFixtureError)
+    return result, source_dtype
 
 
 def load_case_ids(weight_free_fixture, tokenizer):
@@ -871,10 +888,12 @@ def analytical_ngram_decomposition(base, raw_projections, ignored_mask, official
     return contributions, reconstructed, error, report
 
 
-def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_context):
+def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_context,
+                    finite_checker=None, attention_backend="default"):
     import numpy as np
     import torch
     modules = resolve_capture_modules(model)
+    require(finite_checker is not None, "schema-v2 capture requires an on-device finite checker")
     captured = {}
     source_dtypes = {}
     handles = []
@@ -901,6 +920,9 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_
         lambda module, args: save("fused_pre_trunk_embedding", args[0])))
     handles.append(modules["final_norm"].register_forward_hook(
         lambda module, args, output: save("final_normalized_hidden_state", output)))
+    if finite_checker is not None:
+        handles.extend(v2.install_trunk_finite_hooks(
+            model, finite_checker, serialize_blocks=(), capture={}))
 
     prepared = prepare_case_inputs(case_name, input_ids)
     device = modules["base_embedding"].weight.device
@@ -912,11 +934,20 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_
     require(getattr(status, "mode", None) == "text",
             "direct forward requires official multimodal generation status in text mode")
     try:
-        with torch.inference_mode():
+        with torch.inference_mode(), torch.autocast(device_type=device.type, enabled=False), \
+             v2.instrument_sdpa(torch, finite_checker, attention_backend) as sdpa_observation:
             output = call_text_forward(model, {
-                "input_ids": ids.clone(), "attention_mask": attention,
-                "position_ids": positions, "cache_position": cache_position, "use_cache": False,
-                "logits_to_keep": 1, "return_dict": True}, generation_context)
+                    "input_ids": ids.clone(), "attention_mask": attention,
+                    "position_ids": positions, "cache_position": cache_position, "use_cache": False,
+                    "logits_to_keep": 1, "return_dict": True}, generation_context)
+        if finite_checker is not None:
+            finite_checker.sdpa_observation = sdpa_observation
+        if attention_backend == "eager":
+            require(not sdpa_observation["calls"],
+                    "eager attention requested but the text trunk invoked SDPA")
+        if attention_backend in ("sdpa-math", "sdpa-f32"):
+            require(sdpa_observation["calls"],
+                    f"{attention_backend} requested but the text trunk did not invoke SDPA")
     finally:
         for handle in handles:
             handle.remove()
@@ -954,15 +985,23 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_
     captured["cache_position"] = cache_position.cpu().numpy()
     source_dtypes.update({"input_ids": "int64", "attention_mask": "int64",
                           "position_ids": "int64", "cache_position": "int64"})
+    if finite_checker is not None:
+        finite_checker.write_trace()
     return captured, source_dtypes
 
 
-def run_core_generation(args, weight_free_fixture):
+def run_core_worker_generation(args, weight_free_fixture, diagnostic=False):
     validate_core_options(args.precision, args.placement, args.repeat_count, args.max_output_bytes)
     inspection = validate_checkpoint(args.model_dir, args.hash_shards)
     enforce_offline_environment()
     dependency_report = require_dependency_preflight(
         args.runtime_profile, args.placement, args.model_dir, args.flash_wheel_path)
+    if not getattr(args, "skip_source_scan", False):
+        source_validation = v2.verify_and_scan_source(
+            args.model_dir, args.shard_manifest, args.output_dir)
+    else:
+        require(diagnostic, "source scanning may only be bypassed by core-diagnose")
+        source_validation = {"all_finite": None, "bypassed_for_diagnosis": True}
     try:
         ensure_transformers_version()
         import torch
@@ -977,6 +1016,9 @@ def run_core_generation(args, weight_free_fixture):
     torch.use_deterministic_algorithms(True, warn_only=False)
     load = loading_kwargs(args.precision, args.placement, args.offload_dir,
                           args.cpu_memory, args.gpu_memory)
+    if args.attention_backend != "default":
+        load["attn_implementation"] = (
+            "eager" if args.attention_backend == "eager" else "sdpa")
     try:
         tokenizer = AutoTokenizer.from_pretrained(
             str(args.model_dir), **tokenizer_loading_kwargs(False))
@@ -984,10 +1026,17 @@ def run_core_generation(args, weight_free_fixture):
     except (OSError, RuntimeError, ValueError) as exc:
         raise CoreFixtureError(f"local official model loading failed without network fallback: {exc}") from exc
     model.eval()
+    attention_provenance = v2.configure_attention_backend(model, args.attention_backend)
     dtype_provenance = effective_dtype_provenance(model, args.precision, torch)
     tokenizer_metadata = tokenizer_provenance(tokenizer, args.model_dir)
     initial_pretokenizer_sha256 = tokenizer_metadata["backend_pre_tokenizer_state_sha256"]
     cases, prompts, prompt_input_ids = load_case_ids(weight_free_fixture, tokenizer)
+    requested_cases = list(getattr(args, "case", []) or [])
+    if requested_cases:
+        known = {name for name, _ in cases}
+        require(set(requested_cases) <= known,
+                f"unknown requested cases: {sorted(set(requested_cases) - known)}")
+        cases = [row for row in cases if row[0] in requested_cases]
     tokenizer_metadata["prompts"] = [
         {"name": f"prompt_{index}", "text": prompt,
          "input_ids": prompt_input_ids[f"prompt_{index}"]}
@@ -998,18 +1047,25 @@ def run_core_generation(args, weight_free_fixture):
     runs = []
     source_dtypes = {}
     greedy_by_run = []
+    sdpa_observations = []
     for repeat in range(args.repeat_count):
         arrays = {}
         repeat_sources = {}
         for case_name, ids in cases:
             generation_context = build_text_generation_context(model, args.model_dir)
+            checker = v2.TorchFiniteChecker(
+                Path(args.output_dir) / "diagnostics" / case_name,
+                case_name, args.attention_backend, getattr(args, "run_index", 0))
             case_arrays, case_sources = capture_forward(
-                model, ids, selected_logit_ids, case_name, generation_context)
+                model, ids, selected_logit_ids, case_name, generation_context,
+                checker, args.attention_backend)
+            sdpa_observations.append({"case": case_name, "run_index": repeat,
+                                      **checker.sdpa_observation})
             for name, value in case_arrays.items():
                 arrays[f"{case_name}/{name}"] = value
                 repeat_sources[f"{case_name}/{name}"] = case_sources[name]
         greedy = {}
-        for index, prompt in enumerate(prompts):
+        for index, prompt in ([] if diagnostic else enumerate(prompts)):
             encoded = tokenizer(prompt, add_special_tokens=True, return_tensors="pt")
             greedy_input_ids = encoded["input_ids"].detach().cpu().tolist()[0]
             require_prompt_ids_match(
@@ -1058,13 +1114,30 @@ def run_core_generation(args, weight_free_fixture):
                 "authority": case + "/fused_pre_trunk_embedding",
                 "analytical_dtype": "float32",
                 "is_official_captured_intermediate": False}
-    metadata = {"schema_version": CORE_SCHEMA_VERSION, "kind": "longcat-next-core-reference",
+    provenance = v2.collect_provenance(
+        Path(__file__).resolve().parents[2], args.model_dir, args.precision,
+        args.attention_backend, getattr(args, "run_index", 0),
+        [Path(__file__), Path(__file__).with_name("make-reference-fixtures.py")], model,
+        {"effective_precision": dtype_provenance["effective_model_dtype"],
+         "effective_attention_backend": attention_provenance,
+         "shard_manifest_sha256": v2.sha256_file(args.shard_manifest),
+         "flash_attention_wheel_identity": dependency_report["flash_attention"],
+         "autocast_during_direct_forward": False,
+         "local_monkey_patches": ["scoped SDPA finite instrumentation"],
+         "end_utc": v2.utc_now()})
+    metadata = {"schema_version": CORE_SCHEMA_VERSION,
+                "kind": ("longcat-next-core-diagnostic" if diagnostic else
+                         "longcat-next-core-reference"),
                 "precision": args.precision, "serialized_activation_dtype": "float32 except integer arrays",
                 "runtime_profile": args.runtime_profile,
                 "source_dtypes": source_dtypes, "checkpoint": inspection,
                 "software_versions": {"transformers": EXPECTED_TRANSFORMERS,
                                       "torch": torch.__version__},
                 "dependency_preflight": dependency_report,
+                "source_weight_validation": source_validation,
+                "attention_backend": attention_provenance,
+                "sdpa_observations": sdpa_observations,
+                "provenance": provenance,
                 "tokenizer": tokenizer_metadata,
                 "dtype_provenance": dtype_provenance,
                 "fixture_generation_settings": greedy_policy,
@@ -1080,6 +1153,74 @@ def run_core_generation(args, weight_free_fixture):
                     "physical_blocks_1_27": "outputs of logical layers 0/13",
                     "final_norm": "model.model.norm output",
                     "logits": "LongcatNextForCausalLM logits_to_keep=1 output"}}
-    stem = f"longcat-next-core-{args.precision}"
+    stem = (f"longcat-next-core-diagnostic-{args.precision}" if diagnostic else
+            f"longcat-next-core-{args.precision}")
     return write_core_outputs(args.output_dir, stem, runs[0], metadata,
                               reproducibility, args.max_output_bytes)
+
+
+def run_core_worker(args, weight_free_fixture):
+    """Produce one finite staged run. This function never promotes a candidate."""
+    require(args.repeat_count == 1, "core-worker executes exactly one run")
+    require(args.attention_backend != "sdpa-f32",
+            "diagnostic sdpa-f32 is forbidden for accepted workers")
+    paths = run_core_worker_generation(args, weight_free_fixture)
+    target = Path(args.output_dir) / "arrays.npz"
+    paths["npz"].replace(target)
+    paths["metadata"].replace(Path(args.output_dir) / "metadata.json")
+    paths["reproducibility"].replace(Path(args.output_dir) / "worker-reproducibility.json")
+    arrays, validation = v2.load_worker_arrays(args.output_dir)
+    v2.atomic_json(Path(args.output_dir) / "validation.json", validation)
+    return {"arrays": target, "metadata": Path(args.output_dir) / "metadata.json"}
+
+
+def run_core_diagnose(args, weight_free_fixture):
+    """Run selected cases once, skip generation, and always retain a report."""
+    if not args.case:
+        args.case = list(v2.DEFAULT_DIAGNOSTIC_CASES)
+    args.repeat_count = 1
+    started = v2.utc_now()
+    try:
+        paths = run_core_worker_generation(args, weight_free_fixture, diagnostic=True)
+        report = {"schema_version": 2, "workflow": "core-diagnose", "accepted": False,
+                  "cases": args.case, "attention_backend": args.attention_backend,
+                  "start_utc": started, "end_utc": v2.utc_now(), "all_finite": True}
+        return paths
+    except Exception as exc:
+        report = {"schema_version": 2, "workflow": "core-diagnose", "accepted": False,
+                  "cases": args.case, "attention_backend": args.attention_backend,
+                  "start_utc": started, "end_utc": v2.utc_now(), "all_finite": False,
+                  "error": f"{type(exc).__name__}: {exc}"}
+        raise
+    finally:
+        v2.atomic_json(Path(args.output_dir) / "diagnostic-report.json", report)
+
+
+def run_core_generation(args, weight_free_fixture):
+    """Acceptance parent: start independent worker processes then atomically promote."""
+    require(args.repeat_count >= 2, "core acceptance requires at least two independent processes")
+    require(Path(args.output_dir).name != "bf16-candidate-15b7fe8c",
+            "refusing to overwrite the rejected schema-v1 candidate")
+    expected_name = re.compile(
+        rf"{args.precision}-candidate-[0-9a-f]{{7,40}}-{re.escape(args.attention_backend)}-v2")
+    require(expected_name.fullmatch(Path(args.output_dir).name) is not None,
+            "schema-v2 candidate directory must be named "
+            f"{args.precision}-candidate-<generator-commit>-{args.attention_backend}-v2")
+    script = Path(__file__).with_name("make-reference-fixtures.py")
+    commands = []
+    for index in range(args.repeat_count):
+        command = [sys.executable, str(script), "--mode", "core-worker",
+                   "--model-dir", str(args.model_dir), "--output-dir", "{run_dir}",
+                   "--precision", args.precision, "--placement", args.placement,
+                   "--runtime-profile", args.runtime_profile, "--repeat-count", "1",
+                   "--run-index", str(index), "--attention-backend", args.attention_backend,
+                   "--shard-manifest", str(args.shard_manifest),
+                   "--max-output-bytes", str(args.max_output_bytes),
+                   "--max-new-tokens", str(args.max_new_tokens),
+                   "--cpu-memory", args.cpu_memory, "--gpu-memory", args.gpu_memory]
+        if args.offload_dir:
+            command += ["--offload-dir", str(args.offload_dir)]
+        if args.flash_wheel_path:
+            command += ["--flash-wheel-path", str(args.flash_wheel_path)]
+        commands.append(command)
+    return v2.orchestrate_workers(args.output_dir, commands)

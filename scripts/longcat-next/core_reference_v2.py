@@ -1,0 +1,590 @@
+#!/usr/bin/env python3
+"""Schema-v2 safety, diagnosis, and independent-worker helpers.
+
+This module is deliberately importable without Torch. Runtime-only facilities
+import Torch/Safetensors lazily so all orchestration and validation tests remain
+checkpoint-free.
+"""
+
+import contextlib
+import datetime
+import hashlib
+import importlib.metadata
+import json
+import math
+import os
+import platform
+import shutil
+import subprocess
+import sys
+import tempfile
+import itertools
+from pathlib import Path
+
+SCHEMA_VERSION = 2
+EXPECTED_ACCEPTED_ARRAYS = 433
+PINNED_MODEL_REPOSITORY = "meituan-longcat/LongCat-Next"
+PINNED_MODEL_REVISION = "0cf0631862402ff36366e513e4023d22e7e5c84c"
+ATTENTION_BACKENDS = ("default", "eager", "sdpa-math", "sdpa-f32")
+DEFAULT_DIAGNOSTIC_CASES = (
+    "eos_window_position_0",
+    "prompt_at_once_vs_token_at_a_time",
+)
+PROVENANCE_REQUIRED_FIELDS = frozenset({
+    "generator_schema_version", "script_sha256", "llama_cpp", "checkpoint",
+    "python", "operating_system", "torch", "cuda", "packages", "environment",
+    "requested_precision", "requested_attention_backend", "model_hf_device_map",
+    "observed_devices", "observed_dtypes", "autocast_enabled",
+    "deterministic_algorithms", "process_id", "run_index", "start_utc", "end_utc",
+    "effective_precision", "effective_attention_backend", "shard_manifest_sha256",
+    "autocast_during_direct_forward", "local_monkey_patches",
+})
+
+
+class V2Error(ValueError):
+    pass
+
+
+def require(condition, message):
+    if not condition:
+        raise V2Error(message)
+
+
+def utc_now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def atomic_json(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("ascii")
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=path.name + ".",
+                                     suffix=".tmp", delete=False) as stream:
+        stream.write(payload)
+        temporary = Path(stream.name)
+    temporary.replace(path)
+
+
+def numpy_finite_report(name, value):
+    import numpy as np
+    array = np.asarray(value)
+    report = {"name": name, "shape": list(array.shape), "dtype": str(array.dtype),
+              "total_elements": int(array.size), "finite_count": int(array.size),
+              "nan_count": 0, "positive_infinity_count": 0,
+              "negative_infinity_count": 0, "first_affected_indices": []}
+    if array.dtype.kind != "f":
+        return report
+    finite = np.isfinite(array)
+    report.update({
+        "finite_count": int(finite.sum()),
+        "nan_count": int(np.isnan(array).sum()),
+        "positive_infinity_count": int(np.isposinf(array).sum()),
+        "negative_infinity_count": int(np.isneginf(array).sum()),
+        "first_affected_indices": np.argwhere(~finite)[:8].tolist(),
+    })
+    if finite.any():
+        report["finite_minimum"] = float(array[finite].min())
+        report["finite_maximum"] = float(array[finite].max())
+    else:
+        report["finite_minimum"] = None
+        report["finite_maximum"] = None
+    return report
+
+
+def validate_numpy_array(name, value, error_type=V2Error):
+    report = numpy_finite_report(name, value)
+    if report["finite_count"] != report["total_elements"]:
+        raise error_type(
+            f"non-finite floating array {name}: nan={report['nan_count']} "
+            f"+inf={report['positive_infinity_count']} "
+            f"-inf={report['negative_infinity_count']}")
+    return report
+
+
+def validate_array_inventory(arrays, expected=None, error_type=V2Error):
+    reports = {name: validate_numpy_array(name, value, error_type)
+               for name, value in sorted(arrays.items())}
+    if expected is not None and len(arrays) != expected:
+        raise error_type(f"accepted inventory must contain exactly {expected} arrays, got {len(arrays)}")
+    return {"array_count": len(arrays), "expected_array_count": expected,
+            "all_finite": True, "arrays": reports}
+
+
+class TorchFiniteChecker:
+    """Recursively validates Torch values and atomically records first failure."""
+
+    def __init__(self, report_dir, case, backend, run_index=0, torch_module=None):
+        self.report_dir = Path(report_dir)
+        self.case = case
+        self.backend = backend
+        self.run_index = run_index
+        self.sequence = 0
+        self.checks = []
+        self.first_nonfinite = None
+        self.torch_module = torch_module
+
+    def _tensor_report(self, tensor, context):
+        if self.torch_module is None:
+            import torch
+        else:
+            torch = self.torch_module
+        self.sequence += 1
+        floating = bool(tensor.is_floating_point())
+        total = int(tensor.numel())
+        report = {
+            "schema_version": SCHEMA_VERSION, "check_sequence": self.sequence,
+            "case": self.case, "logical_layer": context.get("logical_layer"),
+            "physical_block": context.get("physical_block"),
+            "module_name": context.get("module_name"),
+            "operation": context.get("operation"), "backend": self.backend,
+            "role": context.get("role"), "dtype": str(tensor.dtype),
+            "device": str(tensor.device), "shape": list(tensor.shape),
+            "total_elements": total, "finite_count": total, "nan_count": 0,
+            "positive_infinity_count": 0, "negative_infinity_count": 0,
+            "first_affected_indices": [], "active_attention_backend": self.backend,
+            "run_index": self.run_index, "process_id": os.getpid(),
+        }
+        if floating:
+            finite = torch.isfinite(tensor)
+            report["finite_count"] = int(finite.sum().item())
+            report["nan_count"] = int(torch.isnan(tensor).sum().item())
+            report["positive_infinity_count"] = int(torch.isposinf(tensor).sum().item())
+            report["negative_infinity_count"] = int(torch.isneginf(tensor).sum().item())
+            bad = torch.nonzero(~finite, as_tuple=False)[:8].detach().cpu().tolist()
+            report["first_affected_indices"] = bad
+            if report["finite_count"]:
+                values = tensor[finite]
+                report["finite_minimum"] = float(values.min().item())
+                report["finite_maximum"] = float(values.max().item())
+            else:
+                report["finite_minimum"] = report["finite_maximum"] = None
+        self.checks.append(report)
+        if report["finite_count"] != total:
+            self.first_nonfinite = report
+            atomic_json(self.report_dir / "first-nonfinite.json", report)
+            raise V2Error(
+                f"first non-finite tensor: {report['module_name']} "
+                f"physical_block={report['physical_block']} role={report['role']}")
+
+    def check(self, value, **context):
+        if self.torch_module is None:
+            import torch
+        else:
+            torch = self.torch_module
+        if torch.is_tensor(value):
+            self._tensor_report(value, context)
+            return
+        if isinstance(value, dict):
+            for key, child in value.items():
+                self.check(child, **{**context, "role": f"{context.get('role')}.{key}"})
+            return
+        if isinstance(value, (tuple, list)):
+            for index, child in enumerate(value):
+                self.check(child, **{**context, "role": f"{context.get('role')}[{index}]"})
+            return
+        # Transformers ModelOutput behaves like a mapping, but custom outputs
+        # may expose only to_tuple(). Avoid traversing arbitrary module state.
+        to_tuple = getattr(value, "to_tuple", None)
+        if callable(to_tuple):
+            self.check(to_tuple(), **context)
+
+    def write_trace(self):
+        atomic_json(self.report_dir / "finite-trace.json", {
+            "schema_version": SCHEMA_VERSION, "case": self.case,
+            "attention_backend": self.backend, "run_index": self.run_index,
+            "checks": self.checks, "first_nonfinite": self.first_nonfinite,
+        })
+
+
+def install_trunk_finite_hooks(model, checker, serialize_blocks=(0, 1, 2, 27), capture=None):
+    """Install ordered module hooks and all 28 physical-block checks."""
+    capture = capture if capture is not None else {}
+    trunk = model.model
+    layers = list(trunk.layers)
+    require(len(layers) == 14, f"expected 14 logical layers, got {len(layers)}")
+    handles = []
+
+    def pre(name, logical=None, physical=None):
+        def hook(module, args):
+            checker.check(args, module_name=name, logical_layer=logical,
+                          physical_block=physical, operation="forward-pre", role="input")
+        return hook
+
+    def post(name, logical=None, physical=None):
+        def hook(module, args, output):
+            checker.check(output, module_name=name, logical_layer=logical,
+                          physical_block=physical, operation="forward", role="output")
+            if physical in serialize_blocks:
+                value = output[0] if isinstance(output, tuple) else output
+                capture[f"physical_block_{physical:02d}"] = value
+        return hook
+
+    def physical_pre(name, logical, physical):
+        def hook(module, args):
+            checker.check(args, module_name=name, logical_layer=logical,
+                          physical_block=physical, operation="physical-block", role="input")
+            if physical in serialize_blocks:
+                capture[f"physical_block_{physical:02d}"] = args[0]
+        return hook
+
+    for logical, layer in enumerate(layers):
+        even = 2 * logical
+        odd = even + 1
+        norms = list(layer.input_layernorm)
+        require(len(norms) == 2, f"logical layer {logical} does not expose two physical norms")
+        # Input to the second physical norm is the even physical block output.
+        handles.append(norms[1].register_forward_pre_hook(
+            physical_pre(f"model.model.layers.{logical}.physical_block_{even:02d}", logical, even)))
+        handles.append(layer.register_forward_hook(
+            post(f"model.model.layers.{logical}.physical_block_{odd:02d}", logical, odd)))
+
+    # Complete ordered text-trunk module coverage. Physical boundaries above
+    # provide stable block identities; these hooks localize inside each block.
+    for name, module in trunk.named_modules():
+        if not name or not name.startswith("layers."):
+            continue
+        fq_name = "model.model." + name
+        handles.append(module.register_forward_pre_hook(pre(fq_name)))
+        handles.append(module.register_forward_hook(post(fq_name)))
+    return handles
+
+
+def manual_sdpa_f32(torch, query, key, value, attn_mask=None, dropout_p=0.0,
+                    is_causal=False, scale=None, enable_gqa=False):
+    require(float(dropout_p) == 0.0, "sdpa-f32 requires dropout_p=0 during inference")
+    q = query.float()
+    k = key.float()
+    v = value.float()
+    if enable_gqa:
+        require(q.shape[-3] % k.shape[-3] == 0, "GQA query heads must be divisible by KV heads")
+        factor = q.shape[-3] // k.shape[-3]
+        k = k.repeat_interleave(factor, dim=-3)
+        v = v.repeat_interleave(factor, dim=-3)
+    score = torch.matmul(q, k.transpose(-2, -1))
+    score = score * (float(scale) if scale is not None else 1.0 / math.sqrt(q.shape[-1]))
+    if is_causal:
+        q_len, k_len = score.shape[-2:]
+        causal = torch.ones((q_len, k_len), dtype=torch.bool, device=score.device).tril()
+        score = score.masked_fill(~causal, float("-inf"))
+    if attn_mask is not None:
+        if attn_mask.dtype == torch.bool:
+            score = score.masked_fill(~attn_mask, float("-inf"))
+        else:
+            score = score + attn_mask.float()
+    probabilities = torch.softmax(score, dim=-1)
+    return torch.matmul(probabilities, v).to(query.dtype)
+
+
+def manual_sdpa_f32_numpy(query, key, value, attn_mask=None, is_causal=False,
+                          scale=None, enable_gqa=False):
+    """Checkpoint-free oracle for the diagnostic SDPA implementation."""
+    import numpy as np
+    q = np.asarray(query, dtype=np.float32)
+    k = np.asarray(key, dtype=np.float32)
+    v = np.asarray(value, dtype=np.float32)
+    if enable_gqa:
+        require(q.shape[-3] % k.shape[-3] == 0, "GQA query heads must be divisible by KV heads")
+        factor = q.shape[-3] // k.shape[-3]
+        k = np.repeat(k, factor, axis=-3); v = np.repeat(v, factor, axis=-3)
+    score = np.matmul(q, np.swapaxes(k, -2, -1))
+    score *= float(scale) if scale is not None else 1.0 / math.sqrt(q.shape[-1])
+    if is_causal:
+        score = np.where(np.tri(score.shape[-2], score.shape[-1], dtype=bool), score, -np.inf)
+    if attn_mask is not None:
+        mask = np.asarray(attn_mask)
+        score = np.where(mask, score, -np.inf) if mask.dtype.kind == "b" else score + mask
+    maximum = np.max(score, axis=-1, keepdims=True)
+    weights = np.exp(score - maximum)
+    weights /= weights.sum(axis=-1, keepdims=True)
+    return np.matmul(weights, v)
+
+
+@contextlib.contextmanager
+def instrument_sdpa(torch, checker, backend):
+    require(backend in ATTENTION_BACKENDS, f"unknown attention backend {backend}")
+    functional = torch.nn.functional
+    original = functional.scaled_dot_product_attention
+    calls = []
+    backend_context = contextlib.nullcontext()
+    controls = {"requested": backend, "api": None}
+    if backend == "sdpa-math":
+        try:
+            from torch.nn.attention import SDPBackend, sdpa_kernel
+            backend_context = sdpa_kernel(backends=[SDPBackend.MATH])
+            controls["api"] = "torch.nn.attention.sdpa_kernel(MATH)"
+        except (ImportError, AttributeError):
+            backend_context = torch.backends.cuda.sdp_kernel(
+                enable_flash=False, enable_math=True, enable_mem_efficient=False,
+                enable_cudnn=False)
+            controls["api"] = "torch.backends.cuda.sdp_kernel(math-only)"
+
+    def wrapped(query, key, value, attn_mask=None, dropout_p=0.0,
+                is_causal=False, scale=None, enable_gqa=False):
+        call = {"is_causal": bool(is_causal), "scale": scale,
+                "dropout_p": float(dropout_p), "enable_gqa": bool(enable_gqa),
+                "backend": backend}
+        calls.append(call)
+        for role, tensor in (("query", query), ("key", key), ("value", value)):
+            checker.check(tensor, module_name="torch.nn.functional.scaled_dot_product_attention",
+                          operation="sdpa", role=role)
+        if attn_mask is not None and getattr(attn_mask, "is_floating_point", lambda: False)():
+            checker.check(attn_mask, module_name="torch.nn.functional.scaled_dot_product_attention",
+                          operation="sdpa", role="attention_mask")
+        output = (manual_sdpa_f32(torch, query, key, value, attn_mask, dropout_p,
+                                  is_causal, scale, enable_gqa)
+                  if backend == "sdpa-f32" else
+                  original(query, key, value, attn_mask=attn_mask,
+                           dropout_p=dropout_p, is_causal=is_causal,
+                           scale=scale, enable_gqa=enable_gqa))
+        checker.check(output, module_name="torch.nn.functional.scaled_dot_product_attention",
+                      operation="sdpa", role="output")
+        return output
+
+    functional.scaled_dot_product_attention = wrapped
+    try:
+        with backend_context:
+            yield {"calls": calls, "controls": controls,
+                   "monkey_patch": "scoped SDPA finite instrumentation"}
+    finally:
+        functional.scaled_dot_product_attention = original
+
+
+def configure_attention_backend(model_or_config, backend):
+    require(backend in ATTENTION_BACKENDS, f"unknown attention backend {backend}")
+    requested = None if backend == "default" else ("eager" if backend == "eager" else "sdpa")
+    config = getattr(model_or_config, "config", model_or_config)
+    if requested is not None:
+        if hasattr(config, "_attn_implementation"):
+            config._attn_implementation = requested
+        elif hasattr(config, "attn_implementation"):
+            config.attn_implementation = requested
+        else:
+            raise V2Error(f"custom model configuration cannot request {requested} attention")
+    effective = getattr(config, "_attn_implementation",
+                        getattr(config, "attn_implementation", None))
+    if backend == "eager" and effective != "eager":
+        raise V2Error(f"eager attention requested but effective implementation is {effective!r}")
+    return {"requested_backend": backend, "requested_implementation": requested,
+            "effective_implementation": effective}
+
+
+def load_shard_manifest(path):
+    data = json.loads(Path(path).read_text(encoding="ascii"))
+    require(data.get("schema_version") == 1, "shard manifest schema must be 1")
+    require(data.get("repository") == PINNED_MODEL_REPOSITORY, "wrong shard repository")
+    require(data.get("revision") == PINNED_MODEL_REVISION, "wrong shard revision")
+    shards = data.get("shards")
+    require(isinstance(shards, list) and len(shards) == 15, "shard manifest must contain 15 entries")
+    names = set()
+    for row in shards:
+        require(set(row) == {"filename", "bytes", "lfs_sha256"}, "invalid shard manifest entry fields")
+        require(row["filename"] not in names, "duplicate shard manifest filename")
+        require(row["filename"].startswith("model-") and row["filename"].endswith(".safetensors"),
+                "invalid shard filename")
+        require(isinstance(row["bytes"], int) and row["bytes"] > 0, "invalid shard byte count")
+        require(len(row["lfs_sha256"]) == 64 and
+                all(c in "0123456789abcdef" for c in row["lfs_sha256"]), "invalid LFS SHA-256 OID")
+        names.add(row["filename"])
+    expected_names = {f"model-{index:05d}-of-00015.safetensors" for index in range(1, 16)}
+    require(names == expected_names, "shard manifest filenames do not match the official 15-shard set")
+    return data
+
+
+def verify_and_scan_source(model_dir, manifest_path, report_dir, checker_factory=TorchFiniteChecker):
+    import numpy as np
+    from safetensors import safe_open
+    manifest = load_shard_manifest(manifest_path)
+    root = Path(model_dir)
+    expected_names = {row["filename"] for row in manifest["shards"]}
+    actual_names = {path.name for path in root.glob("model-*-of-00015.safetensors")}
+    require(actual_names == expected_names,
+            f"checkpoint shard filenames differ: missing={sorted(expected_names-actual_names)} "
+            f"unexpected={sorted(actual_names-expected_names)}")
+    dtype_counts = {}
+    tensor_count = 0
+    for row in manifest["shards"]:
+        path = root / row["filename"]
+        require(path.is_file(), f"missing checkpoint shard {row['filename']}")
+        require(path.stat().st_size == row["bytes"], f"wrong byte count for {row['filename']}")
+        require(sha256_file(path) == row["lfs_sha256"], f"wrong LFS SHA-256 for {row['filename']}")
+        reports = []
+        with safe_open(path, framework="np") as shard:
+            for name in shard.keys():
+                tensor = shard.get_tensor(name)
+                tensor_count += 1
+                dtype_counts[str(tensor.dtype)] = dtype_counts.get(str(tensor.dtype), 0) + 1
+                if np.asarray(tensor).dtype.kind == "f":
+                    report = numpy_finite_report(f"{row['filename']}:{name}", tensor)
+                    reports.append(report)
+                    if report["finite_count"] != report["total_elements"]:
+                        atomic_json(Path(report_dir) / "source-scan" /
+                                    "first-nonfinite-source.json", report)
+                        raise V2Error(f"non-finite source tensor {row['filename']}:{name}")
+                del tensor
+        atomic_json(Path(report_dir) / "source-scan" / (row["filename"] + ".json"), {
+            "schema_version": SCHEMA_VERSION, "shard": row["filename"],
+            "all_finite": True, "floating_tensors": reports})
+    return {"schema_version": SCHEMA_VERSION, "all_finite": True,
+            "tensor_count": tensor_count, "dtype_counts": dtype_counts,
+            "manifest_sha256": sha256_file(manifest_path)}
+
+
+def package_versions(names):
+    result = {}
+    for name in names:
+        try:
+            result[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            result[name] = None
+    return result
+
+
+def collect_provenance(repo_root, model_dir, precision, backend, run_index,
+                       script_paths, model=None, extra=None):
+    import torch
+    root = Path(repo_root)
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
+    dirty = bool(git("status", "--porcelain"))
+    devices, dtypes = set(), set()
+    device_map = None
+    if model is not None:
+        device_map = getattr(model, "hf_device_map", None)
+        for value in itertools.chain(model.parameters(), model.buffers()):
+            devices.add(str(value.device)); dtypes.add(str(value.dtype))
+    cuda = {"available": bool(torch.cuda.is_available()), "build": torch.version.cuda,
+            "runtime": None, "driver": None, "gpu": None, "capability": None}
+    if cuda["available"]:
+        cuda.update({"gpu": torch.cuda.get_device_name(0),
+                     "capability": list(torch.cuda.get_device_capability(0))})
+        try: cuda["runtime"] = torch._C._cuda_getRuntimeVersion()
+        except AttributeError: pass
+        try: cuda["driver"] = torch._C._cuda_getDriverVersion()
+        except AttributeError: pass
+    env_names = ("CUBLAS_WORKSPACE_CONFIG", "CUDA_LAUNCH_BLOCKING", "HF_HUB_OFFLINE",
+                 "TRANSFORMERS_OFFLINE", "PYTORCH_CUDA_ALLOC_CONF", "TORCH_LOGS",
+                 "TORCH_CUDNN_V8_API_DISABLED", "PYTORCH_NO_CUDA_MEMORY_CACHING",
+                 "NVIDIA_TF32_OVERRIDE")
+    report = {
+        "generator_schema_version": SCHEMA_VERSION,
+        "script_sha256": {Path(p).name: sha256_file(p) for p in script_paths},
+        "llama_cpp": {"commit": git("rev-parse", "HEAD"), "tree": git("rev-parse", "HEAD^{tree}"),
+                      "dirty": dirty},
+        "checkpoint": {"repository": PINNED_MODEL_REPOSITORY,
+                       "revision": PINNED_MODEL_REVISION, "path": str(Path(model_dir).resolve())},
+        "python": {"executable": sys.executable, "version": platform.python_version(),
+                   "implementation": platform.python_implementation()},
+        "operating_system": platform.platform(), "torch": torch.__version__, "cuda": cuda,
+        "packages": package_versions(("transformers", "accelerate", "safetensors", "numpy", "flash-attn")),
+        "environment": {name: os.environ.get(name) for name in env_names},
+        "requested_precision": precision, "requested_attention_backend": backend,
+        "model_hf_device_map": device_map, "observed_devices": sorted(devices),
+        "observed_dtypes": sorted(dtypes), "autocast_enabled": bool(torch.is_autocast_enabled()),
+        "deterministic_algorithms": bool(torch.are_deterministic_algorithms_enabled()),
+        "process_id": os.getpid(), "run_index": run_index, "start_utc": utc_now(),
+    }
+    if extra: report.update(extra)
+    require(PROVENANCE_REQUIRED_FIELDS <= set(report),
+            f"provenance is missing fields: {sorted(PROVENANCE_REQUIRED_FIELDS - set(report))}")
+    return report
+
+
+def load_worker_arrays(run_dir, expected=EXPECTED_ACCEPTED_ARRAYS):
+    import numpy as np
+    path = Path(run_dir) / "arrays.npz"
+    require(path.is_file(), f"worker result is missing {path}")
+    with np.load(path, allow_pickle=False) as archive:
+        arrays = {name: archive[name] for name in archive.files}
+    validation = validate_array_inventory(arrays, expected)
+    return arrays, validation
+
+
+def compare_independent_runs(runs):
+    import numpy as np
+    require(len(runs) >= 2, "at least two independent worker runs are required")
+    for index, run in enumerate(runs):
+        validate_array_inventory(run, EXPECTED_ACCEPTED_ARRAYS)
+        require(set(run) == set(runs[0]), f"run {index} inventory differs from run 0")
+    report = {}
+    for name, baseline in sorted(runs[0].items()):
+        validate_numpy_array(name, baseline)
+        maximum_abs = maximum_rel = 0.0
+        byte_identical = True
+        for run in runs[1:]:
+            candidate = run[name]
+            validate_numpy_array(name, candidate)
+            require(candidate.shape == baseline.shape, f"shape mismatch for {name}")
+            byte_identical &= candidate.tobytes() == baseline.tobytes()
+            if baseline.dtype.kind in "biu":
+                require(np.array_equal(candidate, baseline), f"exact output differs for {name}")
+            else:
+                left, right = baseline.astype(np.float64), candidate.astype(np.float64)
+                diff = np.abs(left - right)
+                maximum_abs = max(maximum_abs, float(diff.max(initial=0.0)))
+                maximum_rel = max(maximum_rel, float((diff / np.maximum(
+                    np.abs(left), np.finfo(np.float64).tiny)).max(initial=0.0)))
+        report[name] = {"byte_identical": byte_identical,
+                        "max_absolute_difference": maximum_abs,
+                        "max_relative_difference": maximum_rel,
+                        "comparison_tolerance": None}
+    return report
+
+
+def orchestrate_workers(candidate_root, worker_commands, expected=EXPECTED_ACCEPTED_ARRAYS,
+                        runner=subprocess.run):
+    require(len(worker_commands) >= 2, "core acceptance requires at least two worker processes")
+    final = Path(candidate_root)
+    require(not final.exists(), f"refusing to overwrite candidate directory {final}")
+    staging = final.with_name("." + final.name + f".staging-{os.getpid()}")
+    require(not staging.exists(), f"staging directory already exists: {staging}")
+    runs_root = staging / "runs"
+    runs_root.mkdir(parents=True)
+    arrays_by_run = []
+    try:
+        for index, command in enumerate(worker_commands):
+            run_dir = runs_root / f"run-{index:02d}"
+            run_dir.mkdir()
+            command = [str(run_dir) if item == "{run_dir}" else item for item in command]
+            with (run_dir / "stdout.log").open("w", encoding="utf-8") as stdout, \
+                 (run_dir / "stderr.log").open("w", encoding="utf-8") as stderr:
+                result = runner(command, stdout=stdout, stderr=stderr, text=True)
+            require(result.returncode == 0, f"independent worker {index} failed with exit code {result.returncode}")
+            arrays, validation = load_worker_arrays(run_dir, expected)
+            atomic_json(run_dir / "validation.json", validation)
+            arrays_by_run.append(arrays)
+        reproducibility = compare_independent_runs(arrays_by_run)
+        all_byte_identical = all(row["byte_identical"] for row in reproducibility.values())
+        require(all_byte_identical,
+                "independent worker arrays are not byte-identical; no tolerance is selected")
+        per_run_hashes = {f"run-{i:02d}": sha256_file(runs_root / f"run-{i:02d}" / "arrays.npz")
+                          for i in range(len(arrays_by_run))}
+        atomic_json(staging / "reproducibility.json", {
+            "schema_version": SCHEMA_VERSION, "independent_processes": len(arrays_by_run),
+            "arrays": reproducibility, "comparison_tolerances": {"bf16": None, "f16": None}})
+        atomic_json(staging / "candidate-validation.json", {
+            "schema_version": SCHEMA_VERSION, "exact_inventory_count": len(arrays_by_run[0]),
+            "expected_inventory_count": expected, "whole_candidate_finite": True,
+            "per_run_npz_sha256": per_run_hashes, "accepted": True,
+            "cross_run_byte_identical": all_byte_identical,
+            "promotion_utc": utc_now()})
+        run_metadata_hashes = {
+            f"run-{i:02d}": sha256_file(runs_root / f"run-{i:02d}" / "metadata.json")
+            for i in range(len(arrays_by_run))}
+        atomic_json(staging / "candidate-metadata.json", {
+            "schema_version": SCHEMA_VERSION, "kind": "longcat-next-core-reference-candidate",
+            "accepted_inventory_count": expected, "run_count": len(arrays_by_run),
+            "per_run_metadata_sha256": run_metadata_hashes,
+            "acceptance_utc": utc_now()})
+        staging.replace(final)
+    except Exception:
+        # Retain staging worker evidence, but never expose it as an accepted candidate.
+        raise
+    return final

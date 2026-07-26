@@ -239,7 +239,8 @@ def parse_args(argv=None):
     parser.add_argument("--config", type=Path)
     parser.add_argument("--tokenizer-config", type=Path)
     parser.add_argument("--output-dir", type=Path, default=Path("longcat-next-reference-output"))
-    parser.add_argument("--mode", choices=("ngram", "inspect", "preflight", "core"), default="ngram")
+    parser.add_argument("--mode", choices=("ngram", "inspect", "preflight", "core",
+                                            "core-worker", "core-diagnose"), default="ngram")
     parser.add_argument("--model-dir", type=Path,
                         help="local official checkpoint for inspection/core fixtures; never downloaded")
     parser.add_argument("--max-output-bytes", type=int)
@@ -255,11 +256,20 @@ def parse_args(argv=None):
     parser.add_argument("--flash-wheel-path", type=Path,
                         help="original FlashAttention wheel path for identity validation only")
     parser.add_argument("--max-new-tokens", type=int, default=8)
+    parser.add_argument("--case", action="append", default=[],
+                        help="case name (repeatable; diagnose defaults to two localization cases)")
+    parser.add_argument("--attention-backend",
+                        choices=("default", "eager", "sdpa-math", "sdpa-f32"), default="default")
+    parser.add_argument("--run-index", type=int, default=0)
+    parser.add_argument("--shard-manifest", type=Path,
+                        default=Path(__file__).with_name("checkpoint-shards-v2.json"))
+    parser.add_argument("--skip-source-scan", action="store_true",
+                        help="diagnosis only; disqualifies output from acceptance")
     return parser.parse_args(argv)
 
 
 def run(args):
-    if args.mode in ("inspect", "preflight", "core"):
+    if args.mode in ("inspect", "preflight", "core", "core-worker", "core-diagnose"):
         require(args.model_dir is not None, f"{args.mode} mode requires --model-dir")
         core = load_core_reference()
         if args.max_output_bytes is None:
@@ -274,9 +284,14 @@ def run(args):
                     args.runtime_profile, args.placement, args.model_dir,
                     args.flash_wheel_path)
                 return {"checkpoint": inspection, "dependencies": dependencies}, 0
-            return core.run_core_generation(args, Path(__file__).resolve().parents[2] /
-                                            "tests/fixtures/longcat-next/ngram-cases.json"), 0
-        except core.CoreFixtureError as exc:
+            fixture = (Path(__file__).resolve().parents[2] /
+                       "tests/fixtures/longcat-next/ngram-cases.json")
+            if args.mode == "core-worker":
+                return core.run_core_worker(args, fixture), 0
+            if args.mode == "core-diagnose":
+                return core.run_core_diagnose(args, fixture), 0
+            return core.run_core_generation(args, fixture), 0
+        except (core.CoreFixtureError, core.v2.V2Error) as exc:
             raise FixtureError(str(exc)) from exc
     if args.max_output_bytes is None:
         args.max_output_bytes = DEFAULT_MAX_BYTES
@@ -329,8 +344,11 @@ def main(argv=None):
         return 1
     if args.mode in ("inspect", "preflight"):
         print(json.dumps(result, indent=2, sort_keys=True))
-    elif args.mode == "core":
-        print(json.dumps({name: str(path) for name, path in result.items()}, sort_keys=True))
+    elif args.mode in ("core", "core-worker", "core-diagnose"):
+        if isinstance(result, dict):
+            print(json.dumps({name: str(path) for name, path in result.items()}, sort_keys=True))
+        else:
+            print(json.dumps({"output": str(result)}, sort_keys=True))
     else:
         print(json.dumps({"fixture": str(result), "bytes": size, "sha256": sha256(result)}, sort_keys=True))
     return 0

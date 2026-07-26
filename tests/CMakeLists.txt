@@ -174,6 +174,9 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
         add_test(NAME test-longcat-next-parity-harness
             COMMAND ${CMAKE_COMMAND} -E env PYTHONPATH=${PROJECT_SOURCE_DIR}
                 ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-longcat-next-parity.py)
+        add_test(NAME test-longcat-next-core-v2
+            COMMAND ${CMAKE_COMMAND} -E env PYTHONPATH=${PROJECT_SOURCE_DIR}
+                ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test-longcat-next-core-v2.py)
     endif()
     target_include_directories(test-chat PRIVATE ${PROJECT_SOURCE_DIR}/tools/server)
     target_link_libraries(test-chat PRIVATE server-context)
