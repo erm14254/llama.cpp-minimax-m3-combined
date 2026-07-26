@@ -2484,6 +2484,9 @@ llm_graph_params llama_context::graph_params(
         /*.res         =*/ res,
     };
     if (auto * longcat = dynamic_cast<const llama_memory_longcat_context *>(mctx)) {
+        params.mctx = longcat->base_context();
+        GGML_ASSERT(params.mctx);
+        GGML_ASSERT(dynamic_cast<const llama_memory_longcat_context *>(params.mctx) == nullptr);
         params.longcat_history = &const_cast<llama_memory_longcat_context *>(longcat)->pending_history();
     }
     return params;

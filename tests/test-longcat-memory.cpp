@@ -130,9 +130,13 @@ static void test_atomic_context(testing & t) {
     }
     {
         auto raw = std::make_unique<fake_context>(true);
+        const auto * raw_ptr = raw.get();
         llama_memory_longcat_context context(memory, std::move(raw));
+        const auto & const_context = context;
+        t.assert_true("wrapper exposes exact underlying context", const_context.base_context() == raw_ptr);
         t.assert_equal("retry starts from committed history", (size_t) 1, context.pending_history()[0].size());
         context.pending_history()[0].emplace_back(1, 12);
+        t.assert_equal("pending history remains independent", (size_t) 1, memory.history[0].size());
         t.assert_true("successful underlying apply", context.apply());
         t.assert_equal("apply alone is not compute commit", (size_t) 1, memory.history[0].size());
         context.commit();

@@ -13,6 +13,7 @@ public:
     const llama_ubatch & get_ubatch() const override;
     llama_memory_status get_status() const override;
     void commit();
+    const llama_memory_context_i * base_context() const { return base.get(); }
     llama_longcat_token_history & pending_history() { return pending; }
 private:
     llama_memory_longcat & owner;
