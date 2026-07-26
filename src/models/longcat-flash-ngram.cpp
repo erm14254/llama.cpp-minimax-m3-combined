@@ -329,6 +329,9 @@ llama_model_longcat_flash_ngram::graph::graph(
     ggml_tensor * moe_shortcut = nullptr;
 
     inpL = build_inp_embd(model.tok_embd);
+    // Capture the computed token embedding result, not the optional vector-
+    // embedding input tensor named by generic build_inp_embd().
+    cb(inpL, "inp_embd", -1);
 
     // N-gram embedding augmentation
     // Computes polynomial rolling hashes over token ID history, looks up 12 embedding tables,

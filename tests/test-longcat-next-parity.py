@@ -14,6 +14,13 @@ SPEC.loader.exec_module(PARITY)
 
 
 class ParityHarnessTests(unittest.TestCase):
+    def test_direct_capture_inventory_is_exact(self):
+        expected = {"inp_embd", "inp_embd_ngram", "h_nextn", "final_logits",
+                    "l_out-0", "l_out-1", "l_out-2", "l_out-27"}
+        expected.update(f"ngram_proj-{index}" for index in range(12))
+        self.assertEqual(PARITY.DIRECT_NAMES, expected)
+        self.assertEqual(len(PARITY.DIRECT_NAMES), 20)
+
     def raw(self, values, dtype, dims, kind="hidden"):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "x.raw"
