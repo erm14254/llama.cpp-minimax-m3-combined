@@ -46,6 +46,7 @@ class Recorder:
 
 
 class FakeTensor:
+    softmax_override = None
     def __init__(self, value, dtype=None):
         self.value = np.asarray(value); self.dtype = dtype or self.value.dtype; self.device = "cpu"
     @property
@@ -59,6 +60,22 @@ class FakeTensor:
     def tolist(self): return self.value.tolist()
     def min(self): return FakeTensor(self.value.min())
     def max(self): return FakeTensor(self.value.max())
+    def abs(self): return FakeTensor(np.abs(self.value))
+    def view(self, *shape): return FakeTensor(self.value.reshape(shape), self.dtype)
+    def float(self): return FakeTensor(self.value.astype(np.float32), "torch.float32")
+    def softmax(self, dim=-1):
+        if FakeTensor.softmax_override is not None:
+            return FakeTensor(FakeTensor.softmax_override)
+        shifted = self.value - np.max(self.value, axis=dim, keepdims=True)
+        values = np.exp(shifted); return FakeTensor(values / values.sum(axis=dim, keepdims=True))
+    def gather(self, dim, indices):
+        return FakeTensor(np.take_along_axis(self.value, indices.value.astype(np.int64), axis=dim))
+    def sum(self, dim=None, keepdim=False):
+        if dim is None: return FakeTensor(self.value.sum())
+        return FakeTensor(self.value.sum(axis=dim, keepdims=keepdim))
+    def __add__(self, other): return FakeTensor(self.value + getattr(other, "value", other))
+    def __truediv__(self, other): return FakeTensor(self.value / getattr(other, "value", other))
+    def __mul__(self, other): return FakeTensor(self.value * getattr(other, "value", other))
     def __invert__(self): return FakeTensor(~self.value)
     def __getitem__(self, key):
         if isinstance(key, FakeTensor): key = key.value
@@ -66,6 +83,7 @@ class FakeTensor:
 
 
 class FakeTorch:
+    linear_override = None
     @staticmethod
     def is_tensor(value): return isinstance(value, FakeTensor)
     @staticmethod
@@ -78,6 +96,22 @@ class FakeTorch:
     def isneginf(value): return FakeTensor(np.isneginf(value.value))
     @staticmethod
     def nonzero(value, as_tuple=False): return FakeTensor(np.argwhere(value.value))
+    @staticmethod
+    def topk(value, k, dim=-1):
+        indices = np.argsort(value.value, axis=dim)[..., ::-1][..., :k]
+        return FakeTensor(np.take_along_axis(value.value, indices, axis=dim)), FakeTensor(indices)
+    @staticmethod
+    def equal(left, right): return np.array_equal(left.value, right.value)
+
+
+def fake_linear(hidden, weight):
+    if FakeTorch.linear_override is not None:
+        return FakeTensor(FakeTorch.linear_override)
+    return FakeTensor(hidden.value @ weight.value.T)
+
+
+FakeTorch.nn = type("NN", (), {"functional": type("Functional", (), {
+    "linear": staticmethod(fake_linear)})()})()
 
 
 CONTRACT_PATH = ROOT / "scripts/longcat-next/core-accepted-contract-v2.json"
@@ -129,6 +163,16 @@ def write_valid_worker(run_dir, run_index, precision="bf16", backend="default"):
     return arrays
 
 
+def synthetic_router_model(scaling=1.0):
+    model = Model()
+    router = Module()
+    router.classifier = type("Classifier", (), {"weight": FakeTensor(np.eye(3))})()
+    router.e_score_correction_bias = FakeTensor(np.zeros(3, dtype=np.float32))
+    router.routed_scaling_factor = scaling
+    model.model.named_modules = lambda: [("layers.4.mlp.router", router)]
+    return model, router
+
+
 class CoreV2Tests(unittest.TestCase):
     def test_numpy_nonfinite_is_never_reproducible(self):
         for bad in (np.array([np.nan], np.float32), np.array([np.inf], np.float32),
@@ -152,6 +196,9 @@ class CoreV2Tests(unittest.TestCase):
             self.assertEqual(report["module_name"], "model.model.layers.3.mlp")
             self.assertEqual(report["physical_block"], 7)
             self.assertEqual(report["first_affected_indices"], [[1]])
+            trace = json.loads((Path(temporary) / "finite-trace.json").read_text())
+            self.assertEqual(trace["first_nonfinite"]["module_name"], report["module_name"])
+            self.assertGreaterEqual(len(trace["checks"]), 1)
 
     def test_all_28_physical_boundaries_are_checked_in_order(self):
         model, recorder = Model(), Recorder()
@@ -160,6 +207,65 @@ class CoreV2Tests(unittest.TestCase):
             layer.input_layernorm[1].pre[0](layer.input_layernorm[1], (object(),))
             layer.post[0](layer, (), object())
         self.assertEqual(recorder.blocks, list(range(28)))
+
+    def _run_invalid_router(self, temporary, original_weights, scaling=1.0):
+        model, router = synthetic_router_model(scaling)
+        checker = v2.TorchFiniteChecker(temporary, "case", "default", 0, FakeTorch)
+        v2.install_trunk_finite_hooks(model, checker, serialize_blocks=())
+        hidden = FakeTensor([[1.0, 2.0, 3.0]])
+        router.pre[0](router, (hidden,))
+        indices = FakeTorch.topk(FakeTensor(np.zeros((1, 3))), 2, dim=-1)[1]
+        with self.assertRaises(v2.V2Error):
+            router.post[0](router, (hidden,), (indices, FakeTensor(original_weights)))
+        return json.loads((Path(temporary) / "first-nonfinite.json").read_text()), \
+            json.loads((Path(temporary) / "finite-trace.json").read_text())
+
+    def test_shortcut_router_maps_layer_four_to_physical_block_eight(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            FakeTorch.linear_override = [[np.nan, np.nan, np.nan]]
+            FakeTensor.softmax_override = None
+            failure, trace = self._run_invalid_router(temporary, [[np.nan, np.nan]])
+            self.assertEqual((failure["logical_layer"], failure["physical_block"]), (4, 8))
+            self.assertEqual(failure["operation"], "router_logits")
+            roles = [row.get("role") for row in trace["checks"]]
+            self.assertIn("topk_weights", roles)
+            self.assertTrue(any(row.get("operation") == "router_input" for row in trace["checks"]))
+            FakeTorch.linear_override = None
+
+    def test_router_softmax_is_exact_first_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            FakeTorch.linear_override = None
+            FakeTensor.softmax_override = [[np.nan, np.nan, np.nan]]
+            failure, _ = self._run_invalid_router(temporary, [[np.nan, np.nan]])
+            self.assertEqual(failure["operation"], "softmax_scores")
+            FakeTensor.softmax_override = None
+
+    def test_router_gather_normalize_and_scale_boundaries_are_distinct(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            FakeTorch.linear_override = None
+            FakeTensor.softmax_override = None
+            failure, trace = self._run_invalid_router(temporary, [[np.inf, np.inf]], scaling=np.inf)
+            self.assertEqual(failure["operation"], "topk_weights_scaled")
+            operations = [row.get("operation") for row in trace["checks"]]
+            for operation in ("topk_weights_gathered", "topk_denominator",
+                              "topk_weights_normalized", "topk_weights_scaled"):
+                self.assertIn(operation, operations)
+
+    def test_router_replay_mismatch_refuses_attribution(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            FakeTorch.linear_override = [[np.nan, np.nan, np.nan]]
+            model, router = synthetic_router_model()
+            checker = v2.TorchFiniteChecker(temporary, "case", "default", 0, FakeTorch)
+            v2.install_trunk_finite_hooks(model, checker, serialize_blocks=())
+            hidden = FakeTensor([[1.0, 2.0, 3.0]])
+            router.pre[0](router, (hidden,))
+            wrong_indices = FakeTensor([[0, 0]])
+            with self.assertRaisesRegex(v2.V2Error, "replay mismatch"):
+                router.post[0](router, (hidden,), (wrong_indices, FakeTensor([[np.nan, np.nan]])))
+            trace = json.loads((Path(temporary) / "finite-trace.json").read_text())
+            self.assertTrue(any(row.get("operation") == "router_replay_mismatch"
+                                for row in trace["checks"]))
+            FakeTorch.linear_override = None
 
     def test_sdpa_numpy_causal_mask_scale_and_gqa(self):
         q = np.array([[[[1., 0.], [0., 1.]], [[1., 0.], [0., 1.]]]])
@@ -285,9 +391,14 @@ class CoreV2Tests(unittest.TestCase):
             finite = v2.verify_and_scan_source(
                 root, manifest_path, root / "finite-reports", opener, FakeTorch)
             self.assertEqual(finite["dtype_counts"], {"torch.bfloat16": 15})
+            summary_path = root / "finite-reports/source-scan-summary.json"
+            self.assertTrue(summary_path.is_file())
+            summary = json.loads(summary_path.read_text())
+            self.assertEqual(len(summary["verified_shards"]), 15)
             tensors[shards[1]["filename"]] = original[shards[1]["filename"]]
             with self.assertRaises(v2.V2Error):
                 v2.verify_and_scan_source(root, manifest_path, root / "reports", opener, FakeTorch)
+            self.assertFalse((root / "reports/source-scan-summary.json").exists())
             failure = json.loads((root / "reports/source-scan/first-nonfinite-source.json").read_text())
             self.assertEqual(failure["dtype"], "torch.bfloat16")
             self.assertEqual(failure["nan_count"], 1)

@@ -110,6 +110,13 @@ def torch_finite_report(torch, name, tensor):
               "positive_infinity_count": 0, "negative_infinity_count": 0,
               "first_affected_indices": []}
     if not tensor.is_floating_point():
+        if total:
+            report["finite_minimum"] = float(tensor.min().item())
+            report["finite_maximum"] = float(tensor.max().item())
+            report["finite_absolute_maximum"] = float(tensor.abs().max().item())
+        else:
+            report["finite_minimum"] = report["finite_maximum"] = None
+            report["finite_absolute_maximum"] = None
         return report
     finite = torch.isfinite(tensor)
     report.update({
@@ -123,8 +130,10 @@ def torch_finite_report(torch, name, tensor):
         values = tensor[finite]
         report["finite_minimum"] = float(values.min().item())
         report["finite_maximum"] = float(values.max().item())
+        report["finite_absolute_maximum"] = float(values.abs().max().item())
     else:
         report["finite_minimum"] = report["finite_maximum"] = None
+        report["finite_absolute_maximum"] = None
     return report
 
 
@@ -234,7 +243,17 @@ class TorchFiniteChecker:
         self.first_nonfinite = None
         self.torch_module = torch_module
 
-    def _tensor_report(self, tensor, context):
+    def _trace_payload(self):
+        return {"schema_version": SCHEMA_VERSION, "case": self.case,
+                "attention_backend": self.backend, "run_index": self.run_index,
+                "checks": self.checks, "first_nonfinite": self.first_nonfinite}
+
+    def _persist_failure(self, report):
+        self.first_nonfinite = report
+        atomic_json(self.report_dir / "first-nonfinite.json", report)
+        atomic_json(self.report_dir / "finite-trace.json", self._trace_payload())
+
+    def _tensor_report(self, tensor, context, abort=True):
         if self.torch_module is None:
             import torch
         else:
@@ -258,12 +277,21 @@ class TorchFiniteChecker:
         }
         report.update({key: value for key, value in counts.items() if key not in ("name", "shape", "dtype")})
         self.checks.append(report)
-        if report["finite_count"] != total:
-            self.first_nonfinite = report
-            atomic_json(self.report_dir / "first-nonfinite.json", report)
+        if abort and report["finite_count"] != total:
+            self._persist_failure(report)
             raise V2Error(
                 f"first non-finite tensor: {report['module_name']} "
                 f"physical_block={report['physical_block']} role={report['role']}")
+        return report
+
+    def inspect_tensor(self, tensor, **context):
+        return self._tensor_report(tensor, context, abort=False)
+
+    def fail_report(self, report, message=None):
+        self._persist_failure(report)
+        raise V2Error(message or
+                      f"first non-finite tensor: {report['module_name']} "
+                      f"physical_block={report['physical_block']} role={report['role']}")
 
     def check(self, value, **context):
         if self.torch_module is None:
@@ -288,11 +316,7 @@ class TorchFiniteChecker:
             self.check(to_tuple(), **context)
 
     def write_trace(self):
-        atomic_json(self.report_dir / "finite-trace.json", {
-            "schema_version": SCHEMA_VERSION, "case": self.case,
-            "attention_backend": self.backend, "run_index": self.run_index,
-            "checks": self.checks, "first_nonfinite": self.first_nonfinite,
-        })
+        atomic_json(self.report_dir / "finite-trace.json", self._trace_payload())
 
 
 def install_trunk_finite_hooks(model, checker, serialize_blocks=(0, 1, 2, 27), capture=None):
@@ -304,9 +328,101 @@ def install_trunk_finite_hooks(model, checker, serialize_blocks=(0, 1, 2, 27), c
     handles = []
 
     attention_tokens = {}
+    router_inputs = {}
+
+    def router_context(name):
+        import re
+        match = re.fullmatch(r"layers\.(\d+)\.mlp\.router", name)
+        if not match:
+            return None
+        logical = int(match.group(1))
+        return logical, 2 * logical, "model.model." + name
+
+    def router_pre(name, logical, physical):
+        def hook(module, args):
+            require(args, f"{name} router forward-pre has no input")
+            router_inputs.setdefault(id(module), []).append(args[0])
+            checker.check(args[0], module_name=name, logical_layer=logical,
+                          physical_block=physical, operation="router_input", role="router_input")
+        return hook
+
+    def router_post(name, logical, physical):
+        def hook(module, args, output):
+            hidden_states = router_inputs[id(module)].pop()
+            if output is None:
+                return
+            require(isinstance(output, (tuple, list)) and len(output) == 2,
+                    f"{name} must return (topk_indices, topk_weights)")
+            topk_indices, original_weights = output
+            checker.check(topk_indices, module_name=name, logical_layer=logical,
+                          physical_block=physical, operation="router_output", role="topk_indices")
+            original_report = checker.inspect_tensor(
+                original_weights, module_name=name, logical_layer=logical,
+                physical_block=physical, operation="router_output", role="topk_weights")
+            if original_report["finite_count"] == original_report["total_elements"]:
+                return
+
+            if checker.torch_module is None:
+                import torch
+            else:
+                torch = checker.torch_module
+            common = {"module_name": name, "logical_layer": logical,
+                      "physical_block": physical}
+            replay = []
+            def inspect(value, operation, role=None):
+                report = checker.inspect_tensor(
+                    value, **common, operation=operation, role=role or operation)
+                replay.append(report)
+                return value
+
+            router_input = inspect(hidden_states, "router_input")
+            weight = inspect(module.classifier.weight, "classifier_weight")
+            bias = inspect(module.e_score_correction_bias, "e_score_correction_bias")
+            flattened = router_input.view(-1, router_input.shape[-1])
+            router_logits = inspect(torch.nn.functional.linear(
+                flattened.float(), weight.float()), "router_logits")
+            scores = inspect(router_logits.softmax(dim=-1), "softmax_scores")
+            scores_for_choice = inspect(scores + bias, "scores_for_choice")
+            k = int(topk_indices.shape[-1])
+            replay_indices = inspect(torch.topk(
+                scores_for_choice, k=k, dim=-1)[1], "topk_indices")
+            gathered = inspect(scores.gather(1, replay_indices), "topk_weights_gathered")
+            denominator = inspect(gathered.sum(dim=-1, keepdim=True) + 1e-20,
+                                  "topk_denominator")
+            normalized = inspect(gathered / denominator, "topk_weights_normalized")
+            scaling = getattr(module, "routed_scaling_factor", None)
+            require(scaling is not None, f"{name} lacks routed_scaling_factor")
+            scaled = inspect(normalized * scaling, "topk_weights_scaled")
+
+            replay_report = replay[-1]
+            same_invalid_classification = all(
+                replay_report[key] == original_report[key]
+                for key in ("finite_count", "nan_count", "positive_infinity_count",
+                            "negative_infinity_count"))
+            indices_equal = bool(torch.equal(replay_indices, topk_indices))
+            if not (same_invalid_classification and indices_equal):
+                checker.checks.append({
+                    "schema_version": SCHEMA_VERSION, "case": checker.case,
+                    "logical_layer": logical, "physical_block": physical,
+                    "module_name": name, "operation": "router_replay_mismatch",
+                    "role": "replay_mismatch", "replay_indices_equal": indices_equal,
+                    "invalid_classification_equal": same_invalid_classification,
+                    "process_id": os.getpid(), "run_index": checker.run_index})
+            first_invalid = next((row for row in replay
+                                  if row["finite_count"] != row["total_elements"]), None)
+            if first_invalid is None or not (same_invalid_classification and indices_equal):
+                checker.fail_report(
+                    first_invalid or original_report,
+                    f"{name}: router diagnostic replay mismatch; refusing false attribution")
+            checker.fail_report(first_invalid)
+        return hook
 
     def derive_context(name):
         import re
+        shortcut = re.match(r"layers\.(\d+)\.mlp(?:\.|$)", name)
+        if shortcut:
+            logical = int(shortcut.group(1))
+            return logical, 2 * logical
         match = re.match(
             r"layers\.(\d+)(?:\.(?:self_attn|mlps|input_layernorm)\.(\d+))?", name)
         if not match:
@@ -369,6 +485,17 @@ def install_trunk_finite_hooks(model, checker, serialize_blocks=(0, 1, 2, 27), c
         if not name or not name.startswith("layers."):
             continue
         fq_name = "model.model." + name
+        router = router_context(name)
+        if router is not None:
+            logical, physical, fq_name = router
+            handles.append(module.register_forward_pre_hook(
+                router_pre(fq_name, logical, physical)))
+            hook = router_post(fq_name, logical, physical)
+            try:
+                handles.append(module.register_forward_hook(hook, always_call=True))
+            except TypeError:
+                handles.append(module.register_forward_hook(hook))
+            continue
         logical, physical = derive_context(name)
         is_attention = physical is not None and name.endswith(f"self_attn.{physical % 2}")
         handles.append(module.register_forward_pre_hook(
@@ -550,6 +677,7 @@ def load_shard_manifest(path):
 
 
 def verify_and_scan_source(model_dir, manifest_path, report_dir, safe_open_fn=None, torch_module=None):
+    scan_started = utc_now()
     if torch_module is None:
         import torch
     else:
@@ -588,9 +716,13 @@ def verify_and_scan_source(model_dir, manifest_path, report_dir, safe_open_fn=No
         atomic_json(Path(report_dir) / "source-scan" / (row["filename"] + ".json"), {
             "schema_version": SCHEMA_VERSION, "shard": row["filename"],
             "all_finite": True, "floating_tensors": reports})
-    return {"schema_version": SCHEMA_VERSION, "all_finite": True,
-            "tensor_count": tensor_count, "dtype_counts": dtype_counts,
-            "manifest_sha256": sha256_file(manifest_path)}
+    summary = {"schema_version": SCHEMA_VERSION, "all_finite": True,
+               "verified_shards": [dict(row) for row in manifest["shards"]],
+               "tensor_count": tensor_count, "dtype_counts": dtype_counts,
+               "start_utc": scan_started, "end_utc": utc_now(),
+               "manifest_sha256": sha256_file(manifest_path)}
+    atomic_json(Path(report_dir) / "source-scan-summary.json", summary)
+    return summary
 
 
 def package_versions(names):

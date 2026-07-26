@@ -49,3 +49,14 @@ python scripts\longcat-next\make-reference-fixtures.py --mode core-validate --ca
 The eager command is needed only if the default diagnostic fails. Acceptance
 must use a finite, justified non-diagnostic backend; it must never use
 `sdpa-f32`. Numerical parity is not implied by generator acceptance.
+
+After a complete source scan has produced `source-scan-summary.json`, a focused
+router-localization rerun may reuse the unchanged checkpoint without rescanning:
+
+```bat
+python scripts\longcat-next\make-reference-fixtures.py --mode core-diagnose --model-dir D:\LongCat-Next --output-dir D:\LongCat-Next-reference\bf16-diagnose-default-router-v2 --precision bf16 --placement auto --offload-dir D:\LongCat-Next-offload --attention-backend default --case eos_window_position_0 --skip-source-scan > D:\LongCat-Next-reference\bf16-diagnose-default-router-v2.log 2>&1
+```
+
+The new output records both `first-nonfinite.json` and the complete
+`finite-trace.json`; the earlier successful source-scan directory remains the
+evidence tying the bypass to the already verified shard identities.
