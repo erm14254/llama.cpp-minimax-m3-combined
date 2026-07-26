@@ -15,6 +15,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <numeric>
 #include <sstream>
@@ -1218,7 +1219,17 @@ llm_graph_longcat_moe_route llm_graph_build_longcat_moe_route(
 
 void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
     // LONGCAT_NGRAM_POSITION_AWARE_HISTORY
+    fprintf(stderr,
+            "LCNEXT_DIAG ngram_set_input enter ubatch=%p token=%p pos=%p seq_id=%p n_seq_id=%p\n",
+            (const void *) ubatch,
+            ubatch ? (const void *) ubatch->token : nullptr,
+            ubatch ? (const void *) ubatch->pos : nullptr,
+            ubatch ? (const void *) ubatch->seq_id : nullptr,
+            ubatch ? (const void *) ubatch->n_seq_id : nullptr);
+    fflush(stderr);
     if (!ubatch->token) {
+        fprintf(stderr, "LCNEXT_DIAG ngram_set_input exit no_token\n");
+        fflush(stderr);
         return;
     }
 
@@ -1226,6 +1237,9 @@ void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
     GGML_ASSERT(ubatch->pos);
     GGML_ASSERT(ubatch->seq_id);
     GGML_ASSERT(ubatch->n_seq_id);
+    fprintf(stderr, "LCNEXT_DIAG ngram_set_input validation_ok n_tokens=%u history=%p\n",
+            ubatch->n_tokens, (void *) token_history);
+    fflush(stderr);
 
     const int64_t n_tokens = ubatch->n_tokens;
     const int32_t n = n_neighbor;
@@ -1238,7 +1252,17 @@ void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
             mask[i] = ignored_count > 0 && token >= ignored_start &&
                 token < ignored_start + ignored_count ? 1.0f : 0.0f;
         }
+        fprintf(stderr,
+                "LCNEXT_DIAG preserve_base write before tensor=%p buffer=%p data=%p name=%s type=%s shape=[%lld,%lld,%lld,%lld] bytes=%zu\n",
+                (void *) preserve_base, (void *) preserve_base->buffer, preserve_base->data,
+                preserve_base->name, ggml_type_name(preserve_base->type),
+                (long long) preserve_base->ne[0], (long long) preserve_base->ne[1],
+                (long long) preserve_base->ne[2], (long long) preserve_base->ne[3],
+                mask.size() * sizeof(float));
+        fflush(stderr);
         ggml_backend_tensor_set(preserve_base, mask.data(), 0, mask.size() * sizeof(float));
+        fprintf(stderr, "LCNEXT_DIAG preserve_base write after\n");
+        fflush(stderr);
     }
 
     // Reconcile speculative rollback before computing hashes. Target
@@ -1381,23 +1405,45 @@ void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
                 hash_ids[i] = (int32_t) (hash % emb_vocab_dim);
             }
 
+            fprintf(stderr,
+                    "LCNEXT_DIAG ngram_ids write before index=%d tensor=%p buffer=%p data=%p name=%s type=%s shape=[%lld,%lld,%lld,%lld] bytes=%zu\n",
+                    index, (void *) ngram_ids[index], (void *) ngram_ids[index]->buffer,
+                    ngram_ids[index]->data, ngram_ids[index]->name, ggml_type_name(ngram_ids[index]->type),
+                    (long long) ngram_ids[index]->ne[0], (long long) ngram_ids[index]->ne[1],
+                    (long long) ngram_ids[index]->ne[2], (long long) ngram_ids[index]->ne[3],
+                    n_tokens * sizeof(int32_t));
+            fflush(stderr);
             ggml_backend_tensor_set(
                 ngram_ids[index],
                 hash_ids.data(),
                 0,
                 n_tokens * sizeof(int32_t));
+            fprintf(stderr, "LCNEXT_DIAG ngram_ids write after index=%d\n", index);
+            fflush(stderr);
             if (lookup_masks[index]) {
                 std::vector<float> lookup_mask(n_tokens);
                 for (int64_t i = 0; i < n_tokens; ++i) {
                     lookup_mask[i] = hash_ids[i] != 0 ? 1.0f : 0.0f;
                 }
+                fprintf(stderr,
+                        "LCNEXT_DIAG lookup_mask write before index=%d tensor=%p buffer=%p data=%p name=%s type=%s shape=[%lld,%lld,%lld,%lld] bytes=%zu\n",
+                        index, (void *) lookup_masks[index], (void *) lookup_masks[index]->buffer,
+                        lookup_masks[index]->data, lookup_masks[index]->name, ggml_type_name(lookup_masks[index]->type),
+                        (long long) lookup_masks[index]->ne[0], (long long) lookup_masks[index]->ne[1],
+                        (long long) lookup_masks[index]->ne[2], (long long) lookup_masks[index]->ne[3],
+                        n_tokens * sizeof(float));
+                fflush(stderr);
                 ggml_backend_tensor_set(lookup_masks[index], lookup_mask.data(), 0,
                     n_tokens * sizeof(float));
+                fprintf(stderr, "LCNEXT_DIAG lookup_mask write after index=%d\n", index);
+                fflush(stderr);
             }
         }
     }
 
     std::map<llama_seq_id, int32_t> appended;
+    fprintf(stderr, "LCNEXT_DIAG pending_history update before sequences=%zu\n", token_history->size());
+    fflush(stderr);
 
     // Tentatively record this decode by absolute position. Keep the committed
     // lookback plus the current ubatch rows so a later rollback can remove
@@ -1423,6 +1469,8 @@ void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
             hist.pop_front();
         }
     }
+    fprintf(stderr, "LCNEXT_DIAG pending_history update after sequences=%zu\n", token_history->size());
+    fflush(stderr);
 }
 
 //
