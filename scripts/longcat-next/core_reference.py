@@ -1169,6 +1169,44 @@ def tensor_array(tensor, name="captured_tensor"):
     return result, source_dtype
 
 
+def write_all_physical_blocks_diagnostic(capture, report_dir, token_count):
+    """Serialize the opt-in 28-block trace without touching accepted artifacts."""
+    import numpy as np
+    expected = [f"physical_block_{block:02d}" for block in range(28)]
+    require(sorted(capture) == expected,
+            f"all-block diagnostic inventory differs: {sorted(capture)}")
+    arrays = {}
+    rows = []
+    for name in expected:
+        array, source_dtype = tensor_array(capture.pop(name), name)
+        require(array.shape == (1, token_count, 3072),
+                f"{name} has diagnostic shape {array.shape}, expected {(1, token_count, 3072)}")
+        finite = v2.numpy_finite_report(name, array)
+        require(finite["finite_count"] == finite["total_elements"],
+                f"{name} is not finite")
+        data = np.ascontiguousarray(array).tobytes(order="C")
+        rows.append({**finite, "serialized_dtype": str(array.dtype),
+                     "source_torch_dtype": source_dtype,
+                     "minimum": finite["finite_minimum"],
+                     "maximum": finite["finite_maximum"],
+                     "sha256": hashlib.sha256(data).hexdigest()})
+        arrays[name] = array
+    root = Path(report_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    npz_path = root / "physical-blocks.npz"
+    temporary = npz_path.with_name(npz_path.name + ".tmp")
+    temporary.write_bytes(deterministic_npz_bytes(arrays))
+    temporary.replace(npz_path)
+    v2.atomic_json(root / "physical-blocks.json", {
+        "schema_version": 2, "accepted": False, "array_count": 28,
+        "arrays": rows})
+    return {"npz": npz_path, "metadata": root / "physical-blocks.json"}
+
+
+def diagnostic_serialize_blocks(enabled):
+    return tuple(range(28)) if enabled else ()
+
+
 def load_case_ids(weight_free_fixture, tokenizer):
     corpus = read_json(weight_free_fixture, "weight-free fixture")
     cases = []
@@ -1231,7 +1269,8 @@ def analytical_ngram_decomposition(base, raw_projections, ignored_mask, official
 
 
 def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_context,
-                    finite_checker=None, attention_backend="default"):
+                    finite_checker=None, attention_backend="default",
+                    serialize_all_physical_blocks=False):
     import numpy as np
     import torch
     modules = resolve_capture_modules(model)
@@ -1239,6 +1278,7 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_
     captured = {}
     source_dtypes = {}
     handles = []
+    diagnostic_blocks = {}
 
     def save(name, value):
         if isinstance(value, tuple):
@@ -1251,7 +1291,9 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_
     # outputs are rejected on-device before any CPU or NumPy conversion.
     handles.extend(v2.install_output_finite_hooks(model, finite_checker))
     handles.extend(v2.install_trunk_finite_hooks(
-        model, finite_checker, serialize_blocks=(), capture={}))
+        model, finite_checker,
+        serialize_blocks=diagnostic_serialize_blocks(serialize_all_physical_blocks),
+        capture=diagnostic_blocks))
     handles.append(modules["base_embedding"].register_forward_hook(
         lambda module, args, output: finite_checker.check(
             output, module_name="model.model.embed_tokens", operation="forward", role="output")))
@@ -1305,6 +1347,9 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_
         if attention_backend in ("sdpa-math", "sdpa-f32"):
             require(sdpa_observation["calls"],
                     f"{attention_backend} requested but the text trunk did not invoke SDPA")
+        if serialize_all_physical_blocks:
+            write_all_physical_blocks_diagnostic(
+                diagnostic_blocks, finite_checker.report_dir, len(prepared["input_ids"]))
     finally:
         for handle in handles:
             handle.remove()
@@ -1469,7 +1514,8 @@ def run_core_worker_generation(args, weight_free_fixture, diagnostic=False):
                 case_name, args.attention_backend, getattr(args, "run_index", 0))
             case_arrays, case_sources = capture_forward(
                 model, ids, selected_logit_ids, case_name, generation_context,
-                checker, args.attention_backend)
+                checker, args.attention_backend,
+                bool(getattr(args, "serialize_all_physical_blocks", False)))
             sdpa_observations.append({"case": case_name, "run_index": repeat,
                                       **checker.sdpa_observation})
             router_materialization_observations.append({

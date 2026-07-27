@@ -44,6 +44,14 @@ class InventoryTests(unittest.TestCase):
         })
         self.config_path = self.write("config.json", dict(inventory.EXPECTED_VOCAB))
 
+    def test_all_physical_blocks_cli_is_diagnostic_one_case_only(self):
+        fixtures.validate_all_physical_blocks_request(
+            "core-diagnose", ["eos_window_position_2"], True)
+        for mode, cases in (("core", ["case"]), ("core-worker", ["case"]),
+                            ("core-diagnose", []), ("core-diagnose", ["a", "b"])):
+            with self.subTest(mode=mode, cases=cases), self.assertRaises(fixtures.FixtureError):
+                fixtures.validate_all_physical_blocks_request(mode, cases, True)
+
     def tearDown(self):
         self.tmp.cleanup()
 

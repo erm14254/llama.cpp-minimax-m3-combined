@@ -266,11 +266,24 @@ def parse_args(argv=None):
                         default=Path(__file__).with_name("checkpoint-shards-v2.json"))
     parser.add_argument("--skip-source-scan", action="store_true",
                         help="diagnosis only; disqualifies output from acceptance")
+    parser.add_argument("--serialize-all-physical-blocks", action="store_true",
+                        help="diagnosis only: write physical blocks 00 through 27 separately")
     parser.add_argument("--candidate-dir", type=Path)
     return parser.parse_args(argv)
 
 
+def validate_all_physical_blocks_request(mode, cases, enabled):
+    if enabled:
+        require(mode == "core-diagnose",
+                "--serialize-all-physical-blocks is valid only with --mode core-diagnose")
+        require(len(cases) == 1,
+                "--serialize-all-physical-blocks requires exactly one explicit --case")
+
+
 def run(args):
+    validate_all_physical_blocks_request(
+        args.mode, getattr(args, "case", []),
+        bool(getattr(args, "serialize_all_physical_blocks", False)))
     if args.mode == "core-validate":
         require(args.candidate_dir is not None, "core-validate requires --candidate-dir")
         core = load_core_reference()

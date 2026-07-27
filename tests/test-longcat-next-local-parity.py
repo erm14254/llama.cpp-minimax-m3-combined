@@ -17,6 +17,8 @@ CPP_TO_REFERENCE = {
 for i in range(12):
     CPP_TO_REFERENCE[f"ngram_proj-{i}"] = f"ngram_projection_raw_{i:02d}"
 DIRECT_NAMES = set(CPP_TO_REFERENCE)
+ALL_BLOCK_CPP_NAMES = {f"l_out-{block}" for block in range(28)}
+ALL_BLOCK_REFERENCE_NAMES = {f"physical_block_{block:02d}" for block in range(28)}
 INTEGER_SUFFIXES = ("input_ids", "attention_mask", "position_ids", "cache_position")
 
 
@@ -73,6 +75,29 @@ def read_manifest(path):
     return rows
 
 
+def read_all_blocks_manifest(path):
+    rows = {}
+    for number, line in enumerate(path.read_text(encoding="ascii").splitlines(), 1):
+        fields = line.split("\t")
+        if len(fields) != 4:
+            raise ValueError(f"malformed all-block manifest line {number}")
+        name, dtype, shape, filename = fields
+        if name in rows:
+            raise ValueError(f"duplicate all-block C++ capture name: {name}")
+        try:
+            dims = tuple(map(int, shape.split(",")))
+        except ValueError as exc:
+            raise ValueError(f"malformed all-block shape for {name}: {shape}") from exc
+        if dtype not in {"f32", "f16", "bf16"} or len(dims) != 4 or min(dims) < 1:
+            raise ValueError(f"malformed all-block capture metadata for {name}")
+        rows[name] = (dtype, dims, path.parent / filename)
+    missing = sorted(ALL_BLOCK_CPP_NAMES - set(rows))
+    unexpected = sorted(set(rows) - ALL_BLOCK_CPP_NAMES)
+    if missing or unexpected:
+        raise ValueError(f"all-block capture-name mismatch: missing={missing}, unexpected={unexpected}")
+    return rows
+
+
 def decode_raw(dtype_name, dims, path, kind):
     dtype = {"f32": np.float32, "f16": np.float16, "bf16": np.uint16}[dtype_name]
     raw = np.fromfile(path, dtype=dtype)
@@ -111,6 +136,66 @@ def floating_result(reference, candidate, tolerance):
             "max_relative_error": float((diff / denom).max(initial=0)),
             "max_normalized_tolerance_violation": float(violation.max(initial=0)),
             "passed": bool(np.all(diff <= limit))}
+
+
+def all_block_result(reference, candidate, criterion):
+    if reference.shape != candidate.shape:
+        raise ValueError(f"shape mismatch: C++ {candidate.shape} != reference {reference.shape}")
+    if not np.isfinite(reference).all() or not np.isfinite(candidate).all():
+        raise ValueError("all all-block comparison values must be finite")
+    diff = np.abs(candidate - reference)
+    limit = criterion["atol"] + criterion["rtol"] * np.abs(reference)
+    violation = np.zeros_like(diff, dtype=np.float64)
+    np.divide(diff, limit, out=violation, where=limit != 0)
+    violation[(limit == 0) & (diff != 0)] = np.inf
+    denominator = np.maximum(np.abs(reference), np.finfo(np.float32).tiny)
+    left = reference.reshape(-1).astype(np.float64)
+    right = candidate.reshape(-1).astype(np.float64)
+    norm_product = np.linalg.norm(left) * np.linalg.norm(right)
+    cosine = float(np.dot(left, right) / norm_product) if norm_product else float(np.array_equal(left, right))
+    return {
+        "maximum_absolute_error": float(diff.max(initial=0)),
+        "mean_absolute_error": float(diff.mean()),
+        "rms_error": float(np.sqrt(np.mean(np.square(diff, dtype=np.float64)))),
+        "maximum_relative_error": float((diff / denominator).max(initial=0)),
+        "cosine_similarity": cosine,
+        "maximum_normalized_violation_under_diagnostic_criterion": float(
+            violation.max(initial=0)),
+        "within_diagnostic_criterion": bool(np.all(diff <= limit)),
+    }
+
+
+def compare_all_blocks(reference_npz, capture_dir, attention_mask, criterion):
+    reference_names = set(reference_npz.files)
+    if reference_names != ALL_BLOCK_REFERENCE_NAMES:
+        raise ValueError("official all-block inventory mismatch: "
+                         f"missing={sorted(ALL_BLOCK_REFERENCE_NAMES-reference_names)}, "
+                         f"unexpected={sorted(reference_names-ALL_BLOCK_REFERENCE_NAMES)}")
+    rows = read_all_blocks_manifest(capture_dir / "all-blocks-diagnostics.tsv")
+    mask = np.asarray(attention_mask, dtype=bool)
+    results = []
+    for block in range(28):
+        cpp_name = f"l_out-{block}"
+        reference_name = f"physical_block_{block:02d}"
+        dtype, dims, raw_path = rows[cpp_name]
+        candidate = decode_raw(dtype, dims, raw_path, "hidden")
+        reference = np.asarray(reference_npz[reference_name], dtype=np.float32)
+        if reference.shape[1] != mask.size or candidate.shape[1] != mask.size:
+            raise ValueError(f"{reference_name}: attention mask length differs from token count")
+        result = all_block_result(reference[:, mask, :], candidate[:, mask, :], criterion)
+        results.append({"physical_block": block, "reference_name": reference_name,
+                        "cpp_name": cpp_name, **result})
+    first = next((row["physical_block"] for row in results
+                  if not row["within_diagnostic_criterion"]), None)
+    last = None if first in (None, 0) else max(
+        row["physical_block"] for row in results
+        if row["physical_block"] < first and row["within_diagnostic_criterion"])
+    return {"accepted": False,
+            "diagnostic_criterion_source": "bf16.physical_block_02",
+            "diagnostic_criterion": dict(criterion),
+            "first_block_exceeding_diagnostic_criterion": first,
+            "last_block_within_diagnostic_criterion_before_failure": last,
+            "blocks": results}
 
 
 def exact_result(reference, candidate):
@@ -226,13 +311,29 @@ def build_parser():
     p.add_argument("--threads", type=int, default=0)
     p.add_argument("--flash-attn", choices=("auto", "disabled", "enabled"), default="auto")
     p.add_argument("--layer0-diagnostic", type=int, choices=(0, 1), default=0)
+    p.add_argument("--all-blocks-diagnostic", type=int, choices=(0, 1), default=0)
+    p.add_argument("--all-blocks-reference-npz", type=Path)
     p.add_argument("--case", action="append", default=[], help="capture only this reference case (repeatable)")
     p.add_argument("--tolerance-policy", type=Path, default=Path(__file__).parent / "fixtures/longcat-next/stage1-tolerances.json")
     return p
 
 
+def validate_all_blocks_options(args):
+    if args.all_blocks_diagnostic:
+        if len(args.case) != 1:
+            raise ValueError("--all-blocks-diagnostic requires exactly one --case")
+        if args.all_blocks_reference_npz is None:
+            raise ValueError("--all-blocks-diagnostic requires --all-blocks-reference-npz")
+    elif args.all_blocks_reference_npz is not None:
+        raise ValueError("--all-blocks-reference-npz requires --all-blocks-diagnostic 1")
+
+
 def main():
     args = build_parser().parse_args()
+    try:
+        validate_all_blocks_options(args)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     metadata = json.loads((args.reference_dir / f"longcat-next-core-{args.precision}.json").read_text(encoding="ascii"))
     npz = np.load(args.reference_dir / f"longcat-next-core-{args.precision}.npz", allow_pickle=False)
     policy = json.loads(args.tolerance_policy.read_text(encoding="ascii"))
@@ -253,12 +354,21 @@ def main():
     command = [str(args.capture_exe), "--model", str(args.model), "--case-manifest", str(manifest_path),
                     "--output-dir", str(args.output_dir), "--n-gpu-layers", str(args.n_gpu_layers),
                     "--threads", str(args.threads), "--flash-attn", args.flash_attn,
-                    "--layer0-diagnostic", str(args.layer0_diagnostic)]
+                    "--layer0-diagnostic", str(args.layer0_diagnostic),
+                    "--all-blocks-diagnostic", str(args.all_blocks_diagnostic)]
     try:
         run_capture_after_validation(validation, command)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     reports = {case["name"]: compare_case(npz, metadata, case, args.output_dir / case["name"], args.precision, policy) for case in cases}
+    if args.all_blocks_diagnostic:
+        criterion = policy["bf16"]["physical_block_02"]
+        with np.load(args.all_blocks_reference_npz, allow_pickle=False) as all_blocks_reference:
+            all_blocks = compare_all_blocks(
+                all_blocks_reference, args.output_dir / cases[0]["name"],
+                cases[0]["attention_mask"], criterion)
+        (args.output_dir / "all-blocks-comparison.json").write_text(
+            json.dumps(all_blocks, indent=2) + "\n", encoding="ascii")
     overall = all(row["passed"] for row in reports.values())
     report = {"precision": args.precision, "tolerance_policy": str(args.tolerance_policy), "cases": reports, "passed": overall}
     (args.output_dir / "comparison-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="ascii")

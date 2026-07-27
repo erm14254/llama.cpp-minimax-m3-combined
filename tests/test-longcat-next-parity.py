@@ -21,6 +21,66 @@ class ParityHarnessTests(unittest.TestCase):
         self.assertEqual(PARITY.DIRECT_NAMES, expected)
         self.assertEqual(len(PARITY.DIRECT_NAMES), 20)
 
+    def test_all_block_manifest_and_localization_with_attention_mask(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            manifest = []
+            references = {}
+            mask = [0, 1]
+            for block in range(28):
+                reference = np.zeros((1, 2, 3), np.float32)
+                candidate = reference.copy()
+                candidate[0, 0, :] = 1000  # masked and therefore ignored
+                if block >= 7:
+                    candidate[0, 1, 0] = 1
+                raw = root / f"all_blocks_l_out-{block}.raw"
+                candidate.reshape(-1).tofile(raw)
+                manifest.append(f"l_out-{block}\tf32\t3,2,1,1\t{raw.name}")
+                references[f"physical_block_{block:02d}"] = reference
+            (root / "all-blocks-diagnostics.tsv").write_text(
+                "\n".join(manifest) + "\n", encoding="ascii")
+            reference_path = root / "physical-blocks.npz"
+            np.savez(reference_path, **references)
+            with np.load(reference_path, allow_pickle=False) as archive:
+                report = PARITY.compare_all_blocks(
+                    archive, root, mask, {"atol": 0.125, "rtol": 0.03125})
+            self.assertEqual(report["first_block_exceeding_diagnostic_criterion"], 7)
+            self.assertEqual(report["last_block_within_diagnostic_criterion_before_failure"], 6)
+            self.assertEqual(len(report["blocks"]), 28)
+            self.assertEqual(report["blocks"][0]["maximum_absolute_error"], 0)
+            self.assertFalse(report["accepted"])
+
+    def test_all_block_manifest_rejects_duplicate_and_malformed_rows(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "all-blocks-diagnostics.tsv"
+            path.write_text("bad\n", encoding="ascii")
+            with self.assertRaisesRegex(ValueError, "malformed"):
+                PARITY.read_all_blocks_manifest(path)
+            rows = [f"l_out-{block}\tf32\t3,1,1,1\tx.raw" for block in range(28)]
+            path.write_text("\n".join(rows + [rows[0]]) + "\n", encoding="ascii")
+            with self.assertRaisesRegex(ValueError, "duplicate"):
+                PARITY.read_all_blocks_manifest(path)
+            rows[-1] = "l_out-28\tf32\t3,1,1,1\tx.raw"
+            path.write_text("\n".join(rows) + "\n", encoding="ascii")
+            with self.assertRaisesRegex(ValueError, "capture-name mismatch"):
+                PARITY.read_all_blocks_manifest(path)
+
+    def test_all_block_cli_requires_one_case_and_reference(self):
+        required = ["--model", "m", "--reference-dir", "r", "--precision", "bf16",
+                    "--output-dir", "o", "--capture-exe", "capture"]
+        parser = PARITY.build_parser()
+        disabled = parser.parse_args(required)
+        PARITY.validate_all_blocks_options(disabled)
+        for extra in (["--all-blocks-diagnostic", "1"],
+                      ["--all-blocks-diagnostic", "1", "--case", "a"],
+                      ["--all-blocks-reference-npz", "blocks.npz"]):
+            with self.assertRaises(ValueError):
+                PARITY.validate_all_blocks_options(parser.parse_args(required + extra))
+        enabled = parser.parse_args(required + ["--all-blocks-diagnostic", "1",
+                                    "--all-blocks-reference-npz", "blocks.npz",
+                                    "--case", "eos_window_position_2"])
+        PARITY.validate_all_blocks_options(enabled)
+
     def test_reference_finiteness_preflight_writes_report(self):
         class Fixture:
             files = ["finite", "invalid", "integer"]

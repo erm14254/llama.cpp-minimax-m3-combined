@@ -300,6 +300,39 @@ def synthetic_router_model(scaling=1.0):
 
 
 class CoreV2Tests(unittest.TestCase):
+    def test_all_block_diagnostic_inventory_and_contract_isolation(self):
+        self.assertEqual(core.diagnostic_serialize_blocks(True), tuple(range(28)))
+        self.assertEqual(core.diagnostic_serialize_blocks(False), ())
+        contract_path = ROOT / "scripts/longcat-next/core-accepted-contract-v2.json"
+        before = contract_path.read_bytes()
+        with tempfile.TemporaryDirectory() as temporary:
+            capture = {f"physical_block_{block:02d}":
+                       np.full((1, 2, 3072), block, dtype=np.float32)
+                       for block in range(28)}
+            core.write_all_physical_blocks_diagnostic(capture, temporary, 2)
+            with np.load(Path(temporary) / "physical-blocks.npz", allow_pickle=False) as archive:
+                self.assertEqual(set(archive.files),
+                                 {f"physical_block_{block:02d}" for block in range(28)})
+                self.assertTrue(all(archive[name].shape == (1, 2, 3072)
+                                    for name in archive.files))
+            metadata = json.loads((Path(temporary) / "physical-blocks.json").read_text())
+            self.assertFalse(metadata["accepted"])
+            self.assertEqual(metadata["array_count"], 28)
+            self.assertEqual(len(metadata["arrays"]), 28)
+        self.assertEqual(contract_path.read_bytes(), before)
+
+    def test_all_block_diagnostic_rejects_missing_and_nonfinite(self):
+        arrays = {f"physical_block_{block:02d}": np.zeros((1, 1, 3072), np.float32)
+                  for block in range(28)}
+        with tempfile.TemporaryDirectory() as temporary:
+            missing = dict(arrays); missing.pop("physical_block_13")
+            with self.assertRaisesRegex(core.CoreFixtureError, "inventory"):
+                core.write_all_physical_blocks_diagnostic(missing, temporary, 1)
+            invalid = dict(arrays); invalid["physical_block_13"] = invalid["physical_block_13"].copy()
+            invalid["physical_block_13"][0, 0, 0] = np.nan
+            with self.assertRaisesRegex(core.CoreFixtureError, "non-finite"):
+                core.write_all_physical_blocks_diagnostic(invalid, temporary, 1)
+
     def setUp(self):
         self.original_router_runtime_identity = v2.router_runtime_identity
         v2.router_runtime_identity = lambda module: {

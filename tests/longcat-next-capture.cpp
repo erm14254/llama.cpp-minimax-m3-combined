@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -19,8 +20,11 @@ struct capture_state {
     fs::path dir;
     std::ofstream manifest;
     std::ofstream layer0_manifest;
+    std::ofstream all_blocks_manifest;
+    std::set<std::string> all_blocks_seen;
     bool direct_forward = true;
     bool layer0_diagnostic = false;
+    bool all_blocks_diagnostic = false;
 };
 
 enum class capture_cache_type {
@@ -50,9 +54,18 @@ static void apply_cache_type(llama_context_params & params, capture_cache_type c
 }
 
 static bool wanted(const std::string & name) {
-    return name == "inp_embd" || name == "inp_embd_ngram" || name == "h_nextn" ||
-           name.rfind("ngram_proj-", 0) == 0 || name == "l_out-0" || name == "l_out-1" ||
-           name == "l_out-2" || name == "l_out-27";
+    if (name == "inp_embd" || name == "inp_embd_ngram" || name == "h_nextn" ||
+            name == "l_out-0" || name == "l_out-1" || name == "l_out-2" || name == "l_out-27") {
+        return true;
+    }
+    constexpr const char * prefix = "ngram_proj-";
+    if (name.rfind(prefix, 0) != 0) return false;
+    const std::string suffix = name.substr(11);
+    if (suffix.empty() || (suffix.size() > 1 && suffix[0] == '0') ||
+            !std::all_of(suffix.begin(), suffix.end(), [](unsigned char c) { return std::isdigit(c); })) {
+        return false;
+    }
+    return std::stoi(suffix) < 12;
 }
 
 static bool wanted_layer0(const std::string & name) {
@@ -62,6 +75,22 @@ static bool wanted_layer0(const std::string & name) {
         "kqv_mla-0", "fattn_mla-0", "kqv_out-0", "attn_out-0", "ffn_inp-0",
         "ffn_norm-0", "ffn_out-0", "l_out-0"};
     return std::find(names.begin(), names.end(), name) != names.end();
+}
+
+static bool wanted_all_blocks(const std::string & name) {
+    constexpr const char * prefix = "l_out-";
+    if (name.rfind(prefix, 0) != 0 || name.size() <= 6) return false;
+    const std::string suffix = name.substr(6);
+    if (suffix.size() > 1 && suffix[0] == '0') return false;
+    if (!std::all_of(suffix.begin(), suffix.end(), [](unsigned char c) { return std::isdigit(c); })) return false;
+    const int block = std::stoi(suffix);
+    return block >= 0 && block < 28;
+}
+
+static bool parse_binary_flag(const std::string & value, bool & result) {
+    if (value != "0" && value != "1") return false;
+    result = value == "1";
+    return true;
 }
 
 static void write_capture(ggml_tensor * tensor, const fs::path & dir, std::ofstream & manifest, const std::string & prefix) {
@@ -80,10 +109,14 @@ static bool capture_cb(ggml_tensor * tensor, bool ask, void * opaque) {
     const std::string name = tensor->name;
     const bool normal = wanted(name);
     const bool diagnostic = state.layer0_diagnostic && wanted_layer0(name);
-    if (!state.direct_forward || (!normal && !diagnostic)) return false;
+    const bool all_blocks = state.all_blocks_diagnostic && wanted_all_blocks(name);
+    if (!state.direct_forward || (!normal && !diagnostic && !all_blocks)) return false;
     if (ask) return true;
     if (normal) write_capture(tensor, state.dir, state.manifest, "");
     if (diagnostic) write_capture(tensor, state.dir, state.layer0_manifest, "diag_");
+    if (all_blocks && state.all_blocks_seen.insert(name).second) {
+        write_capture(tensor, state.dir, state.all_blocks_manifest, "all_blocks_");
+    }
     return true;
 }
 
@@ -128,7 +161,7 @@ static int self_test() {
     const float tied[] = { 0.0f, 2.0f, 2.0f, 1.0f };
     if (argmax_large_tie(tied, 4) != 2) return 20;
     if (sequence_for_mask(0, 0) == sequence_for_mask(1, 0) || sequence_for_mask(2, 1) != 0) return 21;
-    capture_state state { {}, {}, {}, false, false };
+    capture_state state { {}, {}, {}, {}, {}, false, false, false };
     ggml_tensor dummy = {};
     snprintf(dummy.name, sizeof(dummy.name), "inp_embd");
     if (capture_cb(&dummy, true, &state)) return 22;
@@ -167,13 +200,28 @@ static int self_test() {
         if (!wanted_layer0(name)) return 37;
     }
     if (wanted_layer0("q-0") || wanted_layer0("kq-1")) return 38;
+    for (int block = 0; block < 28; ++block) {
+        if (!wanted_all_blocks("l_out-" + std::to_string(block))) return 39;
+    }
+    if (wanted_all_blocks("l_out-28") || wanted_all_blocks("l_out-01") ||
+            wanted_all_blocks("l_out-x") || wanted_all_blocks("attn_out-0")) return 40;
+    bool binary = false;
+    if (!parse_binary_flag("0", binary) || binary) return 41;
+    if (!parse_binary_flag("1", binary) || !binary) return 42;
+    if (parse_binary_flag("2", binary) || parse_binary_flag("true", binary)) return 43;
+    std::set<std::string> standard;
+    for (const char * name : {"inp_embd", "inp_embd_ngram", "h_nextn", "l_out-0",
+            "l_out-1", "l_out-2", "l_out-27"}) standard.insert(name);
+    for (int index = 0; index < 12; ++index) standard.insert("ngram_proj-" + std::to_string(index));
+    if (standard.size() != 19 || !std::all_of(standard.begin(), standard.end(), wanted) ||
+            wanted("l_out-3") || wanted("ngram_proj-12")) return 44;
     return 0;
 }
 
 static int run_case(
         llama_model * model, const json & spec, const fs::path & root,
         uint32_t n_ctx, int32_t threads, llama_flash_attn_type flash_attn,
-        capture_cache_type cache_type, bool layer0_diagnostic) {
+        capture_cache_type cache_type, bool layer0_diagnostic, bool all_blocks_diagnostic) {
     const auto ids = spec.at("input_ids").get<std::vector<llama_token>>();
     const auto mask = spec.at("attention_mask").get<std::vector<int32_t>>();
     const auto positions = spec.at("position_ids").get<std::vector<llama_pos>>();
@@ -182,9 +230,13 @@ static int run_case(
 
     const fs::path dir = root / spec.at("name").get<std::string>();
     fs::create_directories(dir);
-    capture_state state { dir, std::ofstream(dir / "captures.tsv", std::ios::trunc), {}, true, layer0_diagnostic };
+    capture_state state { dir, std::ofstream(dir / "captures.tsv", std::ios::trunc), {}, {}, {},
+                          true, layer0_diagnostic, all_blocks_diagnostic };
     if (layer0_diagnostic) {
         state.layer0_manifest.open(dir / "layer0-diagnostics.tsv", std::ios::trunc);
+    }
+    if (all_blocks_diagnostic) {
+        state.all_blocks_manifest.open(dir / "all-blocks-diagnostics.tsv", std::ios::trunc);
     }
     auto cp = capture_context_params(n_ctx, ids.size(), threads, flash_attn, cache_type, &state);
     llama_context * ctx = llama_init_from_model(model, cp);
@@ -204,6 +256,10 @@ static int run_case(
     const int rc = llama_decode(ctx, batch);
     llama_batch_free(batch);
     if (rc != 0) { llama_free(ctx); return 12; }
+    if (all_blocks_diagnostic && state.all_blocks_seen.size() != 28) {
+        llama_free(ctx);
+        return 14;
+    }
 
     const int32_t n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(model));
     const float * logits = llama_get_logits_ith(ctx, -1);
@@ -262,6 +318,7 @@ int main(int argc, char ** argv) {
     llama_flash_attn_type flash_attn = LLAMA_FLASH_ATTN_TYPE_AUTO;
     capture_cache_type cache_type = capture_cache_type::DEFAULT;
     bool layer0_diagnostic = false;
+    bool all_blocks_diagnostic = false;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string key = argv[i];
         if (key == "--model") model_path = argv[i + 1];
@@ -278,9 +335,9 @@ int main(int argc, char ** argv) {
         } else if (key == "--cache-type") {
             if (!parse_cache_type(argv[i + 1], cache_type)) return 2;
         } else if (key == "--layer0-diagnostic") {
-            const std::string value = argv[i + 1];
-            if (value != "0" && value != "1") return 2;
-            layer0_diagnostic = value == "1";
+            if (!parse_binary_flag(argv[i + 1], layer0_diagnostic)) return 2;
+        } else if (key == "--all-blocks-diagnostic") {
+            if (!parse_binary_flag(argv[i + 1], all_blocks_diagnostic)) return 2;
         }
         else return 2;
     }
@@ -298,7 +355,8 @@ int main(int argc, char ** argv) {
     if (!model) return 3;
     int result = 0;
     for (const auto & spec : manifest.at("cases")) {
-        result = run_case(model, spec, output, n_ctx, threads, flash_attn, cache_type, layer0_diagnostic);
+        result = run_case(model, spec, output, n_ctx, threads, flash_attn, cache_type,
+                          layer0_diagnostic, all_blocks_diagnostic);
         if (result != 0) break;
     }
     llama_model_free(model);
