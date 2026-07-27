@@ -1284,6 +1284,23 @@ bool llm_graph_longcat_bf16_boundary_rounding_enabled(llm_arch arch) {
     return true;
 }
 
+bool llm_graph_longcat_bf16_hidden_surface_rounding_enabled(
+        llm_arch arch,
+        bool boundary_rounding_enabled) {
+    if (arch != LLM_ARCH_LONGCAT_NEXT) {
+        return false;
+    }
+    const char * value = std::getenv("LLAMA_LONGCAT_BF16_HIDDEN_SURFACE_ROUNDING");
+    if (value == nullptr || std::strcmp(value, "0") == 0) {
+        return false;
+    }
+    GGML_ASSERT(std::strcmp(value, "1") == 0 &&
+                "LLAMA_LONGCAT_BF16_HIDDEN_SURFACE_ROUNDING must be exactly 0 or 1");
+    GGML_ASSERT(boundary_rounding_enabled &&
+                "LongCat hidden-surface rounding requires boundary rounding");
+    return true;
+}
+
 void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
     // LONGCAT_NGRAM_POSITION_AWARE_HISTORY
     if (!ubatch->token) {

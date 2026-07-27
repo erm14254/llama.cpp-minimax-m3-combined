@@ -38,7 +38,8 @@ class ParityHarnessTests(unittest.TestCase):
         (case / "decoding.json").write_text(json.dumps({"argmax_id": 2909}), encoding="ascii")
         if rounding:
             (root / "capture-run-metadata.json").write_text(json.dumps({
-                "longcat_bf16_boundary_rounding": True}), encoding="ascii")
+                "longcat_bf16_boundary_rounding": True,
+                "longcat_bf16_hidden_surface_rounding": True}), encoding="ascii")
 
     def test_profile_diff_legacy_compact_dtype_metrics_routing_and_validation(self):
         names = PARITY.component_names(); default = {}; math = {}; baseline = {}; rounded = {}
@@ -51,10 +52,10 @@ class ParityHarnessTests(unittest.TestCase):
             value = np.zeros((1, 2, width), dtype)
             if suffix == "router_topk_indices": value[:] = np.arange(12)
             default[name] = value.copy(); math[name] = value.copy(); baseline[name] = value.copy(); rounded[name] = value.copy()
-        baseline["physical_block_00__attention_output"][..., 0] = .2
-        rounded["physical_block_00__attention_output"][..., 0] = .1
-        baseline["physical_block_01__dense_output"][..., 0] = .1
-        rounded["physical_block_01__dense_output"][..., 0] = .2
+        baseline["physical_block_00__attention_output"][..., 0] = .25
+        rounded["physical_block_00__attention_output"][..., 0] = .125
+        baseline["physical_block_01__dense_output"][..., 0] = .125
+        rounded["physical_block_01__dense_output"][..., 0] = .25
         rounded["physical_block_00__router_topk_indices"][..., 0] = 7
         with tempfile.TemporaryDirectory() as td:
             root = Path(td); b = root / "baseline"; r = root / "rounded"; b.mkdir(); r.mkdir()
@@ -63,8 +64,9 @@ class ParityHarnessTests(unittest.TestCase):
             np.savez(default_path, **default); np.savez(math_path, **math)
             dtype_path = root / "dtypes.json"
             dtype_path.write_text(json.dumps({"components": [
-                {"name": "physical_block_00__router_logits", "source_torch_dtype": "torch.float32"},
-                {"name": "physical_block_00__block_output", "source_torch_dtype": "torch.bfloat16"}]}))
+                {"name": name, "source_torch_dtype":
+                    "torch.float32" if name in PARITY.observed_float32_policy_names() else "torch.bfloat16"}
+                for name in PARITY.observed_float32_policy_names() | PARITY.observed_bfloat16_policy_names()]}))
             with np.load(default_path) as d, np.load(math_path) as m:
                 report = PARITY.compare_component_profiles(
                     d, m, b, r, "eos_window_position_2", [1, 1], {"atol": .125, "rtol": .03125},
@@ -81,6 +83,10 @@ class ParityHarnessTests(unittest.TestCase):
             self.assertIn("physical_block_00__router_logits", report["python_components_observed_float32"])
             self.assertIn("physical_block_00__block_output", report["python_components_observed_bfloat16"])
             self.assertTrue(report["representability_is_not_execution_dtype"])
+            self.assertEqual(report["observed_bfloat16_policy_surface_count"], 75)
+            self.assertEqual(len(report["observed_bfloat16_policy_surfaces_on_bf16_grid"]), 75)
+            self.assertTrue(report["observed_bfloat16_policy_coverage_complete"])
+            self.assertEqual(report["observed_float32_policy_surfaces_rounded"], [])
             route = next(row for row in report["routing_profile_comparison"]
                          if row["physical_block"] == 0 and row["token"] == 0)
             self.assertTrue(route["boundary_rounding_changed_real_expert"])
@@ -90,6 +96,15 @@ class ParityHarnessTests(unittest.TestCase):
                 PARITY.validate_profile_capture(b, "eos_window_position_2", False, None)
 
     def test_bf16_grid_and_material_metric_helpers(self):
+        self.assertEqual(len(PARITY.observed_bfloat16_policy_names()), 75)
+        self.assertEqual(len(PARITY.observed_float32_policy_names()), 30)
+        self.assertEqual(len(PARITY.boundary_rounding_policy_names()), 34)
+        additions = PARITY.hidden_surface_rounding_additions()
+        self.assertEqual(len(additions), 41)
+        expected = {"physical_block_00__block_input"}
+        expected.update(f"physical_block_{block:02d}__{suffix}" for block in range(10)
+                        for suffix in ("attention_norm", "attention_output", "ffn_norm", "dense_output"))
+        self.assertEqual(additions, expected)
         self.assertTrue(PARITY.exactly_bf16_representable(np.array([1.0, -2.0], np.float32)))
         self.assertFalse(PARITY.exactly_bf16_representable(np.array([1.001], np.float32)))
         self.assertEqual(PARITY.material_metric_change(1.0, .5), "improved")
@@ -300,6 +315,12 @@ class ParityHarnessTests(unittest.TestCase):
                                     "--all-blocks-reference-npz", "blocks.npz",
                                     "--case", "eos_window_position_2"])
         PARITY.validate_all_blocks_options(enabled)
+        with self.assertRaisesRegex(ValueError, "requires boundary rounding"):
+            PARITY.validate_all_blocks_options(parser.parse_args(
+                required + ["--longcat-bf16-hidden-surface-rounding", "1"]))
+        both = parser.parse_args(required + ["--longcat-bf16-boundary-rounding", "1",
+                                              "--longcat-bf16-hidden-surface-rounding", "1"])
+        PARITY.validate_all_blocks_options(both)
 
     def test_component_replay_mode_forbids_capture_invocation_arguments(self):
         parser = PARITY.build_parser()

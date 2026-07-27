@@ -126,6 +126,15 @@ static bool set_longcat_bf16_boundary_rounding(bool enabled) {
 #endif
 }
 
+static bool set_longcat_bf16_hidden_surface_rounding(bool enabled) {
+    const char * value = enabled ? "1" : "0";
+#ifdef _WIN32
+    return _putenv_s("LLAMA_LONGCAT_BF16_HIDDEN_SURFACE_ROUNDING", value) == 0;
+#else
+    return setenv("LLAMA_LONGCAT_BF16_HIDDEN_SURFACE_ROUNDING", value, 1) == 0;
+#endif
+}
+
 static std::vector<uint8_t> read_logical_tensor_bytes(const ggml_tensor * tensor) {
     if (tensor->type != GGML_TYPE_F32 && tensor->type != GGML_TYPE_F16 &&
             tensor->type != GGML_TYPE_BF16 && tensor->type != GGML_TYPE_I32) {
@@ -496,6 +505,7 @@ int main(int argc, char ** argv) {
     bool all_blocks_diagnostic = false;
     bool block_components_diagnostic = false;
     bool longcat_bf16_boundary_rounding = false;
+    bool longcat_bf16_hidden_surface_rounding = false;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string key = argv[i];
         if (key == "--model") model_path = argv[i + 1];
@@ -519,10 +529,13 @@ int main(int argc, char ** argv) {
             if (!parse_binary_flag(argv[i + 1], block_components_diagnostic)) return 2;
         } else if (key == "--longcat-bf16-boundary-rounding") {
             if (!parse_binary_flag(argv[i + 1], longcat_bf16_boundary_rounding)) return 2;
+        } else if (key == "--longcat-bf16-hidden-surface-rounding") {
+            if (!parse_binary_flag(argv[i + 1], longcat_bf16_hidden_surface_rounding)) return 2;
         }
         else return 2;
     }
     if (model_path.empty() || manifest_path.empty() || output.empty() || n_gpu_layers < 0 || threads < 0) return 2;
+    if (longcat_bf16_hidden_surface_rounding && !longcat_bf16_boundary_rounding) return 2;
     json manifest;
     std::ifstream(manifest_path) >> manifest;
     size_t longest = 0;
@@ -530,14 +543,21 @@ int main(int argc, char ** argv) {
     const uint32_t n_ctx = longest + 8 + 16; // eight generated tokens plus safety margin
     fs::create_directories(output);
     if (!set_longcat_bf16_boundary_rounding(longcat_bf16_boundary_rounding)) return 2;
+    if (!set_longcat_bf16_hidden_surface_rounding(longcat_bf16_hidden_surface_rounding)) return 2;
     const json run_metadata = {
         {"schema_version", 1},
         {"longcat_bf16_boundary_rounding", longcat_bf16_boundary_rounding},
+        {"longcat_bf16_hidden_surface_rounding", longcat_bf16_hidden_surface_rounding},
         {"environment_gate", "LLAMA_LONGCAT_BF16_BOUNDARY_ROUNDING"},
+        {"environment_gates", {
+            "LLAMA_LONGCAT_BF16_BOUNDARY_ROUNDING",
+            "LLAMA_LONGCAT_BF16_HIDDEN_SURFACE_ROUNDING"}},
     };
     std::ofstream(output / "capture-run-metadata.json") << run_metadata.dump(2) << '\n';
     std::cerr << "longcat-next-capture: BF16 boundary rounding = "
               << (longcat_bf16_boundary_rounding ? "enabled" : "disabled") << '\n';
+    std::cerr << "longcat-next-capture: BF16 hidden-surface rounding = "
+              << (longcat_bf16_hidden_surface_rounding ? "enabled" : "disabled") << '\n';
     llama_backend_init();
     auto model_params = llama_model_default_params();
     model_params.n_gpu_layers = n_gpu_layers;

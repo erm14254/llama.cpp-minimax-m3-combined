@@ -719,6 +719,9 @@ ggml_tensor * llm_graph_build_longcat_boundary_add(
         bool bf16_boundary_rounding);
 
 bool llm_graph_longcat_bf16_boundary_rounding_enabled(llm_arch arch);
+bool llm_graph_longcat_bf16_hidden_surface_rounding_enabled(
+        llm_arch arch,
+        bool boundary_rounding_enabled);
 
 // N-gram hash embedding input for LongCat-Flash-Ngram
 // Computes polynomial rolling hash IDs from token history and current batch,

@@ -28,6 +28,32 @@ COMPONENT_SUFFIXES = ("block_input", "attention_norm", "attention_output",
 COMPONENT_MOE_SUFFIXES = ("router_logits", "router_probabilities", "router_selection_scores",
                           "router_topk_indices", "router_topk_weights", "identity_weight_sum",
                           "identity_residual", "moe_shortcut")
+OBSERVED_FLOAT32_ROUTER_SUFFIXES = {
+    "identity_residual", "identity_weight_sum", "router_logits", "router_probabilities",
+    "router_selection_scores", "router_topk_weights"}
+
+
+def observed_bfloat16_policy_names():
+    return {name for name in component_names()
+            if name.split("__", 1)[1] not in OBSERVED_FLOAT32_ROUTER_SUFFIXES |
+               {"router_topk_indices"}}
+
+
+def observed_float32_policy_names():
+    return {name for name in component_names()
+            if name.split("__", 1)[1] in OBSERVED_FLOAT32_ROUTER_SUFFIXES}
+
+
+def boundary_rounding_policy_names():
+    names = {f"physical_block_{block:02d}__{suffix}" for block in range(10)
+             for suffix in ("post_attention_residual", "block_output")}
+    names.update(f"physical_block_{block:02d}__moe_shortcut" for block in range(0, 10, 2))
+    names.update(f"physical_block_{block:02d}__block_input" for block in range(1, 10))
+    return names
+
+
+def hidden_surface_rounding_additions():
+    return observed_bfloat16_policy_names() - boundary_rounding_policy_names()
 COMPONENT_CPP_BASE = {
     "block_in": "block_input", "attn_norm": "attention_norm", "attn_out": "attention_output",
     "ffn_inp": "post_attention_residual", "ffn_norm": "ffn_norm", "ffn_out": "dense_output",
@@ -499,6 +525,7 @@ def validate_profile_capture(root, case, expect_rounding, baseline_identity=None
     components = read_component_manifest(capture / "block-components-diagnostics.tsv")
     if len(components) != 110:
         raise ValueError(f"{root}: component manifest must contain exactly 110 rows")
+    metadata = {}
     if expect_rounding:
         metadata_path = root / "capture-run-metadata.json"
         metadata = json.loads(metadata_path.read_text(encoding="ascii"))
@@ -516,7 +543,7 @@ def validate_profile_capture(root, case, expect_rounding, baseline_identity=None
     expected_representation = "compact_logical" if expect_rounding else "legacy_strided_argsort_view"
     if index_representations != {expected_representation}:
         raise ValueError(f"{root}: router indices must use {expected_representation}")
-    return capture, components, inputs
+    return capture, components, inputs, metadata
 
 
 def _persistent_failure(rows):
@@ -543,9 +570,9 @@ def compare_component_profiles(default_npz, math_npz, baseline_root, rounded_roo
     expected = set(component_names())
     if set(default_npz.files) != expected or set(math_npz.files) != expected:
         raise ValueError("profile reference archives must contain the exact 110-name inventory")
-    baseline_dir, baseline_manifest, baseline_inputs = validate_profile_capture(
+    baseline_dir, baseline_manifest, baseline_inputs, _ = validate_profile_capture(
         baseline_root, case, False, baseline_identity)
-    rounded_dir, rounded_manifest, rounded_inputs = validate_profile_capture(
+    rounded_dir, rounded_manifest, rounded_inputs, rounded_metadata = validate_profile_capture(
         rounded_root, case, True)
     if baseline_inputs != rounded_inputs:
         raise ValueError("profile captures differ in case inputs or attention mask")
@@ -670,6 +697,9 @@ def compare_component_profiles(default_npz, math_npz, baseline_root, rounded_roo
     rounded_argmax = json.loads((rounded_dir / "decoding.json").read_text())["argmax_id"]
     observed_bf16 = sorted(name for name, dtype in source_dtypes.items() if "bfloat16" in dtype)
     observed_f32 = sorted(name for name, dtype in source_dtypes.items() if "float32" in dtype)
+    hidden_policy_enabled = rounded_metadata.get("longcat_bf16_hidden_surface_rounding") is True
+    enforced_policy = set(observed_bf16) if hidden_policy_enabled else set()
+    observed_bf16_on_grid = sorted(enforced_policy & set(grid["cpp_rounded"]))
     return {"accepted": False, "kind": "longcat-next-component-profile-diff",
         "material_change_definition": "RMS delta exceeds max(1e-12, 1% of larger RMS)",
         "diagnostic_criterion_source": "bf16.physical_block_02", "components": rows,
@@ -691,6 +721,11 @@ def compare_component_profiles(default_npz, math_npz, baseline_root, rounded_roo
         "python_components_observed_float32": observed_f32,
         "cpp_baseline_components_exactly_bf16_grid": sorted(grid["cpp_baseline"]),
         "cpp_rounded_components_exactly_bf16_grid": sorted(grid["cpp_rounded"]),
+        "observed_bfloat16_policy_surface_count": len(observed_bf16),
+        "observed_bfloat16_policy_surfaces_on_bf16_grid": observed_bf16_on_grid,
+        "observed_bfloat16_policy_coverage_complete":
+            bool(observed_bf16) and set(observed_bf16_on_grid) == set(observed_bf16),
+        "observed_float32_policy_surfaces_rounded": sorted(enforced_policy & set(observed_f32)),
         "representability_is_not_execution_dtype": True,
         "routing_profile_comparison": routing}
 
@@ -1128,6 +1163,7 @@ def build_parser():
     p.add_argument("--all-blocks-reference-npz", type=Path)
     p.add_argument("--block-components-diagnostic", type=int, choices=(0, 1), default=0)
     p.add_argument("--longcat-bf16-boundary-rounding", type=int, choices=(0, 1), default=0)
+    p.add_argument("--longcat-bf16-hidden-surface-rounding", type=int, choices=(0, 1), default=0)
     p.add_argument("--block-components-default-npz", type=Path)
     p.add_argument("--block-components-math-npz", type=Path)
     p.add_argument("--component-replay-only", type=int, choices=(0, 1), default=0)
@@ -1144,6 +1180,8 @@ def build_parser():
 
 
 def validate_all_blocks_options(args):
+    if args.longcat_bf16_hidden_surface_rounding and not args.longcat_bf16_boundary_rounding:
+        raise ValueError("--longcat-bf16-hidden-surface-rounding requires boundary rounding")
     replay_only = (args.component_replay_only or args.component_attribution_replay_only or
                    args.component_profile_diff_replay_only)
     if replay_only:
@@ -1248,7 +1286,8 @@ def main():
                     "--layer0-diagnostic", str(args.layer0_diagnostic),
                     "--all-blocks-diagnostic", str(args.all_blocks_diagnostic),
                     "--block-components-diagnostic", str(args.block_components_diagnostic),
-                    "--longcat-bf16-boundary-rounding", str(args.longcat_bf16_boundary_rounding)]
+                    "--longcat-bf16-boundary-rounding", str(args.longcat_bf16_boundary_rounding),
+                    "--longcat-bf16-hidden-surface-rounding", str(args.longcat_bf16_hidden_surface_rounding)]
     try:
         run_capture_after_validation(validation, command)
     except ValueError as exc:

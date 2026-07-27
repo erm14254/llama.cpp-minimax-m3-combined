@@ -329,6 +329,9 @@ llama_model_longcat_flash_ngram::graph::graph(
     ggml_tensor * moe_shortcut = nullptr;
     const bool bf16_boundary_rounding =
         llm_graph_longcat_bf16_boundary_rounding_enabled(model.arch);
+    const bool bf16_hidden_surface_rounding =
+        llm_graph_longcat_bf16_hidden_surface_rounding_enabled(
+            model.arch, bf16_boundary_rounding);
 
     inpL = build_inp_embd(model.tok_embd);
     // Capture the computed token embedding result, not the optional vector-
@@ -390,6 +393,8 @@ llama_model_longcat_flash_ngram::graph::graph(
             inpL = ggml_add(ctx0, inpL,
                 ggml_mul(ctx0, ggml_sub(ctx0, base_embedding, inpL), mask));
         }
+        inpL = llm_graph_build_longcat_bf16_round_trip(
+            ctx0, inpL, bf16_hidden_surface_rounding);
         cb(inpL, "inp_embd_ngram", -1);
 
         res->add_input(std::move(inp));
@@ -412,6 +417,8 @@ llama_model_longcat_flash_ngram::graph::graph(
 
         // norm
         cur = build_norm(inpL, model.layers[il].attn_norm, NULL, LLM_NORM_RMS, il);
+        cur = llm_graph_build_longcat_bf16_round_trip(
+            ctx0, cur, bf16_hidden_surface_rounding);
         cb(cur, "attn_norm", il);
 
         // MLA self-attention (same as DeepSeek2 with absorption optimization)
@@ -508,6 +515,8 @@ llama_model_longcat_flash_ngram::graph::graph(
             cur = build_attn(inp_attn_k,
                     model.layers[il].wo, NULL, model.layers[il].wo_s,
                     Qcur, Kcur, Vcur, nullptr, nullptr, model.layers[il].wv_b, kq_scale, il);
+            cur = llm_graph_build_longcat_bf16_round_trip(
+                ctx0, cur, bf16_hidden_surface_rounding);
             cb(cur, "attn_out", il);
         }
 
@@ -527,6 +536,8 @@ llama_model_longcat_flash_ngram::graph::graph(
 
         // FFN norm
         cur = build_norm(ffn_inp, model.layers[il].ffn_norm, NULL, LLM_NORM_RMS, il);
+        cur = llm_graph_build_longcat_bf16_round_trip(
+            ctx0, cur, bf16_hidden_surface_rounding);
         cb(cur, "ffn_norm", il);
 
         if (is_even_block) {
@@ -601,6 +612,8 @@ llama_model_longcat_flash_ngram::graph::graph(
                 model.layers[il].ffn_gate_shexp, NULL, NULL,
                 model.layers[il].ffn_down_shexp, NULL, NULL,
                 NULL, LLM_FFN_SILU, LLM_FFN_PAR, il);
+            cur = llm_graph_build_longcat_bf16_round_trip(
+                ctx0, cur, bf16_hidden_surface_rounding);
             cb(cur, "ffn_out", il);
 
         } else {
@@ -612,6 +625,8 @@ llama_model_longcat_flash_ngram::graph::graph(
                 model.layers[il].ffn_gate, NULL, NULL,
                 model.layers[il].ffn_down, NULL, NULL,
                 NULL, LLM_FFN_SILU, LLM_FFN_PAR, il);
+            cur = llm_graph_build_longcat_bf16_round_trip(
+                ctx0, cur, bf16_hidden_surface_rounding);
             cb(cur, "ffn_out", il);
 
             // Preserve Python's left-associative grouping exactly:

@@ -357,18 +357,33 @@ static void test_bf16_boundary_rounding(testing & t) {
 
 #ifdef _WIN32
     _putenv_s("LLAMA_LONGCAT_BF16_BOUNDARY_ROUNDING", "1");
+    _putenv_s("LLAMA_LONGCAT_BF16_HIDDEN_SURFACE_ROUNDING", "1");
 #else
     setenv("LLAMA_LONGCAT_BF16_BOUNDARY_ROUNDING", "1", 1);
+    setenv("LLAMA_LONGCAT_BF16_HIDDEN_SURFACE_ROUNDING", "1", 1);
 #endif
     t.assert_true("diagnostic gate enables LongCat Next",
                   llm_graph_longcat_bf16_boundary_rounding_enabled(LLM_ARCH_LONGCAT_NEXT));
     t.assert_true("diagnostic gate never affects LongCat Flash Ngram",
                   !llm_graph_longcat_bf16_boundary_rounding_enabled(LLM_ARCH_LONGCAT_FLASH_NGRAM));
+    t.assert_true("hidden-surface gate enables LongCat Next with boundary gate",
+                  llm_graph_longcat_bf16_hidden_surface_rounding_enabled(
+                      LLM_ARCH_LONGCAT_NEXT, true));
+    t.assert_true("hidden-surface gate never affects LongCat Flash Ngram",
+                  !llm_graph_longcat_bf16_hidden_surface_rounding_enabled(
+                      LLM_ARCH_LONGCAT_FLASH_NGRAM, true));
 #ifdef _WIN32
     _putenv_s("LLAMA_LONGCAT_BF16_BOUNDARY_ROUNDING", "0");
+    _putenv_s("LLAMA_LONGCAT_BF16_HIDDEN_SURFACE_ROUNDING", "0");
 #else
     setenv("LLAMA_LONGCAT_BF16_BOUNDARY_ROUNDING", "0", 1);
+    setenv("LLAMA_LONGCAT_BF16_HIDDEN_SURFACE_ROUNDING", "0", 1);
 #endif
+    t.assert_true("boundary gate defaults disabled",
+                  !llm_graph_longcat_bf16_boundary_rounding_enabled(LLM_ARCH_LONGCAT_NEXT));
+    t.assert_true("hidden-surface gate defaults disabled",
+                  !llm_graph_longcat_bf16_hidden_surface_rounding_enabled(
+                      LLM_ARCH_LONGCAT_NEXT, false));
 
     ggml_backend_buffer_free(buffer);
     ggml_backend_free(backend);
