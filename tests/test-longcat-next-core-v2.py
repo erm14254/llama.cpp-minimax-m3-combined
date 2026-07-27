@@ -153,39 +153,56 @@ class PlacementParameter:
 
 class PlacementRouter:
     def __init__(self, device="cuda", meta=False, weight_dtype="torch.bfloat16",
-                 correction_dtype="torch.bfloat16"):
+                 correction_dtype="torch.bfloat16", place_submodules=True):
         self.classifier = type("Classifier", (), {})()
         self.classifier.weight = PlacementParameter((384, 3072), "meta" if meta else device,
                                                     weight_dtype, is_meta=meta)
         self.e_score_correction_bias = PlacementParameter(
             (384,), "meta" if meta else device, correction_dtype, meta)
         self._hf_hook = type("AlignDevicesHook", (), {
-            "execution_device": FakeDevice("cuda", 0)})()
+            "execution_device": FakeDevice("cuda", 0), "offload": meta,
+            "place_submodules": place_submodules})()
         self.classifier._hf_hook = None
     def parameters(self, recurse=False): return iter(())
 
 
 class PlacementModel:
     def __init__(self, device="cuda", meta_layer=None, weight_dtype="torch.bfloat16",
-                 correction_dtype="torch.bfloat16"):
+                 correction_dtype="torch.bfloat16", place_submodules=True,
+                 governing_device=None):
         self.routers = [PlacementRouter(device, index == meta_layer, weight_dtype,
-                                        correction_dtype) for index in range(14)]
-        self.hf_device_map = {f"model.layers.{i}.mlp.router": 0 for i in range(14)}
+                                        correction_dtype, place_submodules) for index in range(14)]
+        assigned = governing_device if governing_device is not None else (
+            "cpu" if device == "cpu" else 0)
+        self.hf_device_map = {f"model.layers.{i}.mlp.router": assigned for i in range(14)}
     def named_modules(self):
         yield "", self
         for i, router in enumerate(self.routers):
             yield f"model.layers.{i}.mlp.router", router
+    def named_parameters(self):
+        for i, router in enumerate(self.routers):
+            prefix = f"model.layers.{i}.mlp.router"
+            yield prefix + ".classifier.weight", router.classifier.weight
+            yield prefix + ".e_score_correction_bias", router.e_score_correction_bias
 
 
-def synthetic_placement_policy(dtype="torch.bfloat16"):
+def synthetic_placement_policy(dtype="torch.bfloat16", device=0):
+    ordinary = {f"model.layers.{i}.mlp.router": device for i in range(14)}
+    canonical = json.dumps(ordinary, sort_keys=True, separators=(",", ":"))
     return {"placement_policy": core.ROUTER_PLACEMENT_POLICY,
             "router_parameter_dtype": dtype,
             "router_parameter_element_size_bytes": 2,
-            "router_classifier_bytes": 33_030_144,
-            "router_correction_bias_bytes": 10_752,
-            "router_cuda_bytes": 33_040_896,
+            "router_inventory_classifier_bytes": 33_030_144,
+            "router_inventory_correction_bias_bytes": 10_752,
+            "router_inventory_total_bytes": 33_040_896,
+            "single_router_preload_bytes": 2_360_064,
             "reserved_gpu_headroom_bytes": 128 * 1024 * 1024,
-            "explicit_device_map_sha256": "0" * 64}
+            "preload_module_classes": ["LongcatFlashTopkRouter"],
+            "router_no_split_class": "LongcatFlashTopkRouter",
+            "offload_buffers": True,
+            "ordinary_device_map": ordinary,
+            "ordinary_device_map_sha256": hashlib.sha256(canonical.encode()).hexdigest(),
+            "device_map_validation": {"non_overlapping_device_map": True}}
 
 
 def fake_linear(hidden, weight, bias=None):
@@ -236,29 +253,28 @@ def write_valid_worker(run_dir, run_index, precision="bf16", backend="default"):
                        "shard_manifest_sha256": identities["checkpoint-shards-v2.json"],
                        "start_utc": "2026-01-01T00:00:00Z", "end_utc": "2026-01-01T00:01:00Z"})
     provenance["sdpa_backend_controls"] = {"effective_kernel_identity": "synthetic"}
-    placement_policy = {
-        "placement_policy": "longcat-router-cuda-pinned-v1",
-        "explicit_device_map_sha256": "0" * 64,
-        "router_parameter_dtype": ("torch.bfloat16" if precision == "bf16" else "torch.float16"),
-        "router_parameter_element_size_bytes": 2,
-        "router_classifier_bytes": 14 * 384 * 3072 * 2,
-        "router_correction_bias_bytes": 14 * 384 * 2,
-        "router_cuda_bytes": 14 * (384 * 3072 * 2 + 384 * 2),
-        "reserved_gpu_headroom_bytes": 128 * 1024 * 1024,
-    }
+    placement_policy = synthetic_placement_policy(
+        "torch.bfloat16" if precision == "bf16" else "torch.float16")
     provenance["placement_policy"] = placement_policy
     metadata = {"schema_version": 2, "kind": "longcat-next-core-reference",
                 "precision": precision, "checkpoint": {"revision": v2.PINNED_MODEL_REVISION},
                 "source_weight_validation": {"all_finite": True},
                 "whole_candidate_validation": {"all_finite": True}, "provenance": provenance,
                 "placement_policy": placement_policy,
-                "placement_audit": {"all_router_parameters_materialized": True,
-                                    "router_count": 14,
+                "placement_audit": {"all_router_direct_weight_access_safe": True,
+                                    "preload_policy_verified": True,
+                                    "non_overlapping_device_map": True, "router_count": 14,
                                     "classifier_dtype_verified": True,
                                     "correction_bias_dtype_verified": True,
-                                    "actual_classifier_bytes": placement_policy["router_classifier_bytes"],
-                                    "actual_correction_bias_bytes": placement_policy["router_correction_bias_bytes"],
-                                    "actual_router_cuda_bytes": placement_policy["router_cuda_bytes"]},
+                                    "routers": [{"governing_device": 0,
+                                                 "router_class": "LongcatFlashTopkRouter",
+                                                 "direct_weight_access_safe": True}
+                                                for _ in range(14)]},
+                "router_live_materialization": [{
+                    "router_invocation_count": 14,
+                    "logical_layers_observed": list(range(14)),
+                    "all_live_router_weights_materialized": True,
+                    "all_live_correction_biases_materialized": True}],
                 "arrays": {name: v2.array_metadata_for(value) for name, value in arrays.items()}}
     (run_dir / "metadata.json").write_text(json.dumps(metadata), encoding="ascii")
     (run_dir / "worker-reproducibility.json").write_text(
@@ -340,10 +356,13 @@ class CoreV2Tests(unittest.TestCase):
         model = PlacementModel()
         prefixes = core.resolve_router_prefixes(model.named_modules())
         self.assertEqual(prefixes, [f"model.layers.{i}.mlp.router" for i in range(14)])
-        ordinary = {"": "cpu", prefixes[4] + ".classifier": "disk"}
-        explicit = core.pin_router_device_map(ordinary, prefixes)
-        self.assertTrue(all(explicit[prefix] == 0 for prefix in prefixes))
-        self.assertNotIn(prefixes[4] + ".classifier", explicit)
+        self.assertTrue(core.validate_ordinary_device_map(
+            model.hf_device_map, model, prefixes)["non_overlapping_device_map"])
+        for child_device in (0, "cpu"):
+            overlapping = {"model.layers.10": child_device,
+                           "model.layers.10.mlp.router": child_device}
+            with self.assertRaises(core.DeviceMapValidationError):
+                core.validate_ordinary_device_map(overlapping, model, prefixes)
         self.assertEqual(core.ROUTER_GPU_HEADROOM_BYTES, 128 * 1024 * 1024)
         self.assertEqual(core.reserve_router_gpu_headroom(1024 * 1024 * 1024),
                          896 * 1024 * 1024)
@@ -360,23 +379,21 @@ class CoreV2Tests(unittest.TestCase):
             policy = synthetic_placement_policy()
             success = core.audit_router_placement(
                 PlacementModel(), "auto", root / "success.json", policy, "torch.bfloat16")
-            self.assertTrue(success["all_router_parameters_materialized"])
+            self.assertTrue(success["all_router_direct_weight_access_safe"])
             self.assertEqual(success["router_count"], 14)
-            self.assertEqual(success["actual_classifier_bytes"], 33_030_144)
-            self.assertEqual(success["actual_correction_bias_bytes"], 10_752)
-            self.assertEqual(success["actual_router_cuda_bytes"], 33_040_896)
             self.assertTrue(success["classifier_dtype_verified"])
             self.assertTrue(success["correction_bias_dtype_verified"])
             self.assertEqual(success["routers"][0]["correction_bias_dtype"], "torch.bfloat16")
-            with self.assertRaises(core.CoreFixtureError):
-                core.audit_router_placement(
-                    PlacementModel(meta_layer=4), "auto", root / "failure.json",
-                    policy, "torch.bfloat16")
-            failure = json.loads((root / "failure.json").read_text())
-            self.assertFalse(failure["all_router_parameters_materialized"])
-            layer = failure["routers"][4]
+            offloaded_model = PlacementModel(
+                device="cpu", meta_layer=4, governing_device="cpu")
+            offloaded = core.audit_router_placement(
+                offloaded_model, "auto", root / "offloaded.json",
+                synthetic_placement_policy(device="cpu"), "torch.bfloat16")
+            self.assertTrue(offloaded["all_router_direct_weight_access_safe"])
+            layer = offloaded["routers"][4]
             self.assertTrue(layer["classifier_weight_is_meta"])
-            self.assertTrue(layer["hazard_parent_executes_with_meta_child_direct_weight_access"])
+            self.assertTrue(layer["router_hook_place_submodules"])
+            self.assertTrue(layer["direct_weight_access_safe"])
 
     def test_placement_audit_rejects_either_router_dtype_mismatch(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -389,33 +406,99 @@ class CoreV2Tests(unittest.TestCase):
                     core.audit_router_placement(
                         model, "auto", root / f"{name}.json", policy, "torch.bfloat16")
                 report = json.loads((root / f"{name}.json").read_text())
-                self.assertFalse(report["all_router_parameters_materialized"])
+                self.assertFalse(report["all_router_direct_weight_access_safe"])
                 self.assertTrue(any("expected checkpoint dtype" in failure
                                     for failure in report["failures"]))
 
+    def test_offloaded_router_requires_preload_and_place_submodules(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            model = PlacementModel(device="cpu", meta_layer=4, governing_device="cpu")
+            missing = {**synthetic_placement_policy(device="cpu"),
+                       "preload_module_classes": []}
+            with self.assertRaises(core.CoreFixtureError):
+                core.audit_router_placement(
+                    model, "auto", root / "missing.json", missing, "torch.bfloat16")
+            unsafe = PlacementModel(device="cpu", meta_layer=4, governing_device="cpu",
+                                    place_submodules=False)
+            with self.assertRaises(core.CoreFixtureError):
+                core.audit_router_placement(
+                    unsafe, "auto", root / "unsafe.json",
+                    synthetic_placement_policy(device="cpu"), "torch.bfloat16")
+            report = json.loads((root / "unsafe.json").read_text())
+            self.assertFalse(report["routers"][4]["direct_weight_access_safe"])
+
+    def test_no_split_and_dispatch_preload_arguments(self):
+        self.assertIn("LongcatFlashTopkRouter", core.router_no_split_classes(["ExistingBlock"]))
+        inferred = {}
+        def infer(model, **kwargs):
+            inferred.update(kwargs)
+            return {"model.layers.0": 0, "model.layers.1": "cpu"}
+        ordinary = core.infer_ordinary_device_map(
+            infer, object(), {0: 123, "cpu": 456}, "torch.bfloat16",
+            ["ExistingBlock", "LongcatFlashTopkRouter"])
+        self.assertEqual(ordinary, {"model.layers.0": 0, "model.layers.1": "cpu"})
+        self.assertTrue(inferred["offload_buffers"])
+        self.assertEqual(inferred["no_split_module_classes"],
+                         ["ExistingBlock", "LongcatFlashTopkRouter"])
+        self.assertFalse(any(".mlp.router" in key for key in ordinary))
+        calls = {}
+        def dispatcher(model, checkpoint, device_map, offload_folder, offload_state_dict,
+                       offload_buffers, dtype, preload_module_classes):
+            calls.update(locals()); return model
+        class Generation:
+            @staticmethod
+            def from_pretrained(*args, **kwargs): return "generation"
+        model = type("Dispatched", (), {})()
+        with tempfile.TemporaryDirectory() as temporary:
+            result = core.dispatch_auto_model_with_preload(
+                model, "model", {"": 0}, temporary, "torch.bfloat16", temporary,
+                synthetic_placement_policy(), dispatcher, Generation)
+        self.assertIs(result, model)
+        self.assertEqual(calls["preload_module_classes"], ["LongcatFlashTopkRouter"])
+        self.assertTrue(calls["offload_buffers"])
+        self.assertTrue(calls["offload_state_dict"])
+        self.assertEqual(model.generation_config, "generation")
+
+    def test_map_validation_failure_artifact_has_conflicting_pair(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            error = core.DeviceMapValidationError(
+                "overlap", ["model.layers.10", "model.layers.10.mlp.router"])
+            core.write_placement_failure(
+                temporary, "device_map_validation", "auto",
+                synthetic_placement_policy(), error)
+            report = json.loads((Path(temporary) / "placement-audit.json").read_text())
+            self.assertEqual(report["phase"], "device_map_validation")
+            self.assertEqual(report["conflicting_key_pair"],
+                             ["model.layers.10", "model.layers.10.mlp.router"])
+
     def test_checkpoint_dispatch_failure_writes_placement_audit(self):
-        class BrokenLoader:
+        def broken_dispatcher(model, checkpoint, device_map, offload_folder,
+                              offload_state_dict, offload_buffers, dtype,
+                              preload_module_classes):
+            raise RuntimeError("synthetic dispatch failure")
+        class Generation:
             @staticmethod
             def from_pretrained(*args, **kwargs):
-                raise RuntimeError("synthetic dispatch failure")
+                return "unreachable"
         with tempfile.TemporaryDirectory() as temporary:
             with self.assertRaises(core.CoreFixtureError):
-                core.load_model_with_placement_audit(
-                    BrokenLoader, "model", {}, temporary, "auto",
-                    synthetic_placement_policy())
+                core.dispatch_auto_model_with_preload(
+                    object(), "model", {"": 0}, temporary, "torch.bfloat16",
+                    temporary, synthetic_placement_policy(), broken_dispatcher, Generation)
             report = json.loads((Path(temporary) / "placement-audit.json").read_text())
             self.assertEqual(report["phase"], "checkpoint_load")
-            self.assertFalse(report["all_router_parameters_materialized"])
+            self.assertFalse(report["all_router_direct_weight_access_safe"])
             self.assertEqual(report["exception_type"], "RuntimeError")
 
     def test_cpu_router_placement_remains_cpu_only(self):
         with tempfile.TemporaryDirectory() as temporary:
             report = core.audit_router_placement(
                 PlacementModel(device="cpu"), "cpu", Path(temporary) / "cpu.json",
-                {**synthetic_placement_policy(),
+                {**synthetic_placement_policy(device="cpu"),
                  "placement_policy": "longcat-router-cpu-whole-model-v1"},
                 "torch.bfloat16")
-            self.assertTrue(report["all_router_parameters_materialized"])
+            self.assertTrue(report["all_router_direct_weight_access_safe"])
             self.assertTrue(all(row["classifier_weight_device"] == "cpu"
                                 for row in report["routers"]))
 
@@ -856,10 +939,27 @@ class CoreV2Tests(unittest.TestCase):
                 write_valid_worker(run_dir, int(run_dir.name[-2:]))
                 metadata_path = run_dir / "metadata.json"
                 metadata = json.loads(metadata_path.read_text())
-                metadata["placement_audit"]["actual_correction_bias_bytes"] += 2
+                metadata["placement_policy"]["router_inventory_total_bytes"] += 2
                 metadata_path.write_text(json.dumps(metadata), encoding="ascii")
                 return subprocess.CompletedProcess(command, 0)
-            with self.assertRaisesRegex(v2.V2Error, "audit bytes"):
+            with self.assertRaisesRegex(v2.V2Error, "byte components"):
+                v2.orchestrate_workers(final, [["x", "--output-dir", "{run_dir}"]] * 2,
+                                       "bf16", "default", CONTRACT_PATH,
+                                       IMPLEMENTATIONS, runner=runner)
+            self.assertFalse(final.exists())
+
+    def test_worker_obsolete_child_pinning_policy_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            final = Path(temporary) / "candidate"
+            def runner(command, **kwargs):
+                run_dir = Path(command[command.index("--output-dir") + 1])
+                write_valid_worker(run_dir, int(run_dir.name[-2:]))
+                metadata_path = run_dir / "metadata.json"
+                metadata = json.loads(metadata_path.read_text())
+                metadata["placement_policy"]["placement_policy"] = "longcat-router-cuda-pinned-v1"
+                metadata_path.write_text(json.dumps(metadata), encoding="ascii")
+                return subprocess.CompletedProcess(command, 0)
+            with self.assertRaisesRegex(v2.V2Error, "required router preload policy"):
                 v2.orchestrate_workers(final, [["x", "--output-dir", "{run_dir}"]] * 2,
                                        "bf16", "default", CONTRACT_PATH,
                                        IMPLEMENTATIONS, runner=runner)

@@ -130,7 +130,9 @@ def instrument_router_linear(torch):
     """Observe the live 4.57.6 router projection without changing its result."""
     functional = torch.nn.functional
     original = functional.linear
-    session = {"invocation_count": 0}
+    session = {"invocation_count": 0, "logical_layers_observed": [],
+               "all_live_router_weights_materialized": True,
+               "all_live_correction_biases_materialized": True}
     session_token = CURRENT_ROUTER_LINEAR_SESSION.set(session)
 
     def wrapped(input_tensor, weight, bias=None):
@@ -157,6 +159,8 @@ def instrument_router_linear(torch):
             checker.check(weight, **common, operation="router_linear",
                           role="classifier_weight_runtime",
                           failure_phase="before_original_linear")
+            if active["logical_layer"] not in session["logical_layers_observed"]:
+                session["logical_layers_observed"].append(active["logical_layer"])
             correction_bias = active["module"].e_score_correction_bias.detach().clone()
             checker.check(correction_bias, **common, operation="router_runtime_parameter",
                           role="e_score_correction_bias_runtime")
@@ -179,6 +183,15 @@ def instrument_router_linear(torch):
         functional.linear = original
         CURRENT_ROUTER_CONTEXT.set(None)
         CURRENT_ROUTER_LINEAR_SESSION.reset(session_token)
+
+
+def router_materialization_summary(session):
+    return {"router_invocation_count": int(session["invocation_count"]),
+            "logical_layers_observed": sorted(session["logical_layers_observed"]),
+            "all_live_router_weights_materialized": bool(
+                session["all_live_router_weights_materialized"]),
+            "all_live_correction_biases_materialized": bool(
+                session["all_live_correction_biases_materialized"])}
 
 
 def numpy_finite_report(name, value):
@@ -1046,39 +1059,70 @@ def validate_worker_artifacts(run_dir, precision, backend, run_index, contract,
             "worker arrays were not validated finite")
     placement = metadata.get("placement_policy", {})
     audit = metadata.get("placement_audit", {})
-    require(isinstance(placement.get("placement_policy"), str),
-            "worker placement policy is missing")
+    require(placement.get("placement_policy") == "longcat-router-preload-v1",
+            "worker placement policy is not the required router preload policy")
     required_placement_fields = {
         "router_parameter_dtype", "router_parameter_element_size_bytes",
-        "router_classifier_bytes", "router_correction_bias_bytes", "router_cuda_bytes",
-        "reserved_gpu_headroom_bytes", "explicit_device_map_sha256"}
+        "router_inventory_classifier_bytes", "router_inventory_correction_bias_bytes",
+        "router_inventory_total_bytes", "single_router_preload_bytes",
+        "reserved_gpu_headroom_bytes", "ordinary_device_map_sha256",
+        "ordinary_device_map", "preload_module_classes", "router_no_split_class",
+        "offload_buffers", "device_map_validation"}
     require(required_placement_fields <= set(placement),
             "worker placement policy fields are incomplete")
-    if placement["placement_policy"] == "longcat-router-cuda-pinned-v1":
-        require(placement["reserved_gpu_headroom_bytes"] >= 128 * 1024 * 1024 and
-                isinstance(placement["explicit_device_map_sha256"], str) and
-                len(placement["explicit_device_map_sha256"]) == 64,
-                "worker automatic placement identity or headroom is invalid")
+    require(placement["preload_module_classes"] == ["LongcatFlashTopkRouter"] and
+            placement["router_no_split_class"] == "LongcatFlashTopkRouter" and
+            placement["offload_buffers"] is True,
+            "worker router preload/no-split configuration is invalid")
+    require(placement["reserved_gpu_headroom_bytes"] >= 128 * 1024 * 1024,
+            "worker automatic placement headroom is invalid")
+    canonical_map = json.dumps(placement["ordinary_device_map"], sort_keys=True,
+                               separators=(",", ":"), default=str)
+    require(hashlib.sha256(canonical_map.encode("utf-8")).hexdigest() ==
+            placement["ordinary_device_map_sha256"],
+            "worker ordinary device-map hash differs")
+    require(placement["device_map_validation"].get("non_overlapping_device_map") is True,
+            "worker ordinary device map overlaps")
     expected_router_dtype = "torch.bfloat16" if precision == "bf16" else "torch.float16"
     require(placement.get("router_parameter_dtype") == expected_router_dtype,
             "worker router policy dtype differs from requested precision")
     require(placement.get("router_parameter_element_size_bytes") == 2,
             "worker router policy element size differs")
-    classifier_bytes = placement.get("router_classifier_bytes")
-    correction_bytes = placement.get("router_correction_bias_bytes")
+    classifier_bytes = placement.get("router_inventory_classifier_bytes")
+    correction_bytes = placement.get("router_inventory_correction_bias_bytes")
     require(isinstance(classifier_bytes, int) and isinstance(correction_bytes, int) and
-            classifier_bytes + correction_bytes == placement.get("router_cuda_bytes"),
+            classifier_bytes == 33_030_144 and correction_bytes == 10_752 and
+            placement.get("router_inventory_total_bytes") == 33_040_896 and
+            placement.get("single_router_preload_bytes") == 2_360_064 and
+            classifier_bytes + correction_bytes == placement.get("router_inventory_total_bytes") and
+            placement.get("single_router_preload_bytes") * 14 ==
+            placement.get("router_inventory_total_bytes"),
             "worker router policy byte components are invalid")
-    require(audit.get("all_router_parameters_materialized") is True and
-            audit.get("router_count") == 14,
+    require(audit.get("all_router_direct_weight_access_safe") is True and
+            audit.get("preload_policy_verified") is True and
+            audit.get("non_overlapping_device_map") is True and audit.get("router_count") == 14,
             "worker router placement audit is not accepted")
     require(audit.get("classifier_dtype_verified") is True and
             audit.get("correction_bias_dtype_verified") is True,
             "worker router dtype audit is not accepted")
-    require(audit.get("actual_classifier_bytes") == classifier_bytes and
-            audit.get("actual_correction_bias_bytes") == correction_bytes and
-            audit.get("actual_router_cuda_bytes") == placement.get("router_cuda_bytes"),
-            "worker router audit bytes differ from placement policy")
+    router_rows = audit.get("routers", [])
+    require(len(router_rows) == 14 and
+            all(row.get("router_class") == "LongcatFlashTopkRouter" and
+                row.get("direct_weight_access_safe") is True for row in router_rows),
+            "worker router safety audit does not contain fourteen safe routers")
+    for row in router_rows:
+        if str(row.get("governing_device")) in ("cpu", "disk"):
+            require(row.get("router_hook_place_submodules") is True and
+                    row.get("direct_weight_access_safe") is True,
+                    "worker offloaded router lacks parent submodule preloading")
+    live = metadata.get("router_live_materialization", [])
+    require(bool(live), "worker live router materialization summary is missing")
+    for row in live:
+        require(row.get("router_invocation_count") == 14 and
+                row.get("logical_layers_observed") == list(range(14)) and
+                row.get("all_live_router_weights_materialized") is True and
+                row.get("all_live_correction_biases_materialized") is True,
+                "worker live router materialization summary is invalid")
     provenance = metadata.get("provenance", {})
     require(PROVENANCE_REQUIRED_FIELDS <= set(provenance), "worker provenance is incomplete")
     require(provenance.get("placement_policy") == placement,
