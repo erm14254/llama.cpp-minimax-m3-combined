@@ -14,6 +14,88 @@ SPEC.loader.exec_module(PARITY)
 
 
 class ParityHarnessTests(unittest.TestCase):
+    def _write_profile(self, root, values, legacy_indices, rounding):
+        case = root / "eos_window_position_2"; case.mkdir(parents=True)
+        direct = [f"{name}\tf32\t1,1,1,1\t{name}.raw" for name in sorted(PARITY.DIRECT_NAMES)]
+        (case / "captures.tsv").write_text("\n".join(direct) + "\n", encoding="ascii")
+        rows = []; reverse = {value: key for key, value in PARITY.COMPONENT_CPP_BASE.items()}
+        for name in PARITY.component_names():
+            block = int(name[15:17]); suffix = name.split("__", 1)[1]; value = values[name]
+            base = reverse[suffix]; raw = case / f"{base}-{block}.raw"
+            if suffix == "router_topk_indices" and legacy_indices:
+                packed = np.full(PARITY.ROUTED_EXPERT_COUNT + 12, -1, np.int32)
+                packed[:12] = value[0, 0]; packed[PARITY.ROUTED_EXPERT_COUNT:] = value[0, 1]
+                packed.tofile(raw)
+            else:
+                value.reshape(-1).tofile(raw)
+            dims = ("1,12,2,1" if suffix == "router_topk_weights" else
+                    f"{value.shape[-1]},2,1,1")
+            rows.append(f"{base}-{block}\t{'i32' if suffix == 'router_topk_indices' else 'f32'}\t{dims}\t{raw.name}")
+        (case / "block-components-diagnostics.tsv").write_text(
+            "\n".join(rows) + "\n", encoding="ascii")
+        (case / "inputs.json").write_text(json.dumps({"input_ids": [1, 2], "attention_mask": [1, 1],
+            "position_ids": [0, 1], "cache_position": [0, 1]}), encoding="ascii")
+        (case / "decoding.json").write_text(json.dumps({"argmax_id": 2909}), encoding="ascii")
+        if rounding:
+            (root / "capture-run-metadata.json").write_text(json.dumps({
+                "longcat_bf16_boundary_rounding": True}), encoding="ascii")
+
+    def test_profile_diff_legacy_compact_dtype_metrics_routing_and_validation(self):
+        names = PARITY.component_names(); default = {}; math = {}; baseline = {}; rounded = {}
+        for name in names:
+            suffix = name.split("__", 1)[1]
+            width = (384 if suffix in {"router_logits", "router_probabilities", "router_selection_scores"}
+                     else 12 if suffix in {"router_topk_indices", "router_topk_weights"}
+                     else 1 if suffix == "identity_weight_sum" else 3072)
+            dtype = np.int32 if suffix == "router_topk_indices" else np.float32
+            value = np.zeros((1, 2, width), dtype)
+            if suffix == "router_topk_indices": value[:] = np.arange(12)
+            default[name] = value.copy(); math[name] = value.copy(); baseline[name] = value.copy(); rounded[name] = value.copy()
+        baseline["physical_block_00__attention_output"][..., 0] = .2
+        rounded["physical_block_00__attention_output"][..., 0] = .1
+        baseline["physical_block_01__dense_output"][..., 0] = .1
+        rounded["physical_block_01__dense_output"][..., 0] = .2
+        rounded["physical_block_00__router_topk_indices"][..., 0] = 7
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); b = root / "baseline"; r = root / "rounded"; b.mkdir(); r.mkdir()
+            self._write_profile(b, baseline, True, False); self._write_profile(r, rounded, False, True)
+            default_path = root / "default.npz"; math_path = root / "math.npz"
+            np.savez(default_path, **default); np.savez(math_path, **math)
+            dtype_path = root / "dtypes.json"
+            dtype_path.write_text(json.dumps({"components": [
+                {"name": "physical_block_00__router_logits", "source_torch_dtype": "torch.float32"},
+                {"name": "physical_block_00__block_output", "source_torch_dtype": "torch.bfloat16"}]}))
+            with np.load(default_path) as d, np.load(math_path) as m:
+                report = PARITY.compare_component_profiles(
+                    d, m, b, r, "eos_window_position_2", [1, 1], {"atol": .125, "rtol": .03125},
+                    "legacy-default-off", "cpu-flash-disabled-threads-0-bf16", dtype_path, 8228)
+            attention = next(row for row in report["components"]
+                             if row["name"] == "physical_block_00__attention_output")
+            self.assertEqual(attention["classification_vs_python_default"], "improved")
+            self.assertEqual(attention["pass_state_transition_vs_python_default"], "fail -> pass")
+            dense = next(row for row in report["components"]
+                         if row["name"] == "physical_block_01__dense_output")
+            self.assertEqual(dense["pass_state_transition_vs_python_default"], "pass -> fail")
+            self.assertEqual(
+                report["aggregate_totals_by_backend_and_suffix"]["python_default"]["attention_output"]["fail -> pass"], 1)
+            self.assertIn("physical_block_00__router_logits", report["python_components_observed_float32"])
+            self.assertIn("physical_block_00__block_output", report["python_components_observed_bfloat16"])
+            self.assertTrue(report["representability_is_not_execution_dtype"])
+            route = next(row for row in report["routing_profile_comparison"]
+                         if row["physical_block"] == 0 and row["token"] == 0)
+            self.assertTrue(route["boundary_rounding_changed_real_expert"])
+            self.assertTrue(route["shortcut_remains_within_criterion_vs_both"])
+            self.assertIn("does not restore", report["boundary_rounding_overall_verdict"])
+            with self.assertRaisesRegex(ValueError, "legacy-default-off"):
+                PARITY.validate_profile_capture(b, "eos_window_position_2", False, None)
+
+    def test_bf16_grid_and_material_metric_helpers(self):
+        self.assertTrue(PARITY.exactly_bf16_representable(np.array([1.0, -2.0], np.float32)))
+        self.assertFalse(PARITY.exactly_bf16_representable(np.array([1.001], np.float32)))
+        self.assertEqual(PARITY.material_metric_change(1.0, .5), "improved")
+        self.assertEqual(PARITY.material_metric_change(1.0, 2.0), "worsened")
+        self.assertEqual(PARITY.material_metric_change(1.0, 1.005), "unchanged")
+
     def test_component_manifest_and_three_way_router_diagnostics(self):
         names = PARITY.component_names()
         self.assertEqual(len(names), 110)
@@ -234,6 +316,15 @@ class ParityHarnessTests(unittest.TestCase):
                       ["--all-blocks-diagnostic", "1"]):
             with self.assertRaises(ValueError):
                 PARITY.validate_all_blocks_options(parser.parse_args(replay + extra))
+        profile = replay.copy()
+        profile[profile.index("--component-replay-only")] = "--component-profile-diff-replay-only"
+        profile += ["--baseline-capture-dir", "baseline", "--rounded-capture-dir", "rounded",
+                    "--baseline-profile-identity", "legacy-default-off",
+                    "--profile-execution-context", "cpu-flash-disabled-threads-0-bf16"]
+        PARITY.validate_all_blocks_options(parser.parse_args(profile))
+        for extra in (["--model", "model.gguf"], ["--capture-exe", "capture"]):
+            with self.assertRaises(ValueError):
+                PARITY.validate_all_blocks_options(parser.parse_args(profile + extra))
 
     def test_bf16_round_to_nearest_even_specials_and_subnormals(self):
         bits = np.array([

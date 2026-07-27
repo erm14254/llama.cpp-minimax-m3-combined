@@ -418,15 +418,16 @@ def compare_block_components(default_npz, math_npz, capture_dir, attention_mask,
                 "dense_output": "dense output", "identity_residual": "identity residual",
                 "moe_shortcut": "complete MoE shortcut", "block_output": "final block addition"}.get(
                     suffix, suffix)
-    if first_router_set is not None and (first_material is None or
-            first_router_set <= int(first_material[15:17])):
-        classification = "router indices"
     return {"accepted": False, "array_count": 110,
             "diagnostic_criterion_source": "bf16.physical_block_02",
             "component_decode_provenance": decode_provenance,
             "first_physical_block_with_router_selected_set_difference": first_router_set,
+            "first_raw_router_difference": first_router_set,
             "first_component_outside_diagnostic_criterion_vs_both_backends": first_material,
             "first_large_discrepancy_classification": classification,
+            "first_large_discrepancy_classification_semantics":
+                "local-component evidence only; routing causality is deferred to numerical attribution",
+            "raw_router_classification_deprecated": True,
             "components": results}
 
 
@@ -443,6 +444,255 @@ def bf16_round_to_float32(values):
     # discarded low sixteen bits.
     result = np.where(special & (mantissa != 0), result | np.uint32(0x00010000), result)
     return np.ascontiguousarray(result).view(np.float32).reshape(array.shape)
+
+
+def exactly_bf16_representable(values):
+    values = np.asarray(values, dtype=np.float32)
+    return bool(np.array_equal(values, bf16_round_to_float32(values), equal_nan=True))
+
+
+def material_metric_change(baseline, rounded):
+    """Classify RMS change using a 1% relative floor and 1e-12 absolute floor."""
+    delta = float(rounded - baseline)
+    threshold = max(1e-12, 0.01 * max(abs(float(baseline)), abs(float(rounded))))
+    return "unchanged" if abs(delta) <= threshold else ("improved" if delta < 0 else "worsened")
+
+
+def metric_delta(baseline, rounded, cosine=False):
+    absolute = float(rounded - baseline)
+    percentage = None if baseline == 0 else float(100.0 * absolute / abs(baseline))
+    direction = material_metric_change(-baseline if cosine else baseline,
+                                       -rounded if cosine else rounded)
+    return {"absolute_delta": absolute, "percentage_delta": percentage,
+            "material_classification": direction}
+
+
+def load_source_dtype_evidence(path):
+    if path is None:
+        return {}
+    payload = json.loads(Path(path).read_text(encoding="ascii"))
+    result = {}
+    def visit(value):
+        if isinstance(value, dict):
+            name = value.get("name")
+            dtype = value.get("source_torch_dtype", value.get("source_dtype"))
+            if name in set(component_names()) and dtype is not None:
+                result[name] = str(dtype)
+            for child in value.values(): visit(child)
+        elif isinstance(value, list):
+            for child in value: visit(child)
+    visit(payload)
+    return result
+
+
+def _profile_capture_dir(root, case):
+    root = Path(root)
+    candidate = root / case
+    return candidate if (candidate / "block-components-diagnostics.tsv").is_file() else root
+
+
+def validate_profile_capture(root, case, expect_rounding, baseline_identity=None):
+    root = Path(root); capture = _profile_capture_dir(root, case)
+    direct = read_manifest(capture / "captures.tsv")
+    if set(direct) != DIRECT_NAMES or len(direct) != 20:
+        raise ValueError(f"{root}: standard manifest must contain exact 20-name inventory")
+    components = read_component_manifest(capture / "block-components-diagnostics.tsv")
+    if len(components) != 110:
+        raise ValueError(f"{root}: component manifest must contain exactly 110 rows")
+    if expect_rounding:
+        metadata_path = root / "capture-run-metadata.json"
+        metadata = json.loads(metadata_path.read_text(encoding="ascii"))
+        if metadata.get("longcat_bf16_boundary_rounding") is not True:
+            raise ValueError("rounded profile metadata must explicitly enable boundary rounding")
+    elif baseline_identity != "legacy-default-off":
+        raise ValueError("baseline profile must be explicitly identified as legacy-default-off")
+    inputs = json.loads((capture / "inputs.json").read_text(encoding="ascii"))
+    provenance = []
+    for name, (dtype, dims, raw) in components.items():
+        array = decode_component_raw(name, dtype, dims, raw, provenance)
+        if np.issubdtype(array.dtype, np.floating) and not np.isfinite(array).all():
+            raise ValueError(f"{name}: profile contains non-finite values")
+    index_representations = {row["representation"] for row in provenance}
+    expected_representation = "compact_logical" if expect_rounding else "legacy_strided_argsort_view"
+    if index_representations != {expected_representation}:
+        raise ValueError(f"{root}: router indices must use {expected_representation}")
+    return capture, components, inputs
+
+
+def _persistent_failure(rows):
+    failures = [row["physical_block"] for row in rows
+                if row["suffix"] == "block_output" and
+                not row["baseline_or_rounded_vs_default"]["within_diagnostic_criterion"] and
+                not row["baseline_or_rounded_vs_math"]["within_diagnostic_criterion"]]
+    for block in failures:
+        later = [row for row in rows if row["suffix"] == "block_output" and
+                 row["physical_block"] >= block]
+        if later and all(not row["baseline_or_rounded_vs_default"]["within_diagnostic_criterion"] and
+                         not row["baseline_or_rounded_vs_math"]["within_diagnostic_criterion"]
+                         for row in later):
+            return block
+    return None
+
+
+def compare_component_profiles(default_npz, math_npz, baseline_root, rounded_root, case,
+                               attention_mask, criterion, baseline_identity,
+                               execution_context, source_dtype_evidence=None,
+                               reference_argmax=None):
+    if execution_context != "cpu-flash-disabled-threads-0-bf16":
+        raise ValueError("profile replay requires explicit CPU/Flash-disabled/threads=0/BF16 context")
+    expected = set(component_names())
+    if set(default_npz.files) != expected or set(math_npz.files) != expected:
+        raise ValueError("profile reference archives must contain the exact 110-name inventory")
+    baseline_dir, baseline_manifest, baseline_inputs = validate_profile_capture(
+        baseline_root, case, False, baseline_identity)
+    rounded_dir, rounded_manifest, rounded_inputs = validate_profile_capture(
+        rounded_root, case, True)
+    if baseline_inputs != rounded_inputs:
+        raise ValueError("profile captures differ in case inputs or attention mask")
+    mask = np.asarray(attention_mask, dtype=bool)
+    source_dtypes = load_source_dtype_evidence(source_dtype_evidence)
+    rows = []; aggregates = {}; first_improvement = None; first_regression = None
+    grid = {side: [] for side in ("cpp_baseline", "cpp_rounded", "python_default", "python_math")}
+    arrays = {side: {} for side in grid}
+    for name in component_names():
+        block = int(name[15:17]); suffix = name.split("__", 1)[1]
+        b = decode_component_raw(name, *baseline_manifest[name])[:, mask, :]
+        r = decode_component_raw(name, *rounded_manifest[name])[:, mask, :]
+        d = np.asarray(default_npz[name])[:, mask, :]
+        m = np.asarray(math_npz[name])[:, mask, :]
+        for side, value in (("cpp_baseline", b), ("cpp_rounded", r),
+                            ("python_default", d), ("python_math", m)):
+            arrays[side][name] = value
+            if np.issubdtype(value.dtype, np.floating):
+                if not np.isfinite(value).all(): raise ValueError(f"{name}: non-finite {side}")
+                if exactly_bf16_representable(value): grid[side].append(name)
+        if suffix == "router_topk_indices":
+            continue
+        bd = all_block_result(d, b, criterion); bm = all_block_result(m, b, criterion)
+        rd = all_block_result(d, r, criterion); rm = all_block_result(m, r, criterion)
+        rb = all_block_result(b.astype(np.float32), r.astype(np.float32), criterion)
+        hidden = b.shape[-1] == 3072
+        metrics = ("maximum_absolute_error", "mean_absolute_error", "rms_error", "cosine_similarity")
+        delta_default = {key: metric_delta(bd[key], rd[key], key == "cosine_similarity") for key in metrics}
+        delta_math = {key: metric_delta(bm[key], rm[key], key == "cosine_similarity") for key in metrics}
+        if hidden:
+            key = "maximum_normalized_violation_under_diagnostic_criterion"
+            delta_default[key] = metric_delta(bd[key], rd[key]); delta_math[key] = metric_delta(bm[key], rm[key])
+        state_default = material_metric_change(bd["rms_error"], rd["rms_error"])
+        state_math = material_metric_change(bm["rms_error"], rm["rms_error"])
+        transition_default = ("pass -> fail" if bd["within_diagnostic_criterion"] and not rd["within_diagnostic_criterion"]
+                              else "fail -> pass" if not bd["within_diagnostic_criterion"] and rd["within_diagnostic_criterion"]
+                              else "unchanged") if hidden else "not_applicable"
+        transition_math = ("pass -> fail" if bm["within_diagnostic_criterion"] and not rm["within_diagnostic_criterion"]
+                           else "fail -> pass" if not bm["within_diagnostic_criterion"] and rm["within_diagnostic_criterion"]
+                           else "unchanged") if hidden else "not_applicable"
+        row = {"name": name, "physical_block": block, "suffix": suffix,
+               "baseline_cpp_vs_python_default": bd, "baseline_cpp_vs_python_math": bm,
+               "rounded_cpp_vs_python_default": rd, "rounded_cpp_vs_python_math": rm,
+               "rounded_cpp_vs_baseline_cpp": rb,
+               "deltas_vs_python_default": delta_default, "deltas_vs_python_math": delta_math,
+               "classification_vs_python_default": state_default,
+               "classification_vs_python_math": state_math,
+               "pass_state_transition_vs_python_default": transition_default,
+               "pass_state_transition_vs_python_math": transition_math,
+               "exactly_bf16_representable": {side: name in grid[side] for side in grid},
+               "observed_python_source_dtype": source_dtypes.get(name)}
+        rows.append(row)
+        if first_improvement is None and (state_default == "improved" or state_math == "improved"):
+            first_improvement = name
+        if first_regression is None and (state_default == "worsened" or state_math == "worsened"):
+            first_regression = name
+        for backend, state, transition in (("python_default", state_default, transition_default),
+                                           ("python_math", state_math, transition_math)):
+            bucket = aggregates.setdefault(backend, {}).setdefault(suffix,
+                {"improved": 0, "worsened": 0, "unchanged": 0, "pass -> fail": 0, "fail -> pass": 0})
+            bucket[state] += 1
+            if transition in ("pass -> fail", "fail -> pass"): bucket[transition] += 1
+
+    routing = []
+    for block in range(0, 10, 2):
+        p = f"physical_block_{block:02d}__"
+        names = {side: arrays[side][p + "router_topk_indices"] for side in arrays}
+        shortcut_row = next(row for row in rows if row["name"] == p + "moe_shortcut")
+        for token in range(names["cpp_baseline"].shape[1]):
+            sets = {side: set(value[0, token].tolist()) for side, value in names.items()}
+            real = {side: {x for x in values if x < REAL_EXPERT_COUNT} for side, values in sets.items()}
+            changed = real["cpp_baseline"] != real["cpp_rounded"]
+            if not changed: movement = "unchanged"
+            else:
+                before = (real["cpp_baseline"] == real["python_default"], real["cpp_baseline"] == real["python_math"])
+                after = (real["cpp_rounded"] == real["python_default"], real["cpp_rounded"] == real["python_math"])
+                movement = ("toward default" if after[0] and not before[0] else
+                            "toward math" if after[1] and not before[1] else
+                            "away from both" if any(before) and not any(after) else "toward neither")
+            routing.append({"physical_block": block, "token": token,
+                "baseline_vs_rounded_returned_order_equal": bool(np.array_equal(
+                    names["cpp_baseline"][0, token], names["cpp_rounded"][0, token])),
+                "baseline_vs_rounded_raw_set_equal": sets["cpp_baseline"] == sets["cpp_rounded"],
+                "baseline_vs_rounded_real_expert_set_equal": not changed,
+                "baseline_vs_rounded_identity_presence_equal":
+                    any(x >= REAL_EXPERT_COUNT for x in sets["cpp_baseline"]) ==
+                    any(x >= REAL_EXPERT_COUNT for x in sets["cpp_rounded"]),
+                "pairwise_against_python": {
+                    f"{profile}_vs_{backend}": {
+                        "returned_order_equal": bool(np.array_equal(
+                            names[profile][0, token], names[backend][0, token])),
+                        "raw_set_equal": sets[profile] == sets[backend],
+                        "real_expert_set_equal": real[profile] == real[backend],
+                        "identity_presence_equal":
+                            any(x >= REAL_EXPERT_COUNT for x in sets[profile]) ==
+                            any(x >= REAL_EXPERT_COUNT for x in sets[backend]),
+                    }
+                    for profile in ("cpp_baseline", "cpp_rounded")
+                    for backend in ("python_default", "python_math")},
+                "boundary_rounding_changed_real_expert": changed, "movement": movement,
+                "shortcut_remains_within_criterion_vs_both":
+                    shortcut_row["rounded_cpp_vs_python_default"]["within_diagnostic_criterion"] and
+                    shortcut_row["rounded_cpp_vs_python_math"]["within_diagnostic_criterion"],
+                "shortcut_rms_delta_vs_python_default":
+                    shortcut_row["deltas_vs_python_default"]["rms_error"],
+                "shortcut_rms_delta_vs_python_math":
+                    shortcut_row["deltas_vs_python_math"]["rms_error"]})
+
+    baseline_view = [{"physical_block": row["physical_block"], "suffix": row["suffix"],
+        "baseline_or_rounded_vs_default": row["baseline_cpp_vs_python_default"],
+        "baseline_or_rounded_vs_math": row["baseline_cpp_vs_python_math"]} for row in rows]
+    rounded_view = [{"physical_block": row["physical_block"], "suffix": row["suffix"],
+        "baseline_or_rounded_vs_default": row["rounded_cpp_vs_python_default"],
+        "baseline_or_rounded_vs_math": row["rounded_cpp_vs_python_math"]} for row in rows]
+    hidden = [row for row in rows if row["suffix"] in {"block_input", "attention_norm", "attention_output",
+              "post_attention_residual", "ffn_norm", "dense_output", "block_output", "identity_residual", "moe_shortcut"}]
+    totals = {}
+    for backend in ("default", "math"):
+        totals[backend] = {profile: sum(row[f"{profile}_cpp_vs_python_{backend}"]["rms_error"] for row in hidden)
+                           for profile in ("baseline", "rounded")}
+    baseline_argmax = json.loads((baseline_dir / "decoding.json").read_text())["argmax_id"]
+    rounded_argmax = json.loads((rounded_dir / "decoding.json").read_text())["argmax_id"]
+    observed_bf16 = sorted(name for name, dtype in source_dtypes.items() if "bfloat16" in dtype)
+    observed_f32 = sorted(name for name, dtype in source_dtypes.items() if "float32" in dtype)
+    return {"accepted": False, "kind": "longcat-next-component-profile-diff",
+        "material_change_definition": "RMS delta exceeds max(1e-12, 1% of larger RMS)",
+        "diagnostic_criterion_source": "bf16.physical_block_02", "components": rows,
+        "aggregate_totals_by_backend_and_suffix": aggregates,
+        "first_material_improvement": first_improvement, "first_material_regression": first_regression,
+        "profile_with_lower_total_hidden_rms_vs_python_default": min(totals["default"], key=totals["default"].get),
+        "profile_with_lower_total_hidden_rms_vs_python_math": min(totals["math"], key=totals["math"].get),
+        "profile_with_later_persistent_failure_vs_both":
+            "baseline" if (_persistent_failure(baseline_view) or 999) > (_persistent_failure(rounded_view) or 999)
+            else "rounded" if (_persistent_failure(rounded_view) or 999) > (_persistent_failure(baseline_view) or 999)
+            else "tie",
+        "profile_with_matching_reference_argmax":
+            "both" if baseline_argmax == rounded_argmax == reference_argmax else
+            "baseline" if baseline_argmax == reference_argmax else
+            "rounded" if rounded_argmax == reference_argmax else "neither",
+        "boundary_rounding_overall_verdict":
+            "mixed tradeoff; boundary rounding matches the Python residual dtype contract but does not restore numerical or decoding parity",
+        "python_components_observed_bfloat16": observed_bf16,
+        "python_components_observed_float32": observed_f32,
+        "cpp_baseline_components_exactly_bf16_grid": sorted(grid["cpp_baseline"]),
+        "cpp_rounded_components_exactly_bf16_grid": sorted(grid["cpp_rounded"]),
+        "representability_is_not_execution_dtype": True,
+        "routing_profile_comparison": routing}
 
 
 def metric_change(raw, rounded, lower_is_better=True):
@@ -882,13 +1132,20 @@ def build_parser():
     p.add_argument("--block-components-math-npz", type=Path)
     p.add_argument("--component-replay-only", type=int, choices=(0, 1), default=0)
     p.add_argument("--component-attribution-replay-only", type=int, choices=(0, 1), default=0)
+    p.add_argument("--component-profile-diff-replay-only", type=int, choices=(0, 1), default=0)
+    p.add_argument("--baseline-capture-dir", type=Path)
+    p.add_argument("--rounded-capture-dir", type=Path)
+    p.add_argument("--baseline-profile-identity", choices=("legacy-default-off",))
+    p.add_argument("--profile-execution-context", choices=("cpu-flash-disabled-threads-0-bf16",))
+    p.add_argument("--component-source-dtype-json", type=Path)
     p.add_argument("--case", action="append", default=[], help="capture only this reference case (repeatable)")
     p.add_argument("--tolerance-policy", type=Path, default=Path(__file__).parent / "fixtures/longcat-next/stage1-tolerances.json")
     return p
 
 
 def validate_all_blocks_options(args):
-    replay_only = args.component_replay_only or args.component_attribution_replay_only
+    replay_only = (args.component_replay_only or args.component_attribution_replay_only or
+                   args.component_profile_diff_replay_only)
     if replay_only:
         if not args.block_components_diagnostic:
             raise ValueError("--component-replay-only requires --block-components-diagnostic 1")
@@ -896,6 +1153,13 @@ def validate_all_blocks_options(args):
             raise ValueError("--component-replay-only must not receive --model or --capture-exe")
         if args.all_blocks_diagnostic or args.all_blocks_reference_npz is not None:
             raise ValueError("--component-replay-only cannot run all-block capture")
+        if args.component_profile_diff_replay_only:
+            required = (args.baseline_capture_dir, args.rounded_capture_dir,
+                        args.baseline_profile_identity, args.profile_execution_context)
+            if any(value is None for value in required):
+                raise ValueError("profile diff replay requires both captures, baseline identity, and execution context")
+        elif args.baseline_capture_dir is not None or args.rounded_capture_dir is not None:
+            raise ValueError("profile capture directories require --component-profile-diff-replay-only 1")
     elif args.model is None or args.capture_exe is None:
         raise ValueError("normal parity mode requires --model and --capture-exe")
     if args.all_blocks_diagnostic:
@@ -926,7 +1190,8 @@ def main():
     policy = json.loads(args.tolerance_policy.read_text(encoding="ascii"))
     args.output_dir.mkdir(parents=True, exist_ok=True)
     validation = validate_reference_finiteness(npz, args.output_dir)
-    replay_only = args.component_replay_only or args.component_attribution_replay_only
+    replay_only = (args.component_replay_only or args.component_attribution_replay_only or
+                   args.component_profile_diff_replay_only)
     if replay_only:
         with tempfile.TemporaryDirectory() as temporary:
             cases = make_case_manifest(npz, Path(temporary) / "case-manifest.json")
@@ -945,6 +1210,20 @@ def main():
     if not args.case and greedy_cases != {"tokenizer_prompt_0", "tokenizer_prompt_1"}:
         raise ValueError(f"expected eight-token greedy references for both tokenizer prompts, got {greedy_cases}")
     if replay_only:
+        if args.component_profile_diff_replay_only:
+            criterion = policy["bf16"]["physical_block_02"]
+            reference_argmax = int(npz[reference_key(
+                npz, cases[0]["reference_prefix"], "argmax_token_id")].reshape(-1)[0])
+            with np.load(args.block_components_default_npz, allow_pickle=False) as default_components, \
+                 np.load(args.block_components_math_npz, allow_pickle=False) as math_components:
+                report = compare_component_profiles(
+                    default_components, math_components, args.baseline_capture_dir,
+                    args.rounded_capture_dir, cases[0]["name"], cases[0]["attention_mask"],
+                    criterion, args.baseline_profile_identity, args.profile_execution_context,
+                    args.component_source_dtype_json, reference_argmax)
+            (args.output_dir / "block-components-profile-diff.json").write_text(
+                json.dumps(report, indent=2) + "\n", encoding="ascii")
+            return
         read_manifest(args.output_dir / cases[0]["name"] / "captures.tsv")
         criterion = policy["bf16"]["physical_block_02"]
         with np.load(args.block_components_default_npz, allow_pickle=False) as default_components, \
