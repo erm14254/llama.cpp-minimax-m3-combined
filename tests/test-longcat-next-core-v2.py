@@ -76,6 +76,8 @@ class FakeTensor:
     def type(self, dtype):
         if dtype == FakeTorch.float32:
             return FakeTensor(self.value.astype(np.float32), "torch.float32")
+        if dtype == self.dtype:
+            return FakeTensor(self.value.astype(self.value.dtype), self.dtype)
         raise TypeError(f"unsupported fake dtype {dtype}")
     def softmax(self, dim=-1):
         if FakeTensor.softmax_override is not None:
@@ -90,6 +92,7 @@ class FakeTensor:
     def __add__(self, other): return FakeTensor(self.value + getattr(other, "value", other))
     def __truediv__(self, other): return FakeTensor(self.value / getattr(other, "value", other))
     def __mul__(self, other): return FakeTensor(self.value * getattr(other, "value", other))
+    def __ge__(self, other): return FakeTensor(self.value >= getattr(other, "value", other))
     def __invert__(self): return FakeTensor(~self.value)
     def __getitem__(self, key):
         if isinstance(key, FakeTensor): key = key.value
@@ -300,6 +303,83 @@ def synthetic_router_model(scaling=1.0):
 
 
 class CoreV2Tests(unittest.TestCase):
+    def test_router_component_values_identity_threshold_and_residual(self):
+        logits = FakeTensor([[0.0, 1.0, 2.0]], "torch.float32")
+        bias = FakeTensor([0.1, 0.2, 0.3], "torch.float32")
+        indices = FakeTensor([[255, 256]], "torch.int64")
+        weights = FakeTensor([[2.0, 3.0]], "torch.float32")
+        router_input = FakeTensor([[[4.0, 5.0]]], "torch.bfloat16")
+        probabilities, selection, identity_sum, identity_residual = v2.router_component_values(
+            logits, bias, indices, weights, router_input)
+        np.testing.assert_allclose(selection.value, probabilities.value + bias.value[None, :])
+        self.assertEqual(identity_sum.value.tolist(), [[3.0]])
+        self.assertEqual(identity_residual.value.tolist(), [[[12.0, 15.0]]])
+
+    def test_block_component_inventory_layouts_and_serialization(self):
+        names = v2.block_component_names(9)
+        self.assertEqual(len(names), 110)
+        self.assertEqual(len(set(names)), 110)
+        capture = {}
+        for name in names:
+            suffix = name.split("__", 1)[1]
+            width = (384 if suffix in {"router_logits", "router_probabilities", "router_selection_scores"}
+                     else 12 if suffix in {"router_topk_indices", "router_topk_weights"}
+                     else 1 if suffix == "identity_weight_sum" else 3072)
+            dtype = np.int64 if suffix == "router_topk_indices" else np.float32
+            shape = (2, width) if suffix.startswith("router_") or suffix == "identity_weight_sum" else (1, 2, width)
+            capture[name] = np.zeros(shape, dtype=dtype)
+        with tempfile.TemporaryDirectory() as temporary:
+            core.write_block_components_diagnostic(capture, temporary, 2, 9)
+            with np.load(Path(temporary) / "block-components.npz", allow_pickle=False) as archive:
+                self.assertEqual(set(archive.files), set(names))
+                self.assertEqual(archive["physical_block_00__block_input"].shape, (1, 2, 3072))
+                self.assertEqual(archive["physical_block_00__router_logits"].shape, (1, 2, 384))
+                self.assertEqual(archive["physical_block_00__router_topk_indices"].shape, (1, 2, 12))
+                self.assertEqual(archive["physical_block_00__identity_weight_sum"].shape, (1, 2, 1))
+                self.assertEqual(archive["physical_block_00__router_topk_indices"].dtype.kind, "i")
+        with self.assertRaises(core.CoreFixtureError):
+            core.normalize_block_component_array(
+                "physical_block_00__block_input", np.zeros((2, 2, 3072)), 2)
+        missing = {name: np.zeros((1, 1, 12 if "topk" in name else
+                                   384 if "router_" in name else
+                                   1 if name.endswith("identity_weight_sum") else 3072),
+                                  np.int64 if name.endswith("router_topk_indices") else np.float32)
+                   for name in names}
+        missing.pop(names[-1])
+        with tempfile.TemporaryDirectory() as temporary, self.assertRaises(core.CoreFixtureError):
+            core.write_block_components_diagnostic(missing, temporary, 1, 9)
+        invalid = {name: np.zeros((1, 1, 12 if "topk" in name else
+                                   384 if "router_" in name else
+                                   1 if name.endswith("identity_weight_sum") else 3072),
+                                  np.int64 if name.endswith("router_topk_indices") else np.float32)
+                   for name in names}
+        invalid["physical_block_00__router_logits"][0, 0, 0] = np.nan
+        with tempfile.TemporaryDirectory() as temporary, self.assertRaises(core.CoreFixtureError):
+            core.write_block_components_diagnostic(invalid, temporary, 1, 9)
+
+    def test_block_component_module_structure_and_tuple_attention_output(self):
+        class ComponentLayer(Module):
+            def __init__(self, valid=True):
+                super().__init__()
+                self.input_layernorm = [Module(), Module()]
+                self.self_attn = [Module(), Module()]
+                self.post_attention_layernorm = [Module(), Module()] if valid else [Module()]
+                self.mlps = [Module(), Module()]
+                self.mlp = Module(); self.mlp.router = Module()
+        class ComponentModel:
+            def __init__(self, valid=True):
+                self.model = type("Trunk", (), {"layers": [ComponentLayer(valid) for _ in range(14)]})()
+        checker = type("Checker", (), {})()
+        capture = {}
+        model = ComponentModel()
+        handles = v2.install_block_component_hooks(model, checker, capture, 9)
+        attention = model.model.layers[0].self_attn[0]
+        attention.post[0](attention, (), (FakeTensor(np.ones((1, 2, 3))), "cache"))
+        self.assertEqual(capture["physical_block_00__attention_output"].shape, (1, 2, 3))
+        self.assertTrue(handles)
+        with self.assertRaises(v2.V2Error):
+            v2.install_block_component_hooks(ComponentModel(False), checker, {}, 9)
+
     def test_all_block_live_call_uses_sequence_dimension(self):
         self.assertEqual(core.prepared_sequence_token_count(np.zeros((1, 5), np.int64)), 5)
         for malformed in (np.zeros((5,), np.int64), np.zeros((2, 5), np.int64),

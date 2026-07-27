@@ -168,6 +168,9 @@ def instrument_router_linear(torch):
             output = original(input_tensor, weight, bias)
             checker.check(output, **common, operation="router_logits", role="router_logits")
             active["router_logits"] = output
+            components = getattr(checker, "block_component_capture", None)
+            if components is not None and active["physical_block"] <= 8:
+                components[f"physical_block_{active['physical_block']:02d}__router_logits"] = output
             return output
         except V2Error as error:
             if checker.first_nonfinite is not None:
@@ -192,6 +195,16 @@ def router_materialization_summary(session):
                 session["all_live_router_weights_materialized"]),
             "all_live_correction_biases_materialized": bool(
                 session["all_live_correction_biases_materialized"])}
+
+
+def router_component_values(logits, correction_bias, topk_indices, topk_weights, router_input):
+    probabilities = logits.softmax(dim=-1)
+    selection_scores = probabilities.view(-1, probabilities.shape[-1]) + correction_bias.unsqueeze(0)
+    identity_weight_sum = (topk_weights * (topk_indices >= 256).type(topk_weights.dtype)).sum(
+        dim=-1, keepdim=True)
+    identity_residual = (router_input.view(-1, router_input.shape[-1]) *
+                         identity_weight_sum).view(*router_input.shape)
+    return probabilities, selection_scores, identity_weight_sum, identity_residual
 
 
 def numpy_finite_report(name, value):
@@ -513,6 +526,7 @@ def install_trunk_finite_hooks(model, checker, serialize_blocks=(0, 1, 2, 27), c
                           "invocation_index": session["invocation_count"] - 1,
                           "input_check_sequence": input_report["check_sequence"],
                           "correction_bias": None, "router_logits": None,
+                          "router_input": args[0],
                           "linear_call_count": 0}
                 token = CURRENT_ROUTER_CONTEXT.set(active)
                 router_tokens.setdefault(id(module), []).append((token, active))
@@ -547,6 +561,21 @@ def install_trunk_finite_hooks(model, checker, serialize_blocks=(0, 1, 2, 27), c
                 require(active["linear_call_count"] == 1,
                         f"{name}: expected exactly one intercepted router F.linear call, "
                         f"got {active['linear_call_count']}")
+                components = getattr(checker, "block_component_capture", None)
+                if components is not None and physical <= 8:
+                    require(active["router_logits"] is not None and active["correction_bias"] is not None,
+                            f"{name}: live router component capture is incomplete")
+                    router_input = active["router_input"]
+                    scores, selection, identity_sum, identity_residual = router_component_values(
+                        active["router_logits"], active["correction_bias"], topk_indices,
+                        original_weights, router_input)
+                    prefix = f"physical_block_{physical:02d}__"
+                    components[prefix + "router_probabilities"] = scores
+                    components[prefix + "router_selection_scores"] = selection
+                    components[prefix + "router_topk_indices"] = topk_indices
+                    components[prefix + "router_topk_weights"] = original_weights
+                    components[prefix + "identity_weight_sum"] = identity_sum
+                    components[prefix + "identity_residual"] = identity_residual
                 if original_report["finite_count"] == original_report["total_elements"]:
                     return
                 require(active["router_logits"] is not None,
@@ -730,6 +759,74 @@ def install_trunk_finite_hooks(model, checker, serialize_blocks=(0, 1, 2, 27), c
             handles.append(module.register_forward_hook(hook, always_call=is_attention))
         except TypeError:  # compatibility with older Torch hook APIs
             handles.append(module.register_forward_hook(hook))
+    return handles
+
+
+def block_component_names(through=9):
+    require(through == 9, "block-component inventory currently requires through=9")
+    ordinary = ("block_input", "attention_norm", "attention_output",
+                "post_attention_residual", "ffn_norm", "dense_output", "block_output")
+    moe = ("router_logits", "router_probabilities", "router_selection_scores",
+           "router_topk_indices", "router_topk_weights", "identity_weight_sum",
+           "identity_residual", "moe_shortcut")
+    names = []
+    for block in range(through + 1):
+        names.extend(f"physical_block_{block:02d}__{suffix}" for suffix in ordinary)
+        if block % 2 == 0:
+            names.extend(f"physical_block_{block:02d}__{suffix}" for suffix in moe)
+    require(len(names) == 110 and len(set(names)) == 110,
+            "block-component inventory must contain exactly 110 unique names")
+    return names
+
+
+def install_block_component_hooks(model, checker, capture, through=9):
+    """Capture validated pinned-model component boundaries without changing execution."""
+    require(through == 9, "block-component hooks currently require through=9")
+    layers = list(model.model.layers)
+    require(len(layers) == 14, f"expected 14 logical layers, got {len(layers)}")
+    handles = []
+
+    def save(name, value):
+        if isinstance(value, (tuple, list)):
+            require(value, f"{name}: tuple output is empty")
+            value = value[0]
+        capture[name] = value
+
+    for logical, layer in enumerate(layers):
+        attention_norms = list(layer.input_layernorm)
+        attentions = list(layer.self_attn)
+        ffn_norms = list(layer.post_attention_layernorm)
+        dense_mlps = list(layer.mlps)
+        require(len(attention_norms) == len(attentions) == len(ffn_norms) == len(dense_mlps) == 2,
+                f"logical layer {logical} does not expose two validated physical sublayers")
+        require(hasattr(layer, "mlp") and hasattr(layer.mlp, "router"),
+                f"logical layer {logical} does not expose shortcut MoE/router")
+        if logical > through // 2:
+            continue
+        for sublayer in range(2):
+            block = 2 * logical + sublayer
+            prefix = f"physical_block_{block:02d}__"
+            handles.append(attention_norms[sublayer].register_forward_pre_hook(
+                lambda module, args, name=prefix + "block_input": save(name, args[0])))
+            handles.append(attention_norms[sublayer].register_forward_hook(
+                lambda module, args, output, name=prefix + "attention_norm": save(name, output)))
+            handles.append(attentions[sublayer].register_forward_hook(
+                lambda module, args, output, name=prefix + "attention_output": save(name, output)))
+            handles.append(ffn_norms[sublayer].register_forward_pre_hook(
+                lambda module, args, name=prefix + "post_attention_residual": save(name, args[0])))
+            handles.append(ffn_norms[sublayer].register_forward_hook(
+                lambda module, args, output, name=prefix + "ffn_norm": save(name, output)))
+            handles.append(dense_mlps[sublayer].register_forward_hook(
+                lambda module, args, output, name=prefix + "dense_output": save(name, output)))
+        even_prefix = f"physical_block_{2 * logical:02d}__"
+        handles.append(layer.mlp.register_forward_hook(
+            lambda module, args, output, name=even_prefix + "moe_shortcut": save(name, output)))
+        handles.append(attention_norms[1].register_forward_pre_hook(
+            lambda module, args, name=even_prefix + "block_output": save(name, args[0])))
+        odd_prefix = f"physical_block_{2 * logical + 1:02d}__"
+        handles.append(layer.register_forward_hook(
+            lambda module, args, output, name=odd_prefix + "block_output": save(name, output)))
+    checker.block_component_capture = capture
     return handles
 
 

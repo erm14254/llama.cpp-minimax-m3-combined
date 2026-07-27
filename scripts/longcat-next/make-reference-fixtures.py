@@ -268,6 +268,8 @@ def parse_args(argv=None):
                         help="diagnosis only; disqualifies output from acceptance")
     parser.add_argument("--serialize-all-physical-blocks", action="store_true",
                         help="diagnosis only: write physical blocks 00 through 27 separately")
+    parser.add_argument("--serialize-block-components-through", type=int,
+                        help="diagnosis only: serialize the exact block-component inventory through block 9")
     parser.add_argument("--candidate-dir", type=Path)
     return parser.parse_args(argv)
 
@@ -280,10 +282,23 @@ def validate_all_physical_blocks_request(mode, cases, enabled):
                 "--serialize-all-physical-blocks requires exactly one explicit --case")
 
 
+def validate_block_components_request(mode, cases, through):
+    if through is not None:
+        require(mode == "core-diagnose",
+                "--serialize-block-components-through is valid only with --mode core-diagnose")
+        require(len(cases) == 1,
+                "--serialize-block-components-through requires exactly one explicit --case")
+        require(through == 9,
+                "--serialize-block-components-through currently requires the exact value 9")
+
+
 def run(args):
     validate_all_physical_blocks_request(
         args.mode, getattr(args, "case", []),
         bool(getattr(args, "serialize_all_physical_blocks", False)))
+    validate_block_components_request(
+        args.mode, getattr(args, "case", []),
+        getattr(args, "serialize_block_components_through", None))
     if args.mode == "core-validate":
         require(args.candidate_dir is not None, "core-validate requires --candidate-dir")
         core = load_core_reference()

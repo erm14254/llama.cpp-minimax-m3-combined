@@ -1215,6 +1215,57 @@ def prepared_sequence_token_count(input_ids):
     return int(shape[1])
 
 
+def normalize_block_component_array(name, array, token_count):
+    import numpy as np
+    suffix = name.split("__", 1)[1]
+    if suffix in {"router_logits", "router_probabilities", "router_selection_scores"}:
+        expected_tail = 384
+    elif suffix in {"router_topk_indices", "router_topk_weights"}:
+        expected_tail = 12
+    elif suffix == "identity_weight_sum":
+        expected_tail = 1
+    else:
+        expected_tail = 3072
+    result = np.asarray(array)
+    if result.ndim == 2:
+        result = result[None, :, :]
+    require(result.shape == (1, token_count, expected_tail),
+            f"{name} has component shape {result.shape}, expected {(1, token_count, expected_tail)}")
+    return np.ascontiguousarray(result)
+
+
+def write_block_components_diagnostic(capture, report_dir, token_count, through=9):
+    import numpy as np
+    expected = v2.block_component_names(through)
+    require(sorted(capture) == sorted(expected),
+            "block-component diagnostic inventory differs from exact 110-name contract")
+    arrays = {}
+    rows = []
+    for name in expected:
+        array, source_dtype = tensor_array(capture.pop(name), name)
+        array = normalize_block_component_array(name, array, token_count)
+        finite = v2.numpy_finite_report(name, array)
+        if array.dtype.kind == "f":
+            require(finite["finite_count"] == finite["total_elements"], f"{name} is not finite")
+        if name.endswith("__router_topk_indices"):
+            require(array.dtype.kind in "iu", f"{name} must preserve integer indices")
+        data = array.tobytes(order="C")
+        rows.append({**finite, "serialized_dtype": str(array.dtype),
+                     "source_torch_dtype": source_dtype,
+                     "sha256": hashlib.sha256(data).hexdigest()})
+        arrays[name] = array
+    root = Path(report_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    npz_path = root / "block-components.npz"
+    temporary = npz_path.with_name(npz_path.name + ".tmp")
+    temporary.write_bytes(deterministic_npz_bytes(arrays))
+    temporary.replace(npz_path)
+    v2.atomic_json(root / "block-components.json", {
+        "schema_version": 2, "accepted": False, "through_physical_block": through,
+        "array_count": 110, "arrays": rows})
+    return {"npz": npz_path, "metadata": root / "block-components.json"}
+
+
 def load_case_ids(weight_free_fixture, tokenizer):
     corpus = read_json(weight_free_fixture, "weight-free fixture")
     cases = []
@@ -1278,7 +1329,7 @@ def analytical_ngram_decomposition(base, raw_projections, ignored_mask, official
 
 def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_context,
                     finite_checker=None, attention_backend="default",
-                    serialize_all_physical_blocks=False):
+                    serialize_all_physical_blocks=False, serialize_block_components_through=None):
     import numpy as np
     import torch
     modules = resolve_capture_modules(model)
@@ -1287,6 +1338,7 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_
     source_dtypes = {}
     handles = []
     diagnostic_blocks = {}
+    component_capture = {}
 
     def save(name, value):
         if isinstance(value, tuple):
@@ -1302,6 +1354,9 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_
         model, finite_checker,
         serialize_blocks=diagnostic_serialize_blocks(serialize_all_physical_blocks),
         capture=diagnostic_blocks))
+    if serialize_block_components_through is not None:
+        handles.extend(v2.install_block_component_hooks(
+            model, finite_checker, component_capture, serialize_block_components_through))
     handles.append(modules["base_embedding"].register_forward_hook(
         lambda module, args, output: finite_checker.check(
             output, module_name="model.model.embed_tokens", operation="forward", role="output")))
@@ -1359,6 +1414,11 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_
             write_all_physical_blocks_diagnostic(
                 diagnostic_blocks, finite_checker.report_dir,
                 prepared_sequence_token_count(prepared["input_ids"]))
+        if serialize_block_components_through is not None:
+            write_block_components_diagnostic(
+                component_capture, finite_checker.report_dir,
+                prepared_sequence_token_count(prepared["input_ids"]),
+                serialize_block_components_through)
     finally:
         for handle in handles:
             handle.remove()
@@ -1524,7 +1584,8 @@ def run_core_worker_generation(args, weight_free_fixture, diagnostic=False):
             case_arrays, case_sources = capture_forward(
                 model, ids, selected_logit_ids, case_name, generation_context,
                 checker, args.attention_backend,
-                bool(getattr(args, "serialize_all_physical_blocks", False)))
+                bool(getattr(args, "serialize_all_physical_blocks", False)),
+                getattr(args, "serialize_block_components_through", None))
             sdpa_observations.append({"case": case_name, "run_index": repeat,
                                       **checker.sdpa_observation})
             router_materialization_observations.append({

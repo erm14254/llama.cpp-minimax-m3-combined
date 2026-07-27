@@ -52,6 +52,16 @@ class InventoryTests(unittest.TestCase):
             with self.subTest(mode=mode, cases=cases), self.assertRaises(fixtures.FixtureError):
                 fixtures.validate_all_physical_blocks_request(mode, cases, True)
 
+    def test_block_components_cli_is_diagnostic_block_nine_only(self):
+        fixtures.validate_block_components_request(
+            "core-diagnose", ["eos_window_position_2"], 9)
+        for mode, cases, through in (("core", ["case"], 9), ("core-worker", ["case"], 9),
+                                     ("core-diagnose", [], 9),
+                                     ("core-diagnose", ["a", "b"], 9),
+                                     ("core-diagnose", ["case"], 8)):
+            with self.subTest(mode=mode, through=through), self.assertRaises(fixtures.FixtureError):
+                fixtures.validate_block_components_request(mode, cases, through)
+
     def tearDown(self):
         self.tmp.cleanup()
 

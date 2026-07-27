@@ -401,6 +401,7 @@ llama_model_longcat_flash_ngram::graph::graph(
 
     for (int il = 0; il < n_layer; ++il) {
         ggml_tensor * inpSA = inpL;
+        cb(inpSA, "block_in", il);
 
         const bool is_even_block = (il % 2 == 0);
 

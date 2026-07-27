@@ -22,9 +22,12 @@ struct capture_state {
     std::ofstream layer0_manifest;
     std::ofstream all_blocks_manifest;
     std::set<std::string> all_blocks_seen;
+    std::ofstream components_manifest;
+    std::set<std::string> components_seen;
     bool direct_forward = true;
     bool layer0_diagnostic = false;
     bool all_blocks_diagnostic = false;
+    bool block_components_diagnostic = false;
 };
 
 enum class capture_cache_type {
@@ -87,6 +90,23 @@ static bool wanted_all_blocks(const std::string & name) {
     return block >= 0 && block < 28;
 }
 
+static bool wanted_block_component(const std::string & name) {
+    const size_t dash = name.rfind('-');
+    if (dash == std::string::npos || dash + 1 >= name.size()) return false;
+    const std::string base = name.substr(0, dash);
+    const std::string suffix = name.substr(dash + 1);
+    if ((suffix.size() > 1 && suffix[0] == '0') ||
+            !std::all_of(suffix.begin(), suffix.end(), [](unsigned char c) { return std::isdigit(c); })) return false;
+    const int block = std::stoi(suffix);
+    if (block < 0 || block > 9) return false;
+    static const std::set<std::string> ordinary = {
+        "block_in", "attn_norm", "attn_out", "ffn_inp", "ffn_norm", "ffn_out", "l_out"};
+    static const std::set<std::string> moe = {
+        "ffn_moe_logits", "ffn_moe_probs", "ffn_moe_probs_biased", "ffn_moe_topk",
+        "ffn_moe_weights_scaled", "identity_weight_sum", "identity_residual", "moe_shortcut"};
+    return ordinary.count(base) || (block % 2 == 0 && moe.count(base));
+}
+
 static bool parse_binary_flag(const std::string & value, bool & result) {
     if (value != "0" && value != "1") return false;
     result = value == "1";
@@ -110,12 +130,16 @@ static bool capture_cb(ggml_tensor * tensor, bool ask, void * opaque) {
     const bool normal = wanted(name);
     const bool diagnostic = state.layer0_diagnostic && wanted_layer0(name);
     const bool all_blocks = state.all_blocks_diagnostic && wanted_all_blocks(name);
-    if (!state.direct_forward || (!normal && !diagnostic && !all_blocks)) return false;
+    const bool components = state.block_components_diagnostic && wanted_block_component(name);
+    if (!state.direct_forward || (!normal && !diagnostic && !all_blocks && !components)) return false;
     if (ask) return true;
     if (normal) write_capture(tensor, state.dir, state.manifest, "");
     if (diagnostic) write_capture(tensor, state.dir, state.layer0_manifest, "diag_");
     if (all_blocks && state.all_blocks_seen.insert(name).second) {
         write_capture(tensor, state.dir, state.all_blocks_manifest, "all_blocks_");
+    }
+    if (components && state.components_seen.insert(name).second) {
+        write_capture(tensor, state.dir, state.components_manifest, "components_");
     }
     return true;
 }
@@ -161,7 +185,7 @@ static int self_test() {
     const float tied[] = { 0.0f, 2.0f, 2.0f, 1.0f };
     if (argmax_large_tie(tied, 4) != 2) return 20;
     if (sequence_for_mask(0, 0) == sequence_for_mask(1, 0) || sequence_for_mask(2, 1) != 0) return 21;
-    capture_state state { {}, {}, {}, {}, {}, false, false, false };
+    capture_state state { {}, {}, {}, {}, {}, {}, {}, false, false, false, false };
     ggml_tensor dummy = {};
     snprintf(dummy.name, sizeof(dummy.name), "inp_embd");
     if (capture_cb(&dummy, true, &state)) return 22;
@@ -215,13 +239,32 @@ static int self_test() {
     for (int index = 0; index < 12; ++index) standard.insert("ngram_proj-" + std::to_string(index));
     if (standard.size() != 19 || !std::all_of(standard.begin(), standard.end(), wanted) ||
             wanted("l_out-3") || wanted("ngram_proj-12")) return 44;
+    std::set<std::string> components;
+    for (int block = 0; block < 10; ++block) {
+        for (const char * base : {"block_in", "attn_norm", "attn_out", "ffn_inp",
+                "ffn_norm", "ffn_out", "l_out"}) {
+            components.insert(std::string(base) + "-" + std::to_string(block));
+        }
+        if (block % 2 == 0) {
+            for (const char * base : {"ffn_moe_logits", "ffn_moe_probs", "ffn_moe_probs_biased",
+                    "ffn_moe_topk", "ffn_moe_weights_scaled", "identity_weight_sum",
+                    "identity_residual", "moe_shortcut"}) {
+                components.insert(std::string(base) + "-" + std::to_string(block));
+            }
+        }
+    }
+    if (components.size() != 110 ||
+            !std::all_of(components.begin(), components.end(), wanted_block_component)) return 45;
+    if (wanted_block_component("block_in-10") || wanted_block_component("block_in-01") ||
+            wanted_block_component("surprise-0") || wanted_block_component("ffn_moe_logits-1")) return 46;
     return 0;
 }
 
 static int run_case(
         llama_model * model, const json & spec, const fs::path & root,
         uint32_t n_ctx, int32_t threads, llama_flash_attn_type flash_attn,
-        capture_cache_type cache_type, bool layer0_diagnostic, bool all_blocks_diagnostic) {
+        capture_cache_type cache_type, bool layer0_diagnostic, bool all_blocks_diagnostic,
+        bool block_components_diagnostic) {
     const auto ids = spec.at("input_ids").get<std::vector<llama_token>>();
     const auto mask = spec.at("attention_mask").get<std::vector<int32_t>>();
     const auto positions = spec.at("position_ids").get<std::vector<llama_pos>>();
@@ -230,13 +273,16 @@ static int run_case(
 
     const fs::path dir = root / spec.at("name").get<std::string>();
     fs::create_directories(dir);
-    capture_state state { dir, std::ofstream(dir / "captures.tsv", std::ios::trunc), {}, {}, {},
-                          true, layer0_diagnostic, all_blocks_diagnostic };
+    capture_state state { dir, std::ofstream(dir / "captures.tsv", std::ios::trunc), {}, {}, {}, {}, {},
+                          true, layer0_diagnostic, all_blocks_diagnostic, block_components_diagnostic };
     if (layer0_diagnostic) {
         state.layer0_manifest.open(dir / "layer0-diagnostics.tsv", std::ios::trunc);
     }
     if (all_blocks_diagnostic) {
         state.all_blocks_manifest.open(dir / "all-blocks-diagnostics.tsv", std::ios::trunc);
+    }
+    if (block_components_diagnostic) {
+        state.components_manifest.open(dir / "block-components-diagnostics.tsv", std::ios::trunc);
     }
     auto cp = capture_context_params(n_ctx, ids.size(), threads, flash_attn, cache_type, &state);
     llama_context * ctx = llama_init_from_model(model, cp);
@@ -259,6 +305,10 @@ static int run_case(
     if (all_blocks_diagnostic && state.all_blocks_seen.size() != 28) {
         llama_free(ctx);
         return 14;
+    }
+    if (block_components_diagnostic && state.components_seen.size() != 110) {
+        llama_free(ctx);
+        return 15;
     }
 
     const int32_t n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(model));
@@ -319,6 +369,7 @@ int main(int argc, char ** argv) {
     capture_cache_type cache_type = capture_cache_type::DEFAULT;
     bool layer0_diagnostic = false;
     bool all_blocks_diagnostic = false;
+    bool block_components_diagnostic = false;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string key = argv[i];
         if (key == "--model") model_path = argv[i + 1];
@@ -338,6 +389,8 @@ int main(int argc, char ** argv) {
             if (!parse_binary_flag(argv[i + 1], layer0_diagnostic)) return 2;
         } else if (key == "--all-blocks-diagnostic") {
             if (!parse_binary_flag(argv[i + 1], all_blocks_diagnostic)) return 2;
+        } else if (key == "--block-components-diagnostic") {
+            if (!parse_binary_flag(argv[i + 1], block_components_diagnostic)) return 2;
         }
         else return 2;
     }
@@ -356,7 +409,7 @@ int main(int argc, char ** argv) {
     int result = 0;
     for (const auto & spec : manifest.at("cases")) {
         result = run_case(model, spec, output, n_ctx, threads, flash_attn, cache_type,
-                          layer0_diagnostic, all_blocks_diagnostic);
+                          layer0_diagnostic, all_blocks_diagnostic, block_components_diagnostic);
         if (result != 0) break;
     }
     llama_model_free(model);

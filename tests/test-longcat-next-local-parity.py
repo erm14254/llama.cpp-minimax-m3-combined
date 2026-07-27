@@ -19,6 +19,19 @@ for i in range(12):
 DIRECT_NAMES = set(CPP_TO_REFERENCE)
 ALL_BLOCK_CPP_NAMES = {f"l_out-{block}" for block in range(28)}
 ALL_BLOCK_REFERENCE_NAMES = {f"physical_block_{block:02d}" for block in range(28)}
+COMPONENT_SUFFIXES = ("block_input", "attention_norm", "attention_output",
+                      "post_attention_residual", "ffn_norm", "dense_output", "block_output")
+COMPONENT_MOE_SUFFIXES = ("router_logits", "router_probabilities", "router_selection_scores",
+                          "router_topk_indices", "router_topk_weights", "identity_weight_sum",
+                          "identity_residual", "moe_shortcut")
+COMPONENT_CPP_BASE = {
+    "block_in": "block_input", "attn_norm": "attention_norm", "attn_out": "attention_output",
+    "ffn_inp": "post_attention_residual", "ffn_norm": "ffn_norm", "ffn_out": "dense_output",
+    "l_out": "block_output", "ffn_moe_logits": "router_logits",
+    "ffn_moe_probs": "router_probabilities", "ffn_moe_probs_biased": "router_selection_scores",
+    "ffn_moe_topk": "router_topk_indices", "ffn_moe_weights_scaled": "router_topk_weights",
+    "identity_weight_sum": "identity_weight_sum", "identity_residual": "identity_residual",
+    "moe_shortcut": "moe_shortcut"}
 INTEGER_SUFFIXES = ("input_ids", "attention_mask", "position_ids", "cache_position")
 
 
@@ -98,6 +111,48 @@ def read_all_blocks_manifest(path):
     return rows
 
 
+def component_names():
+    names = []
+    for block in range(10):
+        names.extend(f"physical_block_{block:02d}__{suffix}" for suffix in COMPONENT_SUFFIXES)
+        if block % 2 == 0:
+            names.extend(f"physical_block_{block:02d}__{suffix}" for suffix in COMPONENT_MOE_SUFFIXES)
+    if len(names) != 110 or len(set(names)) != 110:
+        raise AssertionError("component inventory must contain 110 unique names")
+    return names
+
+
+def read_component_manifest(path):
+    rows = {}
+    for number, line in enumerate(path.read_text(encoding="ascii").splitlines(), 1):
+        fields = line.split("\t")
+        if len(fields) != 4:
+            raise ValueError(f"malformed component manifest line {number}")
+        cpp_name, dtype, shape, filename = fields
+        if cpp_name in rows:
+            raise ValueError(f"duplicate component C++ capture name: {cpp_name}")
+        dash = cpp_name.rfind("-")
+        if dash < 1 or not cpp_name[dash + 1:].isdigit():
+            raise ValueError(f"malformed component callback name: {cpp_name}")
+        block = int(cpp_name[dash + 1:]); base = cpp_name[:dash]
+        suffix = COMPONENT_CPP_BASE.get(base)
+        canonical = f"physical_block_{block:02d}__{suffix}" if suffix is not None else None
+        try:
+            dims = tuple(map(int, shape.split(",")))
+        except ValueError as exc:
+            raise ValueError(f"malformed component shape for {cpp_name}") from exc
+        if canonical is None or canonical not in set(component_names()) or dtype not in {"f32", "f16", "bf16", "i32"} or len(dims) != 4:
+            raise ValueError(f"unexpected component capture: {cpp_name}")
+        rows[cpp_name] = (canonical, dtype, dims, path.parent / filename)
+    canonical_names = [row[0] for row in rows.values()]
+    if len(canonical_names) != len(set(canonical_names)):
+        raise ValueError("duplicate canonical component capture")
+    expected = set(component_names())
+    if set(canonical_names) != expected:
+        raise ValueError(f"component capture inventory mismatch: missing={sorted(expected-set(canonical_names))}, unexpected={sorted(set(canonical_names)-expected)}")
+    return {canonical: (dtype, dims, raw) for canonical, dtype, dims, raw in rows.values()}
+
+
 def decode_raw(dtype_name, dims, path, kind):
     dtype = {"f32": np.float32, "f16": np.float16, "bf16": np.uint16}[dtype_name]
     raw = np.fromfile(path, dtype=dtype)
@@ -112,6 +167,15 @@ def decode_raw(dtype_name, dims, path, kind):
     # GGML [hidden,tokens,1,1], contiguous with hidden fastest, maps to
     # Python [batch=1,tokens,hidden]. Never squeeze singleton dimensions.
     return raw.reshape((dims[1], dims[0]))[None, :, :]
+
+
+def decode_component_raw(dtype_name, dims, path):
+    if dtype_name == "i32":
+        raw = np.fromfile(path, dtype=np.int32)
+        if raw.size != np.prod(dims):
+            raise ValueError(f"{path}: raw component element count differs from shape")
+        return raw.reshape((dims[1], dims[0]))[None, :, :]
+    return decode_raw(dtype_name, dims, path, "hidden")
 
 
 def policy_for(policy, precision, suffix):
@@ -196,6 +260,121 @@ def compare_all_blocks(reference_npz, capture_dir, attention_mask, criterion):
             "first_block_exceeding_diagnostic_criterion": first,
             "last_block_within_diagnostic_criterion_before_failure": last,
             "blocks": results}
+
+
+def router_index_report(cpp, default, math):
+    arrays = {"cpp": np.asarray(cpp), "python_default": np.asarray(default),
+              "python_math": np.asarray(math)}
+    if len({value.shape for value in arrays.values()}) != 1:
+        raise ValueError("router index shapes differ")
+    ordered = np.all((arrays["cpp"] == arrays["python_default"]) &
+                     (arrays["cpp"] == arrays["python_math"]), axis=-1)
+    selected = np.ones(ordered.shape, dtype=bool)
+    for index in np.ndindex(ordered.shape):
+        selected[index] = len({tuple(sorted(arrays[name][index].tolist())) for name in arrays}) == 1
+    ordered_bad = np.argwhere(~ordered)
+    selected_bad = np.argwhere(~selected)
+    token = int(ordered_bad[0, -1]) if ordered_bad.size else (
+        int(selected_bad[0, -1]) if selected_bad.size else None)
+    lists = None if token is None else {
+        name: value.reshape(-1, value.shape[-1])[token].tolist() for name, value in arrays.items()}
+    return {"exact_ordered_equality": bool(ordered.all()),
+            "per_token_selected_set_equality": bool(selected.all()),
+            "first_token_with_ordered_mismatch": None if not ordered_bad.size else int(ordered_bad[0, -1]),
+            "first_token_with_selected_set_mismatch": None if not selected_bad.size else int(selected_bad[0, -1]),
+            "ordered_index_lists_at_first_mismatch": lists}
+
+
+def align_router_weights(indices, weights, expert_count=384):
+    indices = np.asarray(indices); weights = np.asarray(weights)
+    if indices.shape != weights.shape:
+        raise ValueError("router index and weight shapes differ")
+    aligned = np.zeros(indices.shape[:-1] + (expert_count,), dtype=np.float32)
+    np.put_along_axis(aligned, indices.astype(np.int64), weights.astype(np.float32), axis=-1)
+    return aligned
+
+
+def compare_block_components(default_npz, math_npz, capture_dir, attention_mask, criterion):
+    expected = set(component_names())
+    for label, archive in (("default", default_npz), ("math", math_npz)):
+        if set(archive.files) != expected:
+            raise ValueError(f"{label} component reference inventory differs from exact 110 names")
+    manifest = read_component_manifest(capture_dir / "block-components-diagnostics.tsv")
+    mask = np.asarray(attention_mask, dtype=bool)
+    results = []
+    first_router_set = None
+    first_material = None
+    classification = None
+    indices_by_block = {}
+    for name in component_names():
+        block = int(name[15:17]); suffix = name.split("__", 1)[1]
+        dtype, dims, raw = manifest[name]
+        cpp = decode_component_raw(dtype, dims, raw)
+        default = np.asarray(default_npz[name]); math = np.asarray(math_npz[name])
+        expected_width = (384 if suffix in {"router_logits", "router_probabilities", "router_selection_scores"}
+                          else 12 if suffix in {"router_topk_indices", "router_topk_weights"}
+                          else 1 if suffix == "identity_weight_sum" else 3072)
+        expected_shape = (1, mask.size, expected_width)
+        if cpp.shape != expected_shape or default.shape != expected_shape or math.shape != expected_shape:
+            raise ValueError(f"{name}: expected exact component shape {expected_shape}, got "
+                             f"cpp={cpp.shape}, default={default.shape}, math={math.shape}")
+        if cpp.shape[1] != mask.size or default.shape[1] != mask.size or math.shape[1] != mask.size:
+            raise ValueError(f"{name}: component token count differs from attention mask")
+        cpp, default, math = cpp[:, mask, :], default[:, mask, :], math[:, mask, :]
+        if suffix == "router_topk_indices":
+            report = router_index_report(cpp, default, math)
+            indices_by_block[block] = (cpp, default, math)
+            if not report["per_token_selected_set_equality"] and first_router_set is None:
+                first_router_set = block
+            results.append({"name": name, "physical_block": block, "kind": "router_indices", **report})
+            continue
+        comparisons = {
+            "cpp_vs_python_default": all_block_result(default, cpp, criterion),
+            "cpp_vs_python_math": all_block_result(math, cpp, criterion),
+            "python_default_vs_python_math": all_block_result(default, math, criterion)}
+        hidden = cpp.shape[-1] == 3072
+        if not hidden:
+            for comparison in comparisons.values():
+                comparison.pop("maximum_normalized_violation_under_diagnostic_criterion")
+                comparison.pop("within_diagnostic_criterion")
+        if suffix == "router_topk_weights":
+            require_indices = indices_by_block.get(block)
+            if require_indices is None:
+                raise ValueError(f"{name}: router indices must precede weights")
+            cpp_i, default_i, math_i = require_indices
+            aligned = (align_router_weights(cpp_i, cpp), align_router_weights(default_i, default),
+                       align_router_weights(math_i, math))
+            aligned_comparisons = {
+                "cpp_vs_python_default": all_block_result(aligned[1], aligned[0], criterion),
+                "cpp_vs_python_math": all_block_result(aligned[2], aligned[0], criterion),
+                "python_default_vs_python_math": all_block_result(aligned[1], aligned[2], criterion)}
+            for comparison in aligned_comparisons.values():
+                comparison.pop("maximum_normalized_violation_under_diagnostic_criterion")
+                comparison.pop("within_diagnostic_criterion")
+            result = {"name": name, "physical_block": block, "kind": "router_weights",
+                      "returned_topk_order": comparisons, "expert_id_aligned": aligned_comparisons}
+        else:
+            result = {"name": name, "physical_block": block, "kind": "floating",
+                      "hidden_size_diagnostic_criterion": hidden, "comparisons": comparisons}
+        results.append(result)
+        if (hidden and first_material is None and
+                not comparisons["cpp_vs_python_default"]["within_diagnostic_criterion"] and
+                not comparisons["cpp_vs_python_math"]["within_diagnostic_criterion"]):
+            first_material = name
+            classification = {
+                "attention_output": "attention output", "post_attention_residual": "post-attention residual",
+                "dense_output": "dense output", "identity_residual": "identity residual",
+                "moe_shortcut": "complete MoE shortcut", "block_output": "final block addition"}.get(
+                    suffix, suffix)
+    if first_router_set is not None and (first_material is None or
+            first_router_set <= int(first_material[15:17])):
+        classification = "router indices"
+    return {"accepted": False, "array_count": 110,
+            "diagnostic_criterion_source": "bf16.physical_block_02",
+            "first_physical_block_with_router_selected_set_difference": first_router_set,
+            "first_component_outside_diagnostic_criterion_vs_both_backends": first_material,
+            "first_large_discrepancy_classification": classification,
+            "components": results}
 
 
 def exact_result(reference, candidate):
@@ -313,6 +492,9 @@ def build_parser():
     p.add_argument("--layer0-diagnostic", type=int, choices=(0, 1), default=0)
     p.add_argument("--all-blocks-diagnostic", type=int, choices=(0, 1), default=0)
     p.add_argument("--all-blocks-reference-npz", type=Path)
+    p.add_argument("--block-components-diagnostic", type=int, choices=(0, 1), default=0)
+    p.add_argument("--block-components-default-npz", type=Path)
+    p.add_argument("--block-components-math-npz", type=Path)
     p.add_argument("--case", action="append", default=[], help="capture only this reference case (repeatable)")
     p.add_argument("--tolerance-policy", type=Path, default=Path(__file__).parent / "fixtures/longcat-next/stage1-tolerances.json")
     return p
@@ -326,6 +508,14 @@ def validate_all_blocks_options(args):
             raise ValueError("--all-blocks-diagnostic requires --all-blocks-reference-npz")
     elif args.all_blocks_reference_npz is not None:
         raise ValueError("--all-blocks-reference-npz requires --all-blocks-diagnostic 1")
+    component_paths = (args.block_components_default_npz, args.block_components_math_npz)
+    if args.block_components_diagnostic:
+        if len(args.case) != 1:
+            raise ValueError("--block-components-diagnostic requires exactly one --case")
+        if any(path is None for path in component_paths):
+            raise ValueError("--block-components-diagnostic requires both component reference NPZs")
+    elif any(path is not None for path in component_paths):
+        raise ValueError("component reference NPZs require --block-components-diagnostic 1")
 
 
 def main():
@@ -355,7 +545,8 @@ def main():
                     "--output-dir", str(args.output_dir), "--n-gpu-layers", str(args.n_gpu_layers),
                     "--threads", str(args.threads), "--flash-attn", args.flash_attn,
                     "--layer0-diagnostic", str(args.layer0_diagnostic),
-                    "--all-blocks-diagnostic", str(args.all_blocks_diagnostic)]
+                    "--all-blocks-diagnostic", str(args.all_blocks_diagnostic),
+                    "--block-components-diagnostic", str(args.block_components_diagnostic)]
     try:
         run_capture_after_validation(validation, command)
     except ValueError as exc:
@@ -369,6 +560,15 @@ def main():
                 cases[0]["attention_mask"], criterion)
         (args.output_dir / "all-blocks-comparison.json").write_text(
             json.dumps(all_blocks, indent=2) + "\n", encoding="ascii")
+    if args.block_components_diagnostic:
+        criterion = policy["bf16"]["physical_block_02"]
+        with np.load(args.block_components_default_npz, allow_pickle=False) as default_components, \
+             np.load(args.block_components_math_npz, allow_pickle=False) as math_components:
+            component_report = compare_block_components(
+                default_components, math_components, args.output_dir / cases[0]["name"],
+                cases[0]["attention_mask"], criterion)
+        (args.output_dir / "block-components-three-way.json").write_text(
+            json.dumps(component_report, indent=2) + "\n", encoding="ascii")
     overall = all(row["passed"] for row in reports.values())
     report = {"precision": args.precision, "tolerance_policy": str(args.tolerance_policy), "cases": reports, "passed": overall}
     (args.output_dir / "comparison-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="ascii")

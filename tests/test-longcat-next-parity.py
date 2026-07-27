@@ -14,6 +14,71 @@ SPEC.loader.exec_module(PARITY)
 
 
 class ParityHarnessTests(unittest.TestCase):
+    def test_component_manifest_and_three_way_router_diagnostics(self):
+        names = PARITY.component_names()
+        self.assertEqual(len(names), 110)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); rows = []; default = {}; math = {}
+            cpp_values = {}
+            for name in names:
+                block = int(name[15:17]); suffix = name.split("__", 1)[1]
+                width = (384 if suffix in {"router_logits", "router_probabilities", "router_selection_scores"}
+                         else 12 if suffix in {"router_topk_indices", "router_topk_weights"}
+                         else 1 if suffix == "identity_weight_sum" else 3072)
+                is_indices = suffix == "router_topk_indices"
+                value = np.zeros((1, 2, width), np.int32 if is_indices else np.float32)
+                if is_indices:
+                    value[:] = np.arange(12)
+                default[name] = value.copy(); math[name] = value.copy(); cpp = value.copy()
+                if name == "physical_block_00__router_topk_indices":
+                    cpp[..., [0, 1]] = cpp[..., [1, 0]]  # ordered mismatch, identical set
+                if name == "physical_block_00__router_topk_weights":
+                    default[name][..., :2] = [0.25, 0.5]
+                    math[name][..., :2] = [0.25, 0.5]
+                    cpp[..., :2] = [0.5, 0.25]  # aligns exactly by expert ID after index swap
+                if name == "physical_block_03__attention_output":
+                    cpp[:, 0, :] = 1000  # masked
+                    cpp[:, 1, 0] = 1     # first material attended discrepancy
+                cpp_values[name] = cpp
+                reverse = {value: key for key, value in PARITY.COMPONENT_CPP_BASE.items()}
+                base = reverse[suffix]
+                cpp_name = f"{base}-{block}"
+                raw = root / f"{cpp_name}.raw"
+                cpp.reshape(-1).tofile(raw)
+                rows.append(f"{cpp_name}\t{'i32' if is_indices else 'f32'}\t{width},2,1,1\t{raw.name}")
+            (root / "block-components-diagnostics.tsv").write_text(
+                "\n".join(rows) + "\n", encoding="ascii")
+            default_path = root / "default.npz"; math_path = root / "math.npz"
+            np.savez(default_path, **default); np.savez(math_path, **math)
+            with np.load(default_path, allow_pickle=False) as default_npz, \
+                 np.load(math_path, allow_pickle=False) as math_npz:
+                report = PARITY.compare_block_components(
+                    default_npz, math_npz, root, [0, 1], {"atol": .125, "rtol": .03125})
+            indices = next(row for row in report["components"]
+                           if row["name"] == "physical_block_00__router_topk_indices")
+            self.assertFalse(indices["exact_ordered_equality"])
+            self.assertTrue(indices["per_token_selected_set_equality"])
+            weights = next(row for row in report["components"]
+                           if row["name"] == "physical_block_00__router_topk_weights")
+            self.assertGreater(weights["returned_topk_order"]["cpp_vs_python_default"]["maximum_absolute_error"], 0)
+            self.assertEqual(weights["expert_id_aligned"]["cpp_vs_python_default"]["maximum_absolute_error"], 0)
+            self.assertEqual(report["first_component_outside_diagnostic_criterion_vs_both_backends"],
+                             "physical_block_03__attention_output")
+            self.assertEqual(report["first_large_discrepancy_classification"], "attention output")
+
+    def test_component_manifest_rejects_duplicate_missing_and_nonfinite(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "block-components-diagnostics.tsv"
+            path.write_text("bad\n", encoding="ascii")
+            with self.assertRaisesRegex(ValueError, "malformed"):
+                PARITY.read_component_manifest(path)
+            path.write_text("block_in-0\tf32\t3072,1,1,1\ta\n" * 2, encoding="ascii")
+            with self.assertRaisesRegex(ValueError, "duplicate"):
+                PARITY.read_component_manifest(path)
+        with self.assertRaisesRegex(ValueError, "finite"):
+            PARITY.all_block_result(np.zeros((1, 1, 1)), np.full((1, 1, 1), np.nan),
+                                    {"atol": 1, "rtol": 1})
+
     def test_direct_capture_inventory_is_exact(self):
         expected = {"inp_embd", "inp_embd_ngram", "h_nextn", "final_logits",
                     "l_out-0", "l_out-1", "l_out-2", "l_out-27"}
