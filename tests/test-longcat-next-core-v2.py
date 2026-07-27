@@ -16,6 +16,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
     "core_reference_v2", ROOT / "scripts/longcat-next/core_reference_v2.py")
 v2 = importlib.util.module_from_spec(SPEC); SPEC.loader.exec_module(v2)
+CORE_SPEC = importlib.util.spec_from_file_location(
+    "core_reference", ROOT / "scripts/longcat-next/core_reference.py")
+core = importlib.util.module_from_spec(CORE_SPEC); CORE_SPEC.loader.exec_module(core)
 
 
 class Handle:
@@ -124,6 +127,51 @@ class MetaLikeWeight:
         raise RuntimeError(f"meta-like offloaded parameter accessed: {name}")
 
 
+class FakeDevice:
+    def __init__(self, kind, index=None): self.type = kind; self.index = index
+    def __str__(self): return self.type if self.index is None else f"{self.type}:{self.index}"
+
+
+class MetaTensor(FakeTensor):
+    def __init__(self, shape, dtype="torch.bfloat16"):
+        self.value = np.empty(shape, dtype=np.float32)
+        self.dtype = dtype
+        self.device = FakeDevice("meta")
+        self.is_meta = True
+    def type(self, dtype): return self
+    def item(self): raise AssertionError("meta tensor item() must never be called")
+
+
+class PlacementParameter:
+    def __init__(self, shape, device="cuda", dtype="torch.bfloat16", is_meta=False):
+        self.shape = shape; self.device = FakeDevice(device, 0 if device == "cuda" else None)
+        self.dtype = dtype; self.is_meta = is_meta
+    def numel(self): return int(np.prod(self.shape))
+
+
+class PlacementRouter:
+    def __init__(self, device="cuda", meta=False):
+        self.classifier = type("Classifier", (), {})()
+        self.classifier.weight = PlacementParameter((384, 3072), "meta" if meta else device,
+                                                    is_meta=meta)
+        self.e_score_correction_bias = PlacementParameter(
+            (384,), "meta" if meta else device, "torch.float32", meta)
+        self._hf_hook = type("AlignDevicesHook", (), {
+            "execution_device": FakeDevice("cuda", 0)})()
+        self.classifier._hf_hook = None
+    def parameters(self, recurse=False): return iter(())
+
+
+class PlacementModel:
+    def __init__(self, device="cuda", meta_layer=None):
+        self.routers = [PlacementRouter(device, index == meta_layer) for index in range(14)]
+        self.hf_device_map = {f"model.layers.{i}.mlp.router": 0 for i in range(14)}
+    def named_modules(self):
+        yield "", self
+        for i, router in enumerate(self.routers):
+            yield f"model.layers.{i}.mlp.router", router
+
+
 def fake_linear(hidden, weight, bias=None):
     if bias is not None:
         raise AssertionError("synthetic pinned router must omit linear bias")
@@ -172,10 +220,20 @@ def write_valid_worker(run_dir, run_index, precision="bf16", backend="default"):
                        "shard_manifest_sha256": identities["checkpoint-shards-v2.json"],
                        "start_utc": "2026-01-01T00:00:00Z", "end_utc": "2026-01-01T00:01:00Z"})
     provenance["sdpa_backend_controls"] = {"effective_kernel_identity": "synthetic"}
+    placement_policy = {
+        "placement_policy": "longcat-router-cuda-pinned-v1",
+        "explicit_device_map_sha256": "0" * 64,
+        "router_cuda_bytes": 14 * (384 * 3072 * 2 + 384 * 4),
+        "reserved_gpu_headroom_bytes": 128 * 1024 * 1024,
+    }
+    provenance["placement_policy"] = placement_policy
     metadata = {"schema_version": 2, "kind": "longcat-next-core-reference",
                 "precision": precision, "checkpoint": {"revision": v2.PINNED_MODEL_REVISION},
                 "source_weight_validation": {"all_finite": True},
                 "whole_candidate_validation": {"all_finite": True}, "provenance": provenance,
+                "placement_policy": placement_policy,
+                "placement_audit": {"all_router_parameters_materialized": True,
+                                    "router_count": 14},
                 "arrays": {name: v2.array_metadata_for(value) for name, value in arrays.items()}}
     (run_dir / "metadata.json").write_text(json.dumps(metadata), encoding="ascii")
     (run_dir / "worker-reproducibility.json").write_text(
@@ -226,6 +284,72 @@ class CoreV2Tests(unittest.TestCase):
         with self.assertRaises(v2.V2Error):
                 v2.compare_independent_runs([{"x": np.zeros(1, np.float32)},
                                          {"x": np.array([np.nan], np.float32)}])
+
+    def test_meta_tensor_report_never_reads_values(self):
+        tensor = MetaTensor((384, 3072))
+        report = v2.torch_finite_report(FakeTorch, "weight", tensor)
+        self.assertEqual(report["failure_kind"], "unmaterialized_meta_tensor")
+        self.assertFalse(report["materialized"])
+        self.assertEqual(report["total_elements"], 384 * 3072)
+
+    def test_meta_live_weight_is_pre_linear_placement_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            model, router = synthetic_router_model()
+            router.classifier.weight = MetaTensor((384, 3072))
+            checker = v2.TorchFiniteChecker(temporary, "case", "default", 0, FakeTorch)
+            v2.install_trunk_finite_hooks(model, checker, serialize_blocks=())
+            hidden = FakeTensor([[1.0, 2.0, 3.0]])
+            with self.assertRaises(v2.V2Error), v2.instrument_router_linear(FakeTorch):
+                router.pre[0](router, (hidden,))
+                FakeTorch.nn.functional.linear(hidden.type(FakeTorch.float32),
+                                               router.classifier.weight)
+            failure = json.loads((Path(temporary) / "first-nonfinite.json").read_text())
+            self.assertEqual(failure["role"], "classifier_weight_runtime")
+            self.assertEqual(failure["failure_kind"], "unmaterialized_meta_tensor")
+            self.assertEqual(failure["failure_phase"], "before_original_linear")
+            self.assertNotIn("original router output", str(failure))
+
+    def test_router_prefix_map_and_reserved_footprint_policy(self):
+        model = PlacementModel()
+        prefixes = core.resolve_router_prefixes(model.named_modules())
+        self.assertEqual(prefixes, [f"model.layers.{i}.mlp.router" for i in range(14)])
+        ordinary = {"": "cpu", prefixes[4] + ".classifier": "disk"}
+        explicit = core.pin_router_device_map(ordinary, prefixes)
+        self.assertTrue(all(explicit[prefix] == 0 for prefix in prefixes))
+        self.assertNotIn(prefixes[4] + ".classifier", explicit)
+        self.assertEqual(core.ROUTER_GPU_HEADROOM_BYTES, 128 * 1024 * 1024)
+        self.assertEqual(core.reserve_router_gpu_headroom(1024 * 1024 * 1024),
+                         896 * 1024 * 1024)
+        self.assertEqual(core._router_cuda_footprint(model, prefixes),
+                         14 * (384 * 3072 * 2 + 384 * 4))
+
+    def test_placement_audit_success_and_meta_failure_are_written(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            policy = {"placement_policy": core.ROUTER_PLACEMENT_POLICY}
+            success = core.audit_router_placement(
+                PlacementModel(), "auto", root / "success.json", policy, "torch.bfloat16")
+            self.assertTrue(success["all_router_parameters_materialized"])
+            self.assertEqual(success["router_count"], 14)
+            with self.assertRaises(core.CoreFixtureError):
+                core.audit_router_placement(
+                    PlacementModel(meta_layer=4), "auto", root / "failure.json",
+                    policy, "torch.bfloat16")
+            failure = json.loads((root / "failure.json").read_text())
+            self.assertFalse(failure["all_router_parameters_materialized"])
+            layer = failure["routers"][4]
+            self.assertTrue(layer["classifier_weight_is_meta"])
+            self.assertTrue(layer["hazard_parent_executes_with_meta_child_direct_weight_access"])
+
+    def test_cpu_router_placement_remains_cpu_only(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            report = core.audit_router_placement(
+                PlacementModel(device="cpu"), "cpu", Path(temporary) / "cpu.json",
+                {"placement_policy": "longcat-router-cpu-whole-model-v1"},
+                "torch.bfloat16")
+            self.assertTrue(report["all_router_parameters_materialized"])
+            self.assertTrue(all(row["classifier_weight_device"] == "cpu"
+                                for row in report["routers"]))
 
     def test_recursive_first_nonfinite_report_identifies_exact_boundary(self):
         with tempfile.TemporaryDirectory() as temporary:

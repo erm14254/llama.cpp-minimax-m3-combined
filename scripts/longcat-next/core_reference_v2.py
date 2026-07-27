@@ -44,7 +44,7 @@ PROVENANCE_REQUIRED_FIELDS = frozenset({
     "deterministic_algorithms", "process_id", "run_index", "start_utc", "end_utc",
     "effective_precision", "effective_attention_backend", "shard_manifest_sha256",
     "autocast_during_direct_forward", "local_monkey_patches",
-    "sdpa_backend_controls",
+    "sdpa_backend_controls", "placement_policy",
 })
 
 
@@ -155,7 +155,8 @@ def instrument_router_linear(torch):
             checker.check(input_tensor, **common, operation="router_linear",
                           role="router_linear_input")
             checker.check(weight, **common, operation="router_linear",
-                          role="classifier_weight_runtime")
+                          role="classifier_weight_runtime",
+                          failure_phase="before_original_linear")
             correction_bias = active["module"].e_score_correction_bias.detach().clone()
             checker.check(correction_bias, **common, operation="router_runtime_parameter",
                           role="e_score_correction_bias_runtime")
@@ -213,6 +214,16 @@ def torch_finite_report(torch, name, tensor):
               "total_elements": total, "finite_count": total, "nan_count": 0,
               "positive_infinity_count": 0, "negative_infinity_count": 0,
               "first_affected_indices": []}
+    device_type = getattr(tensor.device, "type", str(tensor.device))
+    if device_type == "meta" or bool(getattr(tensor, "is_meta", False)):
+        report.update({
+            "finite_count": 0, "materialized": False,
+            "failure_kind": "unmaterialized_meta_tensor",
+            "finite_minimum": None, "finite_maximum": None,
+            "finite_absolute_maximum": None,
+        })
+        return report
+    report["materialized"] = True
     if not tensor.is_floating_point():
         if total:
             report["finite_minimum"] = float(tensor.min().item())
@@ -378,6 +389,7 @@ class TorchFiniteChecker:
             "first_affected_indices": [], "active_attention_backend": self.backend,
             "run_index": self.run_index, "process_id": os.getpid(),
             "prompt": context.get("prompt"), "generation_step": context.get("generation_step"),
+            "failure_phase": context.get("failure_phase"),
         }
         report.update({key: value for key, value in counts.items() if key not in ("name", "shape", "dtype")})
         self.checks.append(report)
@@ -1021,8 +1033,17 @@ def validate_worker_artifacts(run_dir, precision, backend, run_index, contract,
             "worker source weights were not validated finite")
     require(metadata.get("whole_candidate_validation", {}).get("all_finite") is True,
             "worker arrays were not validated finite")
+    placement = metadata.get("placement_policy", {})
+    audit = metadata.get("placement_audit", {})
+    require(isinstance(placement.get("placement_policy"), str),
+            "worker placement policy is missing")
+    require(audit.get("all_router_parameters_materialized") is True and
+            audit.get("router_count") == 14,
+            "worker router placement audit is not accepted")
     provenance = metadata.get("provenance", {})
     require(PROVENANCE_REQUIRED_FIELDS <= set(provenance), "worker provenance is incomplete")
+    require(provenance.get("placement_policy") == placement,
+            "worker placement provenance differs from metadata")
     require(provenance.get("run_index") == run_index and isinstance(provenance.get("process_id"), int),
             "worker process/run provenance differs")
     require(provenance.get("requested_attention_backend") == backend,

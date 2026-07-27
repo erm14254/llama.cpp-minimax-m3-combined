@@ -507,6 +507,166 @@ def loading_kwargs(precision, placement, offload_dir=None, cpu_memory=None, gpu_
     return kwargs
 
 
+ROUTER_GPU_HEADROOM_BYTES = 128 * 1024 * 1024
+ROUTER_PLACEMENT_POLICY = "longcat-router-cuda-pinned-v1"
+
+
+def reserve_router_gpu_headroom(requested_gpu_bytes):
+    require(requested_gpu_bytes > ROUTER_GPU_HEADROOM_BYTES,
+            "GPU memory limit is smaller than reserved LongCat router headroom")
+    return requested_gpu_bytes - ROUTER_GPU_HEADROOM_BYTES
+
+
+def resolve_router_prefixes(named_modules):
+    import re
+    found = []
+    for name, _ in named_modules:
+        match = re.fullmatch(r"model\.layers\.(\d+)\.mlp\.router", name)
+        if match:
+            found.append((int(match.group(1)), name))
+    found.sort()
+    require([index for index, _ in found] == list(range(14)),
+            f"explicit placement must resolve exactly routers 0..13, got {found}")
+    return [name for _, name in found]
+
+
+def pin_router_device_map(device_map, router_prefixes):
+    result = dict(device_map)
+    for prefix in router_prefixes:
+        for key in list(result):
+            if key.startswith(prefix + "."):
+                del result[key]
+        result[prefix] = 0
+    for prefix in router_prefixes:
+        require(result.get(prefix) == 0, f"router prefix is not pinned to GPU 0: {prefix}")
+        require(not any(key.startswith(prefix + ".") for key in result),
+                f"router prefix retains a conflicting descendant assignment: {prefix}")
+    return result
+
+
+def _router_cuda_footprint(empty_model, router_prefixes):
+    modules = dict(empty_model.named_modules())
+    total = 0
+    for prefix in router_prefixes:
+        router = modules[prefix]
+        weight = router.classifier.weight
+        bias = router.e_score_correction_bias
+        require(tuple(weight.shape) == (384, 3072),
+                f"{prefix}.classifier.weight has unexpected shape {tuple(weight.shape)}")
+        require(tuple(bias.shape) == (384,),
+                f"{prefix}.e_score_correction_bias has unexpected shape {tuple(bias.shape)}")
+        # The checkpoint matrix is BF16/F16 (two bytes); correction bias is FP32.
+        total += int(weight.numel()) * 2 + int(bias.numel()) * 4
+    return total
+
+
+def build_explicit_auto_device_map(model_dir, dtype, cpu_memory=None, gpu_memory=None):
+    """Infer the ordinary map with reserved headroom, then pin all routers to CUDA 0."""
+    import torch
+    from accelerate import infer_auto_device_map, init_empty_weights
+    from accelerate.utils import convert_file_size_to_int
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    config = AutoConfig.from_pretrained(
+        str(model_dir), local_files_only=True, trust_remote_code=True)
+    config.torch_dtype = dtype
+    with init_empty_weights():
+        empty_model = AutoModelForCausalLM.from_config(
+            config, trust_remote_code=True)
+    router_prefixes = resolve_router_prefixes(empty_model.named_modules())
+    router_cuda_bytes = _router_cuda_footprint(empty_model, router_prefixes)
+    requested_gpu = (convert_file_size_to_int(gpu_memory) if gpu_memory else
+                     int(torch.cuda.mem_get_info(0)[0]))
+    max_memory = {0: reserve_router_gpu_headroom(requested_gpu)}
+    if cpu_memory:
+        max_memory["cpu"] = convert_file_size_to_int(cpu_memory)
+    ordinary = infer_auto_device_map(empty_model, max_memory=max_memory, dtype=dtype)
+    explicit = pin_router_device_map(ordinary, router_prefixes)
+    canonical = json.dumps(explicit, sort_keys=True, separators=(",", ":"), default=str)
+    policy = {
+        "placement_policy": ROUTER_PLACEMENT_POLICY,
+        "router_prefixes": router_prefixes,
+        "router_cuda_bytes": router_cuda_bytes,
+        "reserved_gpu_headroom_bytes": ROUTER_GPU_HEADROOM_BYTES,
+        "automatic_map_gpu_budget_bytes": max_memory[0],
+        "explicit_device_map_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        "explicit_device_map": explicit,
+    }
+    del empty_model
+    return explicit, policy
+
+
+def _audit_router_placement(model, placement, output_path, policy=None, expected_weight_dtype=None):
+    modules = dict(model.named_modules())
+    prefixes = resolve_router_prefixes(modules.items())
+    rows = []
+    failures = []
+    device_map = getattr(model, "hf_device_map", {}) or {}
+    expected_device = "cuda" if placement in ("auto", "cuda") else "cpu"
+    for logical, prefix in enumerate(prefixes):
+        router = modules[prefix]
+        weight = router.classifier.weight
+        correction = router.e_score_correction_bias
+        weight_device = getattr(weight.device, "type", str(weight.device))
+        correction_device = getattr(correction.device, "type", str(correction.device))
+        governing = {key: value for key, value in device_map.items()
+                     if prefix == key or prefix.startswith(key + ".") or key.startswith(prefix + ".")}
+        parent_hook = getattr(router, "_hf_hook", None)
+        child_hook = getattr(router.classifier, "_hf_hook", None)
+        hazard = (weight_device == "meta" and
+                  (expected_device == "cuda" or
+                   getattr(parent_hook, "execution_device", None) is not None))
+        row = {
+            "logical_layer": logical, "physical_block": 2 * logical,
+            "router_module": prefix,
+            "router_parameter_devices": sorted({
+                str(parameter.device) for parameter in router.parameters(recurse=False)}),
+            "classifier_weight_device": str(weight.device),
+            "classifier_weight_is_meta": bool(getattr(weight, "is_meta", False)),
+            "classifier_weight_shape": list(weight.shape), "classifier_weight_dtype": str(weight.dtype),
+            "correction_bias_device": str(correction.device),
+            "correction_bias_is_meta": bool(getattr(correction, "is_meta", False)),
+            "governing_device_map_entries": governing,
+            "router_hf_hook": None if parent_hook is None else type(parent_hook).__qualname__,
+            "router_execution_device": str(getattr(parent_hook, "execution_device", None)),
+            "classifier_hf_hook": None if child_hook is None else type(child_hook).__qualname__,
+            "classifier_execution_device": str(getattr(child_hook, "execution_device", None)),
+            "hazard_parent_executes_with_meta_child_direct_weight_access": hazard,
+        }
+        rows.append(row)
+        if tuple(weight.shape) != (384, 3072) or tuple(correction.shape) != (384,):
+            failures.append(f"{prefix}: unexpected router parameter shape")
+        if expected_weight_dtype is not None and str(weight.dtype) != str(expected_weight_dtype):
+            failures.append(f"{prefix}: expected checkpoint dtype {expected_weight_dtype}")
+        if bool(getattr(weight, "is_meta", False)) or bool(getattr(correction, "is_meta", False)):
+            failures.append(f"{prefix}: router parameter remains meta")
+        if weight_device != expected_device or correction_device != expected_device:
+            failures.append(f"{prefix}: expected {expected_device} placement")
+    report = {"schema_version": 2, "placement": placement,
+              "placement_policy": None if policy is None else policy.get("placement_policy"),
+              "all_router_parameters_materialized": not failures,
+              "router_count": len(rows), "routers": rows, "failures": failures}
+    v2.atomic_json(output_path, report)
+    require(not failures, "invalid LongCat router placement: " + "; ".join(failures))
+    return report
+
+
+def audit_router_placement(model, placement, output_path, policy=None, expected_weight_dtype=None):
+    output_path = Path(output_path)
+    try:
+        return _audit_router_placement(
+            model, placement, output_path, policy, expected_weight_dtype)
+    except Exception as error:
+        if not output_path.exists():
+            v2.atomic_json(output_path, {
+                "schema_version": 2, "placement": placement,
+                "placement_policy": None if policy is None else policy.get("placement_policy"),
+                "all_router_parameters_materialized": False, "router_count": None,
+                "routers": [], "failures": [f"{type(error).__name__}: {error}"],
+            })
+        raise
+
+
 def tokenizer_loading_kwargs(fix_mistral_regex=False):
     require(fix_mistral_regex is False,
             "LongCat fixture generation forbids fix_mistral_regex=True; preserve tokenizer.json")
@@ -1055,6 +1215,33 @@ def run_core_worker_generation(args, weight_free_fixture, diagnostic=False):
     torch.use_deterministic_algorithms(True, warn_only=False)
     load = loading_kwargs(args.precision, args.placement, args.offload_dir,
                           args.cpu_memory, args.gpu_memory)
+    placement_policy = {
+        "placement_policy": (ROUTER_PLACEMENT_POLICY if args.placement == "auto" else
+                             f"longcat-router-{args.placement}-whole-model-v1"),
+        "router_cuda_bytes": 0,
+        "reserved_gpu_headroom_bytes": 0,
+        "explicit_device_map_sha256": None,
+    }
+    if args.placement == "auto":
+        try:
+            explicit_map, placement_policy = build_explicit_auto_device_map(
+                args.model_dir, load["dtype"], args.cpu_memory, args.gpu_memory)
+        except Exception as error:
+            v2.atomic_json(Path(args.output_dir) / "placement-preload-audit.json", {
+                "schema_version": 2, "phase": "before_checkpoint_load",
+                "placement": args.placement, "valid": False,
+                "failures": [f"{type(error).__name__}: {error}"],
+            })
+            raise CoreFixtureError(f"explicit LongCat router placement failed: {error}") from error
+        load["device_map"] = explicit_map
+        load.pop("max_memory", None)
+    v2.atomic_json(Path(args.output_dir) / "placement-policy.json", placement_policy)
+    v2.atomic_json(Path(args.output_dir) / "placement-preload-audit.json", {
+        "schema_version": 2, "phase": "before_checkpoint_load",
+        "placement": args.placement, **placement_policy,
+        "router_prefix_count": len(placement_policy.get("router_prefixes", []))
+        if args.placement == "auto" else 14,
+    })
     if args.attention_backend != "default":
         load["attn_implementation"] = (
             "eager" if args.attention_backend == "eager" else "sdpa")
@@ -1065,6 +1252,9 @@ def run_core_worker_generation(args, weight_free_fixture, diagnostic=False):
     except (OSError, RuntimeError, ValueError) as exc:
         raise CoreFixtureError(f"local official model loading failed without network fallback: {exc}") from exc
     model.eval()
+    placement_audit = audit_router_placement(
+        model, args.placement, Path(args.output_dir) / "placement-audit.json",
+        placement_policy, load["dtype"])
     attention_provenance = v2.configure_attention_backend(model, args.attention_backend)
     dtype_provenance = effective_dtype_provenance(model, args.precision, torch)
     tokenizer_metadata = tokenizer_provenance(tokenizer, args.model_dir)
@@ -1171,7 +1361,9 @@ def run_core_worker_generation(args, weight_free_fixture, diagnostic=False):
          "shard_manifest_sha256": v2.sha256_file(args.shard_manifest),
          "flash_attention_wheel_identity": dependency_report["flash_attention"],
          "autocast_during_direct_forward": False,
-         "local_monkey_patches": ["scoped SDPA finite instrumentation"],
+         "local_monkey_patches": ["scoped SDPA finite instrumentation",
+                                  "scoped router F.linear finite instrumentation"],
+         "placement_policy": placement_policy,
          "start_utc": worker_started_utc, "end_utc": None})
     metadata = {"schema_version": CORE_SCHEMA_VERSION,
                 "kind": ("longcat-next-core-diagnostic" if diagnostic else
@@ -1184,6 +1376,8 @@ def run_core_worker_generation(args, weight_free_fixture, diagnostic=False):
                 "software_versions": {"transformers": EXPECTED_TRANSFORMERS,
                                       "torch": torch.__version__},
                 "dependency_preflight": dependency_report,
+                "placement_policy": placement_policy,
+                "placement_audit": placement_audit,
                 "source_weight_validation": source_validation,
                 "attention_backend": attention_provenance,
                 "sdpa_observations": sdpa_observations,
