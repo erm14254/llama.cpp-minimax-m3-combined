@@ -147,15 +147,18 @@ class PlacementParameter:
         self.shape = shape; self.device = FakeDevice(device, 0 if device == "cuda" else None)
         self.dtype = dtype; self.is_meta = is_meta
     def numel(self): return int(np.prod(self.shape))
+    def element_size(self):
+        return {"torch.bfloat16": 2, "torch.float16": 2, "torch.float32": 4}[str(self.dtype)]
 
 
 class PlacementRouter:
-    def __init__(self, device="cuda", meta=False):
+    def __init__(self, device="cuda", meta=False, weight_dtype="torch.bfloat16",
+                 correction_dtype="torch.bfloat16"):
         self.classifier = type("Classifier", (), {})()
         self.classifier.weight = PlacementParameter((384, 3072), "meta" if meta else device,
-                                                    is_meta=meta)
+                                                    weight_dtype, is_meta=meta)
         self.e_score_correction_bias = PlacementParameter(
-            (384,), "meta" if meta else device, "torch.float32", meta)
+            (384,), "meta" if meta else device, correction_dtype, meta)
         self._hf_hook = type("AlignDevicesHook", (), {
             "execution_device": FakeDevice("cuda", 0)})()
         self.classifier._hf_hook = None
@@ -163,13 +166,26 @@ class PlacementRouter:
 
 
 class PlacementModel:
-    def __init__(self, device="cuda", meta_layer=None):
-        self.routers = [PlacementRouter(device, index == meta_layer) for index in range(14)]
+    def __init__(self, device="cuda", meta_layer=None, weight_dtype="torch.bfloat16",
+                 correction_dtype="torch.bfloat16"):
+        self.routers = [PlacementRouter(device, index == meta_layer, weight_dtype,
+                                        correction_dtype) for index in range(14)]
         self.hf_device_map = {f"model.layers.{i}.mlp.router": 0 for i in range(14)}
     def named_modules(self):
         yield "", self
         for i, router in enumerate(self.routers):
             yield f"model.layers.{i}.mlp.router", router
+
+
+def synthetic_placement_policy(dtype="torch.bfloat16"):
+    return {"placement_policy": core.ROUTER_PLACEMENT_POLICY,
+            "router_parameter_dtype": dtype,
+            "router_parameter_element_size_bytes": 2,
+            "router_classifier_bytes": 33_030_144,
+            "router_correction_bias_bytes": 10_752,
+            "router_cuda_bytes": 33_040_896,
+            "reserved_gpu_headroom_bytes": 128 * 1024 * 1024,
+            "explicit_device_map_sha256": "0" * 64}
 
 
 def fake_linear(hidden, weight, bias=None):
@@ -223,7 +239,11 @@ def write_valid_worker(run_dir, run_index, precision="bf16", backend="default"):
     placement_policy = {
         "placement_policy": "longcat-router-cuda-pinned-v1",
         "explicit_device_map_sha256": "0" * 64,
-        "router_cuda_bytes": 14 * (384 * 3072 * 2 + 384 * 4),
+        "router_parameter_dtype": ("torch.bfloat16" if precision == "bf16" else "torch.float16"),
+        "router_parameter_element_size_bytes": 2,
+        "router_classifier_bytes": 14 * 384 * 3072 * 2,
+        "router_correction_bias_bytes": 14 * 384 * 2,
+        "router_cuda_bytes": 14 * (384 * 3072 * 2 + 384 * 2),
         "reserved_gpu_headroom_bytes": 128 * 1024 * 1024,
     }
     provenance["placement_policy"] = placement_policy
@@ -233,7 +253,12 @@ def write_valid_worker(run_dir, run_index, precision="bf16", backend="default"):
                 "whole_candidate_validation": {"all_finite": True}, "provenance": provenance,
                 "placement_policy": placement_policy,
                 "placement_audit": {"all_router_parameters_materialized": True,
-                                    "router_count": 14},
+                                    "router_count": 14,
+                                    "classifier_dtype_verified": True,
+                                    "correction_bias_dtype_verified": True,
+                                    "actual_classifier_bytes": placement_policy["router_classifier_bytes"],
+                                    "actual_correction_bias_bytes": placement_policy["router_correction_bias_bytes"],
+                                    "actual_router_cuda_bytes": placement_policy["router_cuda_bytes"]},
                 "arrays": {name: v2.array_metadata_for(value) for name, value in arrays.items()}}
     (run_dir / "metadata.json").write_text(json.dumps(metadata), encoding="ascii")
     (run_dir / "worker-reproducibility.json").write_text(
@@ -299,10 +324,12 @@ class CoreV2Tests(unittest.TestCase):
             checker = v2.TorchFiniteChecker(temporary, "case", "default", 0, FakeTorch)
             v2.install_trunk_finite_hooks(model, checker, serialize_blocks=())
             hidden = FakeTensor([[1.0, 2.0, 3.0]])
-            with self.assertRaises(v2.V2Error), v2.instrument_router_linear(FakeTorch):
+            with self.assertRaises(v2.V2Error) as raised, v2.instrument_router_linear(FakeTorch):
                 router.pre[0](router, (hidden,))
                 FakeTorch.nn.functional.linear(hidden.type(FakeTorch.float32),
                                                router.classifier.weight)
+            self.assertIn("first invalid tensor: unmaterialized meta tensor", str(raised.exception))
+            self.assertNotIn("non-finite", str(raised.exception))
             failure = json.loads((Path(temporary) / "first-nonfinite.json").read_text())
             self.assertEqual(failure["role"], "classifier_weight_runtime")
             self.assertEqual(failure["failure_kind"], "unmaterialized_meta_tensor")
@@ -320,17 +347,27 @@ class CoreV2Tests(unittest.TestCase):
         self.assertEqual(core.ROUTER_GPU_HEADROOM_BYTES, 128 * 1024 * 1024)
         self.assertEqual(core.reserve_router_gpu_headroom(1024 * 1024 * 1024),
                          896 * 1024 * 1024)
-        self.assertEqual(core._router_cuda_footprint(model, prefixes),
-                         14 * (384 * 3072 * 2 + 384 * 4))
+        for dtype in ("torch.bfloat16", "torch.float16"):
+            footprint = core.router_cuda_footprint(model, prefixes, dtype)
+            self.assertEqual(footprint["router_classifier_bytes"], 33_030_144)
+            self.assertEqual(footprint["router_correction_bias_bytes"], 10_752)
+            self.assertEqual(footprint["router_cuda_bytes"], 33_040_896)
+            self.assertEqual(footprint["router_parameter_element_size_bytes"], 2)
 
     def test_placement_audit_success_and_meta_failure_are_written(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            policy = {"placement_policy": core.ROUTER_PLACEMENT_POLICY}
+            policy = synthetic_placement_policy()
             success = core.audit_router_placement(
                 PlacementModel(), "auto", root / "success.json", policy, "torch.bfloat16")
             self.assertTrue(success["all_router_parameters_materialized"])
             self.assertEqual(success["router_count"], 14)
+            self.assertEqual(success["actual_classifier_bytes"], 33_030_144)
+            self.assertEqual(success["actual_correction_bias_bytes"], 10_752)
+            self.assertEqual(success["actual_router_cuda_bytes"], 33_040_896)
+            self.assertTrue(success["classifier_dtype_verified"])
+            self.assertTrue(success["correction_bias_dtype_verified"])
+            self.assertEqual(success["routers"][0]["correction_bias_dtype"], "torch.bfloat16")
             with self.assertRaises(core.CoreFixtureError):
                 core.audit_router_placement(
                     PlacementModel(meta_layer=4), "auto", root / "failure.json",
@@ -341,11 +378,42 @@ class CoreV2Tests(unittest.TestCase):
             self.assertTrue(layer["classifier_weight_is_meta"])
             self.assertTrue(layer["hazard_parent_executes_with_meta_child_direct_weight_access"])
 
+    def test_placement_audit_rejects_either_router_dtype_mismatch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            policy = synthetic_placement_policy()
+            for name, model in (
+                    ("correction", PlacementModel(correction_dtype="torch.float32")),
+                    ("classifier", PlacementModel(weight_dtype="torch.float32"))):
+                with self.subTest(name=name), self.assertRaises(core.CoreFixtureError):
+                    core.audit_router_placement(
+                        model, "auto", root / f"{name}.json", policy, "torch.bfloat16")
+                report = json.loads((root / f"{name}.json").read_text())
+                self.assertFalse(report["all_router_parameters_materialized"])
+                self.assertTrue(any("expected checkpoint dtype" in failure
+                                    for failure in report["failures"]))
+
+    def test_checkpoint_dispatch_failure_writes_placement_audit(self):
+        class BrokenLoader:
+            @staticmethod
+            def from_pretrained(*args, **kwargs):
+                raise RuntimeError("synthetic dispatch failure")
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(core.CoreFixtureError):
+                core.load_model_with_placement_audit(
+                    BrokenLoader, "model", {}, temporary, "auto",
+                    synthetic_placement_policy())
+            report = json.loads((Path(temporary) / "placement-audit.json").read_text())
+            self.assertEqual(report["phase"], "checkpoint_load")
+            self.assertFalse(report["all_router_parameters_materialized"])
+            self.assertEqual(report["exception_type"], "RuntimeError")
+
     def test_cpu_router_placement_remains_cpu_only(self):
         with tempfile.TemporaryDirectory() as temporary:
             report = core.audit_router_placement(
                 PlacementModel(device="cpu"), "cpu", Path(temporary) / "cpu.json",
-                {"placement_policy": "longcat-router-cpu-whole-model-v1"},
+                {**synthetic_placement_policy(),
+                 "placement_policy": "longcat-router-cpu-whole-model-v1"},
                 "torch.bfloat16")
             self.assertTrue(report["all_router_parameters_materialized"])
             self.assertTrue(all(row["classifier_weight_device"] == "cpu"
@@ -775,6 +843,23 @@ class CoreV2Tests(unittest.TestCase):
                 (run_dir / "metadata.json").write_text("{}", encoding="ascii")
                 return subprocess.CompletedProcess(command, 0)
             with self.assertRaises(v2.V2Error):
+                v2.orchestrate_workers(final, [["x", "--output-dir", "{run_dir}"]] * 2,
+                                       "bf16", "default", CONTRACT_PATH,
+                                       IMPLEMENTATIONS, runner=runner)
+            self.assertFalse(final.exists())
+
+    def test_worker_router_policy_audit_byte_mismatch_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            final = Path(temporary) / "candidate"
+            def runner(command, **kwargs):
+                run_dir = Path(command[command.index("--output-dir") + 1])
+                write_valid_worker(run_dir, int(run_dir.name[-2:]))
+                metadata_path = run_dir / "metadata.json"
+                metadata = json.loads(metadata_path.read_text())
+                metadata["placement_audit"]["actual_correction_bias_bytes"] += 2
+                metadata_path.write_text(json.dumps(metadata), encoding="ascii")
+                return subprocess.CompletedProcess(command, 0)
+            with self.assertRaisesRegex(v2.V2Error, "audit bytes"):
                 v2.orchestrate_workers(final, [["x", "--output-dir", "{run_dir}"]] * 2,
                                        "bf16", "default", CONTRACT_PATH,
                                        IMPLEMENTATIONS, runner=runner)

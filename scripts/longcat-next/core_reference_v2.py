@@ -395,6 +395,12 @@ class TorchFiniteChecker:
         self.checks.append(report)
         if abort and report["finite_count"] != total:
             self._persist_failure(report)
+            if report.get("failure_kind") == "unmaterialized_meta_tensor":
+                raise V2Error(
+                    "first invalid tensor: unmaterialized meta tensor: "
+                    f"module={report['module_name']} "
+                    f"physical_block={report['physical_block']} role={report['role']} "
+                    f"failure_phase={report['failure_phase']}")
             raise V2Error(
                 f"first non-finite tensor: {report['module_name']} "
                 f"physical_block={report['physical_block']} role={report['role']}")
@@ -405,6 +411,11 @@ class TorchFiniteChecker:
 
     def fail_report(self, report, message=None):
         self._persist_failure(report)
+        if message is None and report.get("failure_kind") == "unmaterialized_meta_tensor":
+            message = (
+                "first invalid tensor: unmaterialized meta tensor: "
+                f"module={report['module_name']} physical_block={report['physical_block']} "
+                f"role={report['role']} failure_phase={report.get('failure_phase')}")
         raise V2Error(message or
                       f"first non-finite tensor: {report['module_name']} "
                       f"physical_block={report['physical_block']} role={report['role']}")
@@ -1037,9 +1048,37 @@ def validate_worker_artifacts(run_dir, precision, backend, run_index, contract,
     audit = metadata.get("placement_audit", {})
     require(isinstance(placement.get("placement_policy"), str),
             "worker placement policy is missing")
+    required_placement_fields = {
+        "router_parameter_dtype", "router_parameter_element_size_bytes",
+        "router_classifier_bytes", "router_correction_bias_bytes", "router_cuda_bytes",
+        "reserved_gpu_headroom_bytes", "explicit_device_map_sha256"}
+    require(required_placement_fields <= set(placement),
+            "worker placement policy fields are incomplete")
+    if placement["placement_policy"] == "longcat-router-cuda-pinned-v1":
+        require(placement["reserved_gpu_headroom_bytes"] >= 128 * 1024 * 1024 and
+                isinstance(placement["explicit_device_map_sha256"], str) and
+                len(placement["explicit_device_map_sha256"]) == 64,
+                "worker automatic placement identity or headroom is invalid")
+    expected_router_dtype = "torch.bfloat16" if precision == "bf16" else "torch.float16"
+    require(placement.get("router_parameter_dtype") == expected_router_dtype,
+            "worker router policy dtype differs from requested precision")
+    require(placement.get("router_parameter_element_size_bytes") == 2,
+            "worker router policy element size differs")
+    classifier_bytes = placement.get("router_classifier_bytes")
+    correction_bytes = placement.get("router_correction_bias_bytes")
+    require(isinstance(classifier_bytes, int) and isinstance(correction_bytes, int) and
+            classifier_bytes + correction_bytes == placement.get("router_cuda_bytes"),
+            "worker router policy byte components are invalid")
     require(audit.get("all_router_parameters_materialized") is True and
             audit.get("router_count") == 14,
             "worker router placement audit is not accepted")
+    require(audit.get("classifier_dtype_verified") is True and
+            audit.get("correction_bias_dtype_verified") is True,
+            "worker router dtype audit is not accepted")
+    require(audit.get("actual_classifier_bytes") == classifier_bytes and
+            audit.get("actual_correction_bias_bytes") == correction_bytes and
+            audit.get("actual_router_cuda_bytes") == placement.get("router_cuda_bytes"),
+            "worker router audit bytes differ from placement policy")
     provenance = metadata.get("provenance", {})
     require(PROVENANCE_REQUIRED_FIELDS <= set(provenance), "worker provenance is incomplete")
     require(provenance.get("placement_policy") == placement,
