@@ -270,6 +270,10 @@ def parse_args(argv=None):
                         help="diagnosis only: write physical blocks 00 through 27 separately")
     parser.add_argument("--serialize-block-components-through", type=int,
                         help="diagnosis only: serialize the exact block-component inventory through block 9")
+    parser.add_argument("--serialize-block-components-window", action="store_true",
+                        help="diagnosis only: serialize an even-aligned physical-block component window")
+    parser.add_argument("--serialize-block-components-window-start", type=int, default=10)
+    parser.add_argument("--serialize-block-components-window-count", type=int, default=4)
     parser.add_argument("--candidate-dir", type=Path)
     return parser.parse_args(argv)
 
@@ -292,12 +296,31 @@ def validate_block_components_request(mode, cases, through):
                 "--serialize-block-components-through currently requires the exact value 9")
 
 
+def validate_block_components_window_request(mode, cases, enabled, start, count, canonical):
+    if enabled:
+        require(mode == "core-diagnose",
+                "--serialize-block-components-window is valid only with --mode core-diagnose")
+        require(len(cases) == 1,
+                "--serialize-block-components-window requires exactly one explicit --case")
+        require(canonical is None,
+                "component-window and canonical component diagnostics are mutually exclusive")
+        require(start >= 0 and start % 2 == 0, "component-window start must be non-negative and even")
+        require(count > 0 and count % 2 == 0, "component-window count must be positive and even")
+        require(start + count <= 28, "component window exceeds physical block 27")
+
+
 def run(args):
     validate_all_physical_blocks_request(
         args.mode, getattr(args, "case", []),
         bool(getattr(args, "serialize_all_physical_blocks", False)))
     validate_block_components_request(
         args.mode, getattr(args, "case", []),
+        getattr(args, "serialize_block_components_through", None))
+    validate_block_components_window_request(
+        args.mode, getattr(args, "case", []),
+        bool(getattr(args, "serialize_block_components_window", False)),
+        getattr(args, "serialize_block_components_window_start", 10),
+        getattr(args, "serialize_block_components_window_count", 4),
         getattr(args, "serialize_block_components_through", None))
     if args.mode == "core-validate":
         require(args.candidate_dir is not None, "core-validate requires --candidate-dir")

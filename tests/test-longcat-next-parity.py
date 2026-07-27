@@ -14,6 +14,64 @@ SPEC.loader.exec_module(PARITY)
 
 
 class ParityHarnessTests(unittest.TestCase):
+    def test_component_window_inventory_validation_and_comparison(self):
+        names = PARITY.component_window_names(10, 4)
+        self.assertEqual(len(names), 44)
+        self.assertEqual(sum(name.startswith("physical_block_10__") for name in names), 15)
+        self.assertEqual(sum(name.startswith("physical_block_11__") for name in names), 7)
+        self.assertEqual(sum(name.startswith("physical_block_12__") for name in names), 15)
+        self.assertEqual(sum(name.startswith("physical_block_13__") for name in names), 7)
+        for args in ((11, 4), (10, 3), (26, 4)):
+            with self.assertRaises(ValueError): PARITY.component_window_names(*args)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); rows = []; default = {}; math = {}
+            reverse = {value: key for key, value in PARITY.COMPONENT_CPP_BASE.items()}
+            for name in names:
+                block = int(name[15:17]); suffix = name.split("__", 1)[1]
+                width = (384 if suffix in {"router_logits", "router_probabilities", "router_selection_scores"}
+                         else 12 if suffix in {"router_topk_indices", "router_topk_weights"}
+                         else 1 if suffix == "identity_weight_sum" else 3072)
+                integer = suffix == "router_topk_indices"
+                value = np.zeros((1, 2, width), np.int32 if integer else np.float32)
+                if integer: value[:] = np.arange(12)
+                default[name] = value.copy(); math[name] = value.copy()
+                raw = root / f"{reverse[suffix]}-{block}.raw"; value.tofile(raw)
+                dims = "1,12,2,1" if suffix == "router_topk_weights" else f"{width},2,1,1"
+                rows.append(f"{reverse[suffix]}-{block}\t{'i32' if integer else 'f32'}\t{dims}\t{raw.name}")
+            (root / "block-components-window-diagnostics.tsv").write_text("\n".join(rows) + "\n")
+            dp = root / "d.npz"; mp = root / "m.npz"; np.savez(dp, **default); np.savez(mp, **math)
+            with np.load(dp) as d, np.load(mp) as m:
+                report = PARITY.compare_component_window(d, m, root, [1, 1],
+                                                          {"atol": .125, "rtol": .03125})
+            self.assertEqual(report["array_count"], 44)
+            self.assertEqual(report["primary_oracle"], "python_default")
+            self.assertEqual(len(report["even_block_shortcut_analysis"]), 2)
+            self.assertEqual(set(report["odd_block_cross_substitution"]),
+                             {"block_11_vs_default", "block_11_vs_math",
+                              "block_13_vs_default", "block_13_vs_math"})
+            default[names[0]][0, 0, 0] = np.nan; np.savez(dp, **default)
+            with np.load(dp) as d, np.load(mp) as m, self.assertRaisesRegex(ValueError, "non-finite"):
+                PARITY.compare_component_window(d, m, root, [1, 1], {"atol": .125, "rtol": .03125})
+
+    def test_odd_cross_substitution_branch_attribution(self):
+        def arrays(cpp_trunk, py_trunk, cpp_shortcut, py_shortcut):
+            cpp = {}; py = {}; p = lambda b, s: f"physical_block_{b:02d}__{s}"
+            for side, trunk, shortcut in ((cpp, cpp_trunk, cpp_shortcut), (py, py_trunk, py_shortcut)):
+                side[p(11, "post_attention_residual")] = np.array([[[trunk]]], np.float32)
+                side[p(11, "dense_output")] = np.zeros((1, 1, 1), np.float32)
+                side[p(10, "moe_shortcut")] = np.array([[[shortcut]]], np.float32)
+            py[p(11, "block_output")] = PARITY.bf16_round_to_float32(
+                PARITY.bf16_round_to_float32(py[p(11, "post_attention_residual")]) + py[p(10, "moe_shortcut")])
+            return cpp, py
+        criterion = {"atol": .001, "rtol": 0.0}
+        self.assertEqual(PARITY.odd_cross_substitution(*arrays(1, 1, 0, 1), 11, criterion)["dominant_branch"],
+                         "previous-even MoE shortcut")
+        self.assertEqual(PARITY.odd_cross_substitution(*arrays(0, 1, 1, 1), 11, criterion)["dominant_branch"],
+                         "odd attention/dense trunk")
+        self.assertEqual(PARITY.odd_cross_substitution(*arrays(0, 1, 0, 1), 11, criterion)["dominant_branch"],
+                         "mixed")
+        report = PARITY.odd_cross_substitution(*arrays(1, 1, 0, 1), 11, criterion)
+        self.assertTrue(report["alternatives"]["all_python_reconstruction"]["exact_reconstruction"])
     def _write_profile(self, root, values, legacy_indices, rounding):
         case = root / "eos_window_position_2"; case.mkdir(parents=True)
         direct = [f"{name}\tf32\t1,1,1,1\t{name}.raw" for name in sorted(PARITY.DIRECT_NAMES)]
@@ -346,6 +404,16 @@ class ParityHarnessTests(unittest.TestCase):
         for extra in (["--model", "model.gguf"], ["--capture-exe", "capture"]):
             with self.assertRaises(ValueError):
                 PARITY.validate_all_blocks_options(parser.parse_args(profile + extra))
+        window = ["--reference-dir", "r", "--precision", "bf16", "--output-dir", "existing",
+                  "--component-window-replay-only", "1", "--block-components-window-diagnostic", "1",
+                  "--block-components-window-start", "10", "--block-components-window-count", "4",
+                  "--block-components-window-default-npz", "default.npz",
+                  "--block-components-window-math-npz", "math.npz", "--case", "eos_window_position_2"]
+        PARITY.validate_all_blocks_options(parser.parse_args(window))
+        for extra in (["--model", "model.gguf"], ["--capture-exe", "capture"],
+                      ["--block-components-diagnostic", "1"]):
+            with self.assertRaises(ValueError):
+                PARITY.validate_all_blocks_options(parser.parse_args(window + extra))
 
     def test_bf16_round_to_nearest_even_specials_and_subnormals(self):
         bits = np.array([

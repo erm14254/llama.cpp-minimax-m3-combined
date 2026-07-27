@@ -357,6 +357,26 @@ class CoreV2Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, self.assertRaises(core.CoreFixtureError):
             core.write_block_components_diagnostic(invalid, temporary, 1, 9)
 
+    def test_block_component_window_inventory_and_serialization(self):
+        names = v2.block_component_window_names(10, 4)
+        self.assertEqual(len(names), 44)
+        capture = {}
+        for name in names:
+            suffix = name.split("__", 1)[1]
+            width = (384 if suffix in {"router_logits", "router_probabilities", "router_selection_scores"}
+                     else 12 if suffix in {"router_topk_indices", "router_topk_weights"}
+                     else 1 if suffix == "identity_weight_sum" else 3072)
+            capture[name] = np.zeros((1, 2, width),
+                np.int64 if suffix == "router_topk_indices" else np.float32)
+        with tempfile.TemporaryDirectory() as temporary:
+            core.write_block_components_window_diagnostic(capture, temporary, 2, 10, 4)
+            with np.load(Path(temporary) / "block-components-window.npz", allow_pickle=False) as archive:
+                self.assertEqual(set(archive.files), set(names))
+                self.assertEqual(archive["physical_block_10__router_topk_indices"].dtype.kind, "i")
+            metadata = json.loads((Path(temporary) / "block-components-window.json").read_text())
+            self.assertFalse(metadata["accepted"]); self.assertEqual(metadata["array_count"], 44)
+            self.assertTrue(all(row["finite_count"] == row["total_elements"] for row in metadata["arrays"]))
+
     def test_block_component_module_structure_and_tuple_attention_output(self):
         class ComponentLayer(Module):
             def __init__(self, valid=True):

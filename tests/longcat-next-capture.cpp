@@ -28,10 +28,15 @@ struct capture_state {
     std::set<std::string> all_blocks_seen;
     std::ofstream components_manifest;
     std::set<std::string> components_seen;
+    std::ofstream components_window_manifest;
+    std::set<std::string> components_window_seen;
     bool direct_forward = true;
     bool layer0_diagnostic = false;
     bool all_blocks_diagnostic = false;
     bool block_components_diagnostic = false;
+    bool block_components_window_diagnostic = false;
+    int block_components_window_start = 0;
+    int block_components_window_count = 0;
 };
 
 enum class capture_cache_type {
@@ -111,6 +116,23 @@ static bool wanted_block_component(const std::string & name) {
     return ordinary.count(base) || (block % 2 == 0 && moe.count(base));
 }
 
+static bool wanted_block_component_window(const std::string & name, int start, int count) {
+    const size_t dash = name.rfind('-');
+    if (dash == std::string::npos || dash + 1 >= name.size()) return false;
+    const std::string suffix = name.substr(dash + 1);
+    if ((suffix.size() > 1 && suffix[0] == '0') ||
+            !std::all_of(suffix.begin(), suffix.end(), [](unsigned char c) { return std::isdigit(c); })) return false;
+    const int block = std::stoi(suffix);
+    if (block < start || block >= start + count) return false;
+    const std::string base = name.substr(0, dash);
+    static const std::set<std::string> ordinary = {
+        "block_in", "attn_norm", "attn_out", "ffn_inp", "ffn_norm", "ffn_out", "l_out"};
+    static const std::set<std::string> moe = {
+        "ffn_moe_logits", "ffn_moe_probs", "ffn_moe_probs_biased", "ffn_moe_topk",
+        "ffn_moe_weights_scaled", "identity_weight_sum", "identity_residual", "moe_shortcut"};
+    return ordinary.count(base) || (block % 2 == 0 && moe.count(base));
+}
+
 static bool parse_binary_flag(const std::string & value, bool & result) {
     if (value != "0" && value != "1") return false;
     result = value == "1";
@@ -176,7 +198,10 @@ static bool capture_cb(ggml_tensor * tensor, bool ask, void * opaque) {
     const bool diagnostic = state.layer0_diagnostic && wanted_layer0(name);
     const bool all_blocks = state.all_blocks_diagnostic && wanted_all_blocks(name);
     const bool components = state.block_components_diagnostic && wanted_block_component(name);
-    if (!state.direct_forward || (!normal && !diagnostic && !all_blocks && !components)) return false;
+    const bool components_window = state.block_components_window_diagnostic &&
+        wanted_block_component_window(name, state.block_components_window_start,
+                                      state.block_components_window_count);
+    if (!state.direct_forward || (!normal && !diagnostic && !all_blocks && !components && !components_window)) return false;
     if (ask) return true;
     if (normal) write_capture(tensor, state.dir, state.manifest, "");
     if (diagnostic) write_capture(tensor, state.dir, state.layer0_manifest, "diag_");
@@ -185,6 +210,9 @@ static bool capture_cb(ggml_tensor * tensor, bool ask, void * opaque) {
     }
     if (components && state.components_seen.insert(name).second) {
         write_capture(tensor, state.dir, state.components_manifest, "components_");
+    }
+    if (components_window && state.components_window_seen.insert(name).second) {
+        write_capture(tensor, state.dir, state.components_window_manifest, "components_window_");
     }
     return true;
 }
@@ -315,7 +343,8 @@ static int self_test() {
     const float tied[] = { 0.0f, 2.0f, 2.0f, 1.0f };
     if (argmax_large_tie(tied, 4) != 2) return 20;
     if (sequence_for_mask(0, 0) == sequence_for_mask(1, 0) || sequence_for_mask(2, 1) != 0) return 21;
-    capture_state state { {}, {}, {}, {}, {}, {}, {}, false, false, false, false };
+    capture_state state;
+    state.direct_forward = false;
     ggml_tensor dummy = {};
     snprintf(dummy.name, sizeof(dummy.name), "inp_embd");
     if (capture_cb(&dummy, true, &state)) return 22;
@@ -391,6 +420,16 @@ static int self_test() {
     }
     if (wanted_block_component("block_in-10") || wanted_block_component("block_in-01") ||
             wanted_block_component("surprise-0") || wanted_block_component("ffn_moe_logits-1")) return 46;
+    std::set<std::string> window;
+    for (int block = 10; block < 14; ++block) {
+        for (const char * base : {"block_in", "attn_norm", "attn_out", "ffn_inp", "ffn_norm", "ffn_out", "l_out"})
+            window.insert(std::string(base) + "-" + std::to_string(block));
+        if (block % 2 == 0) for (const char * base : {"ffn_moe_logits", "ffn_moe_probs", "ffn_moe_probs_biased",
+                "ffn_moe_topk", "ffn_moe_weights_scaled", "identity_weight_sum", "identity_residual", "moe_shortcut"})
+            window.insert(std::string(base) + "-" + std::to_string(block));
+    }
+    if (window.size() != 44 || !std::all_of(window.begin(), window.end(), [](const std::string & name) {
+            return wanted_block_component_window(name, 10, 4); })) return 48;
     return 0;
 }
 
@@ -398,7 +437,8 @@ static int run_case(
         llama_model * model, const json & spec, const fs::path & root,
         uint32_t n_ctx, int32_t threads, llama_flash_attn_type flash_attn,
         capture_cache_type cache_type, bool layer0_diagnostic, bool all_blocks_diagnostic,
-        bool block_components_diagnostic) {
+        bool block_components_diagnostic, bool block_components_window_diagnostic,
+        int block_components_window_start, int block_components_window_count) {
     const auto ids = spec.at("input_ids").get<std::vector<llama_token>>();
     const auto mask = spec.at("attention_mask").get<std::vector<int32_t>>();
     const auto positions = spec.at("position_ids").get<std::vector<llama_pos>>();
@@ -407,8 +447,16 @@ static int run_case(
 
     const fs::path dir = root / spec.at("name").get<std::string>();
     fs::create_directories(dir);
-    capture_state state { dir, std::ofstream(dir / "captures.tsv", std::ios::trunc), {}, {}, {}, {}, {},
-                          true, layer0_diagnostic, all_blocks_diagnostic, block_components_diagnostic };
+    capture_state state;
+    state.dir = dir;
+    state.manifest.open(dir / "captures.tsv", std::ios::trunc);
+    state.direct_forward = true;
+    state.layer0_diagnostic = layer0_diagnostic;
+    state.all_blocks_diagnostic = all_blocks_diagnostic;
+    state.block_components_diagnostic = block_components_diagnostic;
+    state.block_components_window_diagnostic = block_components_window_diagnostic;
+    state.block_components_window_start = block_components_window_start;
+    state.block_components_window_count = block_components_window_count;
     if (layer0_diagnostic) {
         state.layer0_manifest.open(dir / "layer0-diagnostics.tsv", std::ios::trunc);
     }
@@ -417,6 +465,9 @@ static int run_case(
     }
     if (block_components_diagnostic) {
         state.components_manifest.open(dir / "block-components-diagnostics.tsv", std::ios::trunc);
+    }
+    if (block_components_window_diagnostic) {
+        state.components_window_manifest.open(dir / "block-components-window-diagnostics.tsv", std::ios::trunc);
     }
     auto cp = capture_context_params(n_ctx, ids.size(), threads, flash_attn, cache_type, &state);
     llama_context * ctx = llama_init_from_model(model, cp);
@@ -443,6 +494,12 @@ static int run_case(
     if (block_components_diagnostic && state.components_seen.size() != 110) {
         llama_free(ctx);
         return 15;
+    }
+    const size_t expected_window = (size_t) block_components_window_count * 7 +
+        (size_t) (block_components_window_count / 2) * 8;
+    if (block_components_window_diagnostic && state.components_window_seen.size() != expected_window) {
+        llama_free(ctx);
+        return 16;
     }
 
     const int32_t n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(model));
@@ -504,6 +561,9 @@ int main(int argc, char ** argv) {
     bool layer0_diagnostic = false;
     bool all_blocks_diagnostic = false;
     bool block_components_diagnostic = false;
+    bool block_components_window_diagnostic = false;
+    int block_components_window_start = 10;
+    int block_components_window_count = 4;
     bool longcat_bf16_boundary_rounding = false;
     bool longcat_bf16_hidden_surface_rounding = false;
     for (int i = 1; i + 1 < argc; i += 2) {
@@ -527,6 +587,12 @@ int main(int argc, char ** argv) {
             if (!parse_binary_flag(argv[i + 1], all_blocks_diagnostic)) return 2;
         } else if (key == "--block-components-diagnostic") {
             if (!parse_binary_flag(argv[i + 1], block_components_diagnostic)) return 2;
+        } else if (key == "--block-components-window-diagnostic") {
+            if (!parse_binary_flag(argv[i + 1], block_components_window_diagnostic)) return 2;
+        } else if (key == "--block-components-window-start") {
+            block_components_window_start = std::stoi(argv[i + 1]);
+        } else if (key == "--block-components-window-count") {
+            block_components_window_count = std::stoi(argv[i + 1]);
         } else if (key == "--longcat-bf16-boundary-rounding") {
             if (!parse_binary_flag(argv[i + 1], longcat_bf16_boundary_rounding)) return 2;
         } else if (key == "--longcat-bf16-hidden-surface-rounding") {
@@ -535,6 +601,11 @@ int main(int argc, char ** argv) {
         else return 2;
     }
     if (model_path.empty() || manifest_path.empty() || output.empty() || n_gpu_layers < 0 || threads < 0) return 2;
+    if (block_components_diagnostic && block_components_window_diagnostic) return 2;
+    if (block_components_window_diagnostic &&
+            (block_components_window_start < 0 || block_components_window_start % 2 != 0 ||
+             block_components_window_count <= 0 || block_components_window_count % 2 != 0 ||
+             block_components_window_start + block_components_window_count > 28)) return 2;
     if (longcat_bf16_hidden_surface_rounding && !longcat_bf16_boundary_rounding) return 2;
     json manifest;
     std::ifstream(manifest_path) >> manifest;
@@ -566,7 +637,9 @@ int main(int argc, char ** argv) {
     int result = 0;
     for (const auto & spec : manifest.at("cases")) {
         result = run_case(model, spec, output, n_ctx, threads, flash_attn, cache_type,
-                          layer0_diagnostic, all_blocks_diagnostic, block_components_diagnostic);
+                          layer0_diagnostic, all_blocks_diagnostic, block_components_diagnostic,
+                          block_components_window_diagnostic, block_components_window_start,
+                          block_components_window_count);
         if (result != 0) break;
     }
     llama_model_free(model);

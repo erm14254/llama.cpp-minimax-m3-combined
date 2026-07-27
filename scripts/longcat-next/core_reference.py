@@ -1266,6 +1266,34 @@ def write_block_components_diagnostic(capture, report_dir, token_count, through=
     return {"npz": npz_path, "metadata": root / "block-components.json"}
 
 
+def write_block_components_window_diagnostic(capture, report_dir, token_count, start=10, count=4):
+    import numpy as np
+    expected = v2.block_component_window_names(start, count)
+    require(sorted(capture) == sorted(expected),
+            "block-component window inventory differs from exact requested names")
+    arrays = {}; rows = []
+    for name in expected:
+        array, source_dtype = tensor_array(capture.pop(name), name)
+        array = normalize_block_component_array(name, array, token_count)
+        finite = v2.numpy_finite_report(name, array)
+        if array.dtype.kind == "f":
+            require(finite["finite_count"] == finite["total_elements"], f"{name} is not finite")
+        if name.endswith("__router_topk_indices"):
+            require(array.dtype.kind in "iu", f"{name} must preserve integer indices")
+        rows.append({**finite, "serialized_dtype": str(array.dtype),
+                     "source_torch_dtype": source_dtype,
+                     "sha256": hashlib.sha256(array.tobytes(order="C")).hexdigest()})
+        arrays[name] = array
+    root = Path(report_dir); root.mkdir(parents=True, exist_ok=True)
+    npz_path = root / "block-components-window.npz"
+    temporary = npz_path.with_name(npz_path.name + ".tmp")
+    temporary.write_bytes(deterministic_npz_bytes(arrays)); temporary.replace(npz_path)
+    v2.atomic_json(root / "block-components-window.json", {
+        "schema_version": 2, "accepted": False, "physical_block_start": start,
+        "physical_block_count": count, "array_count": len(expected), "arrays": rows})
+    return {"npz": npz_path, "metadata": root / "block-components-window.json"}
+
+
 def load_case_ids(weight_free_fixture, tokenizer):
     corpus = read_json(weight_free_fixture, "weight-free fixture")
     cases = []
@@ -1329,7 +1357,8 @@ def analytical_ngram_decomposition(base, raw_projections, ignored_mask, official
 
 def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_context,
                     finite_checker=None, attention_backend="default",
-                    serialize_all_physical_blocks=False, serialize_block_components_through=None):
+                    serialize_all_physical_blocks=False, serialize_block_components_through=None,
+                    serialize_block_components_window=None):
     import numpy as np
     import torch
     modules = resolve_capture_modules(model)
@@ -1357,6 +1386,10 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_
     if serialize_block_components_through is not None:
         handles.extend(v2.install_block_component_hooks(
             model, finite_checker, component_capture, serialize_block_components_through))
+    if serialize_block_components_window is not None:
+        start, count = serialize_block_components_window
+        handles.extend(v2.install_block_component_window_hooks(
+            model, finite_checker, component_capture, start, count))
     handles.append(modules["base_embedding"].register_forward_hook(
         lambda module, args, output: finite_checker.check(
             output, module_name="model.model.embed_tokens", operation="forward", role="output")))
@@ -1419,6 +1452,11 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_
                 component_capture, finite_checker.report_dir,
                 prepared_sequence_token_count(prepared["input_ids"]),
                 serialize_block_components_through)
+        if serialize_block_components_window is not None:
+            start, count = serialize_block_components_window
+            write_block_components_window_diagnostic(
+                component_capture, finite_checker.report_dir,
+                prepared_sequence_token_count(prepared["input_ids"]), start, count)
     finally:
         for handle in handles:
             handle.remove()
@@ -1585,7 +1623,10 @@ def run_core_worker_generation(args, weight_free_fixture, diagnostic=False):
                 model, ids, selected_logit_ids, case_name, generation_context,
                 checker, args.attention_backend,
                 bool(getattr(args, "serialize_all_physical_blocks", False)),
-                getattr(args, "serialize_block_components_through", None))
+                getattr(args, "serialize_block_components_through", None),
+                ((getattr(args, "serialize_block_components_window_start", 10),
+                  getattr(args, "serialize_block_components_window_count", 4))
+                 if getattr(args, "serialize_block_components_window", False) else None))
             sdpa_observations.append({"case": case_name, "run_index": repeat,
                                       **checker.sdpa_observation})
             router_materialization_observations.append({

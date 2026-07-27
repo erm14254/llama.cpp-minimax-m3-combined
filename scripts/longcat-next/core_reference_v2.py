@@ -779,6 +779,25 @@ def block_component_names(through=9):
     return names
 
 
+def block_component_window_names(start=10, count=4):
+    require(start >= 0 and start % 2 == 0, "component-window start must be non-negative and even")
+    require(count > 0 and count % 2 == 0, "component-window count must be positive and even")
+    require(start + count <= 28, "component window exceeds physical block 27")
+    ordinary = ("block_input", "attention_norm", "attention_output",
+                "post_attention_residual", "ffn_norm", "dense_output", "block_output")
+    moe = ("router_logits", "router_probabilities", "router_selection_scores",
+           "router_topk_indices", "router_topk_weights", "identity_weight_sum",
+           "identity_residual", "moe_shortcut")
+    names = []
+    for block in range(start, start + count):
+        names.extend(f"physical_block_{block:02d}__{suffix}" for suffix in ordinary)
+        if block % 2 == 0:
+            names.extend(f"physical_block_{block:02d}__{suffix}" for suffix in moe)
+    require(len(names) == count * 11 and len(set(names)) == len(names),
+            "component-window inventory has an unexpected size")
+    return names
+
+
 def install_block_component_hooks(model, checker, capture, through=9):
     """Capture validated pinned-model component boundaries without changing execution."""
     require(through == 9, "block-component hooks currently require through=9")
@@ -826,6 +845,55 @@ def install_block_component_hooks(model, checker, capture, through=9):
         odd_prefix = f"physical_block_{2 * logical + 1:02d}__"
         handles.append(layer.register_forward_hook(
             lambda module, args, output, name=odd_prefix + "block_output": save(name, output)))
+    checker.block_component_capture = capture
+    return handles
+
+
+def install_block_component_window_hooks(model, checker, capture, start=10, count=4):
+    """Capture an even-aligned physical-block window without changing execution."""
+    expected = set(block_component_window_names(start, count))
+    layers = list(model.model.layers)
+    require(len(layers) == 14, f"expected 14 logical layers, got {len(layers)}")
+    handles = []
+
+    def save(name, value):
+        if name not in expected:
+            return
+        if isinstance(value, (tuple, list)):
+            require(value, f"{name}: tuple output is empty")
+            value = value[0]
+        capture[name] = value
+
+    for block in range(start, start + count):
+        logical, sublayer = divmod(block, 2)
+        layer = layers[logical]
+        attention_norms = list(layer.input_layernorm); attentions = list(layer.self_attn)
+        ffn_norms = list(layer.post_attention_layernorm); dense_mlps = list(layer.mlps)
+        require(len(attention_norms) == len(attentions) == len(ffn_norms) == len(dense_mlps) == 2,
+                f"logical layer {logical} does not expose two validated physical sublayers")
+        require(hasattr(layer, "mlp") and hasattr(layer.mlp, "router"),
+                f"logical layer {logical} does not expose shortcut MoE/router")
+        prefix = f"physical_block_{block:02d}__"
+        handles.append(attention_norms[sublayer].register_forward_pre_hook(
+            lambda module, args, name=prefix + "block_input": save(name, args[0])))
+        handles.append(attention_norms[sublayer].register_forward_hook(
+            lambda module, args, output, name=prefix + "attention_norm": save(name, output)))
+        handles.append(attentions[sublayer].register_forward_hook(
+            lambda module, args, output, name=prefix + "attention_output": save(name, output)))
+        handles.append(ffn_norms[sublayer].register_forward_pre_hook(
+            lambda module, args, name=prefix + "post_attention_residual": save(name, args[0])))
+        handles.append(ffn_norms[sublayer].register_forward_hook(
+            lambda module, args, output, name=prefix + "ffn_norm": save(name, output)))
+        handles.append(dense_mlps[sublayer].register_forward_hook(
+            lambda module, args, output, name=prefix + "dense_output": save(name, output)))
+        if sublayer == 0:
+            handles.append(layer.mlp.register_forward_hook(
+                lambda module, args, output, name=prefix + "moe_shortcut": save(name, output)))
+            handles.append(attention_norms[1].register_forward_pre_hook(
+                lambda module, args, name=prefix + "block_output": save(name, args[0])))
+        else:
+            handles.append(layer.register_forward_hook(
+                lambda module, args, output, name=prefix + "block_output": save(name, output)))
     checker.block_component_capture = capture
     return handles
 

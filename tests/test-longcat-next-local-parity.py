@@ -152,6 +152,36 @@ def component_names():
     return names
 
 
+def component_window_names(start=10, count=4):
+    if start < 0 or start % 2 or count <= 0 or count % 2 or start + count > 28:
+        raise ValueError("component window requires even start/count within physical blocks 0-27")
+    names = []
+    for block in range(start, start + count):
+        names.extend(f"physical_block_{block:02d}__{suffix}" for suffix in COMPONENT_SUFFIXES)
+        if block % 2 == 0:
+            names.extend(f"physical_block_{block:02d}__{suffix}" for suffix in COMPONENT_MOE_SUFFIXES)
+    return names
+
+
+def read_component_window_manifest(path, start=10, count=4):
+    expected = set(component_window_names(start, count)); rows = {}
+    for number, line in enumerate(path.read_text(encoding="ascii").splitlines(), 1):
+        fields = line.split("\t")
+        if len(fields) != 4: raise ValueError(f"malformed component-window manifest line {number}")
+        cpp_name, dtype, shape, filename = fields
+        dash = cpp_name.rfind("-")
+        if dash < 1 or not cpp_name[dash + 1:].isdigit(): raise ValueError("malformed component-window callback")
+        block = int(cpp_name[dash + 1:]); suffix = COMPONENT_CPP_BASE.get(cpp_name[:dash])
+        canonical = f"physical_block_{block:02d}__{suffix}" if suffix else None
+        if canonical not in expected or canonical in rows: raise ValueError("unexpected or duplicate component-window row")
+        dims = tuple(map(int, shape.split(",")))
+        if dtype not in {"f32", "f16", "bf16", "i32"} or len(dims) != 4:
+            raise ValueError("malformed component-window metadata")
+        rows[canonical] = (dtype, dims, path.parent / filename)
+    if set(rows) != expected: raise ValueError("component-window inventory mismatch")
+    return rows
+
+
 def read_component_manifest(path):
     rows = {}
     for number, line in enumerate(path.read_text(encoding="ascii").splitlines(), 1):
@@ -815,30 +845,126 @@ def semantic_router_report(cpp_indices, default_indices, math_indices,
         report.pop("maximum_normalized_violation_under_diagnostic_criterion")
         report.pop("within_diagnostic_criterion")
     return {
-        "tokens": token_rows,
-        "identity_weight_sum_comparisons": identity_metrics,
+        "tokens": token_rows, "identity_weight_sum_comparisons": identity_metrics,
         "first_token_with_real_expert_set_mismatch": first_real_mismatch,
         "real_expert_lists_at_first_mismatch": first_real_lists,
         "has_real_expert_set_difference": first_real_mismatch is not None,
-        "has_identity_presence_difference": any(
-            not row["identity_expert_presence_equivalent"] for row in token_rows),
-        "has_identity_only_id_substitution": any(
-            row["raw_set_mismatch_is_identity_only_id_substitution"] for row in token_rows),
+        "has_identity_presence_difference": any(not row["identity_expert_presence_equivalent"] for row in token_rows),
+        "has_identity_only_id_substitution": any(row["raw_set_mismatch_is_identity_only_id_substitution"] for row in token_rows),
         "has_cpp_vs_python_default_real_expert_set_difference": any(
-            not row["pairwise_selected_real_expert_set_equality"]["cpp_vs_python_default"]
-            for row in token_rows),
+            not row["pairwise_selected_real_expert_set_equality"]["cpp_vs_python_default"] for row in token_rows),
         "has_cpp_vs_python_math_real_expert_set_difference": any(
-            not row["pairwise_selected_real_expert_set_equality"]["cpp_vs_python_math"]
-            for row in token_rows),
+            not row["pairwise_selected_real_expert_set_equality"]["cpp_vs_python_math"] for row in token_rows),
         "has_cpp_vs_python_default_identity_presence_difference": any(
-            not row["pairwise_identity_expert_presence_equivalent"]["cpp_vs_python_default"]
-            for row in token_rows),
+            not row["pairwise_identity_expert_presence_equivalent"]["cpp_vs_python_default"] for row in token_rows),
         "has_cpp_vs_python_math_identity_presence_difference": any(
-            not row["pairwise_identity_expert_presence_equivalent"]["cpp_vs_python_math"]
-            for row in token_rows),
+            not row["pairwise_identity_expert_presence_equivalent"]["cpp_vs_python_math"] for row in token_rows),
     }
 
 
+def odd_cross_substitution(cpp, python, odd_block, criterion):
+    p = lambda block, suffix: f"physical_block_{block:02d}__{suffix}"
+    cpp_trunk = bf16_round_to_float32(cpp[p(odd_block, "post_attention_residual")] +
+                                      cpp[p(odd_block, "dense_output")])
+    py_trunk = bf16_round_to_float32(python[p(odd_block, "post_attention_residual")] +
+                                     python[p(odd_block, "dense_output")])
+    cpp_shortcut = cpp[p(odd_block - 1, "moe_shortcut")]
+    py_shortcut = python[p(odd_block - 1, "moe_shortcut")]
+    actual = python[p(odd_block, "block_output")]
+    candidates = {
+        "all_cpp": bf16_round_to_float32(cpp_trunk + cpp_shortcut),
+        "python_shortcut_only": bf16_round_to_float32(cpp_trunk + py_shortcut),
+        "python_trunk_only": bf16_round_to_float32(py_trunk + cpp_shortcut),
+        "all_python_reconstruction": bf16_round_to_float32(py_trunk + py_shortcut),
+    }
+    reports = {name: {**all_block_result(actual, value, criterion),
+                      "exact_reconstruction": bool(np.array_equal(actual, value))}
+               for name, value in candidates.items()}
+    baseline = reports["all_cpp"]["rms_error"]
+    shortcut_reduction = baseline - reports["python_shortcut_only"]["rms_error"]
+    trunk_reduction = baseline - reports["python_trunk_only"]["rms_error"]
+    if shortcut_reduction <= 0 and trunk_reduction <= 0: dominant = "indeterminate"
+    elif shortcut_reduction > 1.25 * max(trunk_reduction, 0): dominant = "previous-even MoE shortcut"
+    elif trunk_reduction > 1.25 * max(shortcut_reduction, 0): dominant = "odd attention/dense trunk"
+    else: dominant = "mixed"
+    return {"alternatives": reports, "rms_reduction_shortcut_only": shortcut_reduction,
+            "rms_reduction_trunk_only": trunk_reduction, "dominant_branch": dominant}
+
+
+def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
+                             criterion, start=10, count=4):
+    expected = set(component_window_names(start, count))
+    if set(default_npz.files) != expected or set(math_npz.files) != expected:
+        raise ValueError("default/math component-window inventory mismatch")
+    manifest = read_component_window_manifest(
+        Path(capture_dir) / "block-components-window-diagnostics.tsv", start, count)
+    mask = np.asarray(attention_mask, dtype=bool)
+    sides = {"cpp": {}, "default": {}, "math": {}}
+    results = []; first_default = first_math = first_both = None
+    for name in component_window_names(start, count):
+        cpp = decode_component_raw(name, *manifest[name])[:, mask, :]
+        default = np.asarray(default_npz[name])[:, mask, :]; math = np.asarray(math_npz[name])[:, mask, :]
+        if not all(np.isfinite(x).all() for x in (cpp, default, math) if np.issubdtype(x.dtype, np.floating)):
+            raise ValueError(f"{name}: non-finite component-window value")
+        sides["cpp"][name] = cpp; sides["default"][name] = default; sides["math"][name] = math
+        if name.endswith("__router_topk_indices"): continue
+        d = all_block_result(default, cpp, criterion); m = all_block_result(math, cpp, criterion)
+        hidden = cpp.shape[-1] == 3072
+        row = {"name": name, "physical_block": int(name[15:17]),
+               "suffix": name.split("__", 1)[1], "cpp_vs_python_default": d,
+               "cpp_vs_python_math": m, "primary_oracle": "python_default",
+               "sensitivity_control": "python_math"}
+        results.append(row)
+        if hidden and not d["within_diagnostic_criterion"] and first_default is None: first_default = name
+        if hidden and not m["within_diagnostic_criterion"] and first_math is None: first_math = name
+        if hidden and not d["within_diagnostic_criterion"] and not m["within_diagnostic_criterion"] and first_both is None:
+            first_both = name
+    routers = []; first_real_default = first_real_math = None; even_analysis = []
+    for block in range(start, start + count, 2):
+        p = f"physical_block_{block:02d}__"
+        semantic = semantic_router_report(sides["cpp"][p + "router_topk_indices"],
+            sides["default"][p + "router_topk_indices"], sides["math"][p + "router_topk_indices"],
+            sides["cpp"][p + "identity_weight_sum"], sides["default"][p + "identity_weight_sum"],
+            sides["math"][p + "identity_weight_sum"])
+        semantic["physical_block"] = block; routers.append(semantic)
+        if semantic["has_cpp_vs_python_default_real_expert_set_difference"] and first_real_default is None:
+            first_real_default = block
+        if semantic["has_cpp_vs_python_math_real_expert_set_difference"] and first_real_math is None:
+            first_real_math = block
+        shortcut = next(row for row in results if row["name"] == p + "moe_shortcut")
+        block_output = next(row for row in results if row["name"] == p + "block_output")
+        ci, di, mi = (sides[x][p + "router_topk_indices"] for x in ("cpp", "default", "math"))
+        cw, dw, mw = (sides[x][p + "router_topk_weights"] for x in ("cpp", "default", "math"))
+        even_analysis.append({"physical_block": block,
+            "moe_shortcut": {"cpp_vs_python_default": shortcut["cpp_vs_python_default"],
+                             "cpp_vs_python_math": shortcut["cpp_vs_python_math"]},
+            "router_semantics": semantic,
+            "identity_weight_sum": {
+                "cpp_vs_python_default": all_block_result(sides["default"][p + "identity_weight_sum"], sides["cpp"][p + "identity_weight_sum"], criterion),
+                "cpp_vs_python_math": all_block_result(sides["math"][p + "identity_weight_sum"], sides["cpp"][p + "identity_weight_sum"], criterion)},
+            "expert_id_aligned_topk_weights": {
+                "cpp_vs_python_default": all_block_result(align_router_weights(di, dw), align_router_weights(ci, cw), criterion),
+                "cpp_vs_python_math": all_block_result(align_router_weights(mi, mw), align_router_weights(ci, cw), criterion)},
+            "shortcut_discrepancy_present_while_even_output_passes_default":
+                (not shortcut["cpp_vs_python_default"]["within_diagnostic_criterion"] and
+                 block_output["cpp_vs_python_default"]["within_diagnostic_criterion"])})
+    attribution = {}
+    for block in range(start + 1, start + count, 2):
+        for label in ("default", "math"):
+            attribution[f"block_{block}_vs_{label}"] = odd_cross_substitution(
+                sides["cpp"], sides[label], block, criterion)
+    return {"accepted": False, "array_count": len(expected), "physical_block_start": start,
+        "physical_block_count": count, "primary_oracle": "python_default",
+        "sensitivity_control": "python_math",
+        "first_component_outside_criterion_vs_python_default": first_default,
+        "first_component_outside_criterion_vs_python_math": first_math,
+        "first_component_outside_criterion_vs_both": first_both,
+        "first_physical_block_with_cpp_vs_python_default_real_expert_difference": first_real_default,
+        "first_physical_block_with_cpp_vs_python_math_real_expert_difference": first_real_math,
+        **{f"block_{block}_dominant_branch_vs_{label}": attribution[f"block_{block}_vs_{label}"]["dominant_branch"]
+           for block in range(start + 1, start + count, 2) for label in ("default", "math")},
+        "components": results, "router_semantics": routers,
+        "even_block_shortcut_analysis": even_analysis, "odd_block_cross_substitution": attribution}
 def reconstruction_metrics(target, alternatives):
     reports = {}
     for name, candidate in alternatives.items():
@@ -1162,6 +1288,12 @@ def build_parser():
     p.add_argument("--all-blocks-diagnostic", type=int, choices=(0, 1), default=0)
     p.add_argument("--all-blocks-reference-npz", type=Path)
     p.add_argument("--block-components-diagnostic", type=int, choices=(0, 1), default=0)
+    p.add_argument("--block-components-window-diagnostic", type=int, choices=(0, 1), default=0)
+    p.add_argument("--block-components-window-start", type=int, default=10)
+    p.add_argument("--block-components-window-count", type=int, default=4)
+    p.add_argument("--block-components-window-default-npz", type=Path)
+    p.add_argument("--block-components-window-math-npz", type=Path)
+    p.add_argument("--component-window-replay-only", type=int, choices=(0, 1), default=0)
     p.add_argument("--longcat-bf16-boundary-rounding", type=int, choices=(0, 1), default=0)
     p.add_argument("--longcat-bf16-hidden-surface-rounding", type=int, choices=(0, 1), default=0)
     p.add_argument("--block-components-default-npz", type=Path)
@@ -1183,9 +1315,9 @@ def validate_all_blocks_options(args):
     if args.longcat_bf16_hidden_surface_rounding and not args.longcat_bf16_boundary_rounding:
         raise ValueError("--longcat-bf16-hidden-surface-rounding requires boundary rounding")
     replay_only = (args.component_replay_only or args.component_attribution_replay_only or
-                   args.component_profile_diff_replay_only)
+                   args.component_profile_diff_replay_only or args.component_window_replay_only)
     if replay_only:
-        if not args.block_components_diagnostic:
+        if not args.block_components_diagnostic and not args.block_components_window_diagnostic:
             raise ValueError("--component-replay-only requires --block-components-diagnostic 1")
         if args.model is not None or args.capture_exe is not None:
             raise ValueError("--component-replay-only must not receive --model or --capture-exe")
@@ -1208,6 +1340,8 @@ def validate_all_blocks_options(args):
     elif args.all_blocks_reference_npz is not None:
         raise ValueError("--all-blocks-reference-npz requires --all-blocks-diagnostic 1")
     component_paths = (args.block_components_default_npz, args.block_components_math_npz)
+    if args.block_components_diagnostic and args.block_components_window_diagnostic:
+        raise ValueError("canonical and window component diagnostics are mutually exclusive")
     if args.block_components_diagnostic:
         if len(args.case) != 1:
             raise ValueError("--block-components-diagnostic requires exactly one --case")
@@ -1215,6 +1349,13 @@ def validate_all_blocks_options(args):
             raise ValueError("--block-components-diagnostic requires both component reference NPZs")
     elif any(path is not None for path in component_paths):
         raise ValueError("component reference NPZs require --block-components-diagnostic 1")
+    window_paths = (args.block_components_window_default_npz, args.block_components_window_math_npz)
+    if args.block_components_window_diagnostic:
+        component_window_names(args.block_components_window_start, args.block_components_window_count)
+        if len(args.case) != 1: raise ValueError("component-window diagnostic requires exactly one --case")
+        if any(path is None for path in window_paths): raise ValueError("component-window diagnostic requires both window NPZs")
+    elif any(path is not None for path in window_paths):
+        raise ValueError("component-window NPZs require window diagnostic mode")
 
 
 def main():
@@ -1229,7 +1370,7 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
     validation = validate_reference_finiteness(npz, args.output_dir)
     replay_only = (args.component_replay_only or args.component_attribution_replay_only or
-                   args.component_profile_diff_replay_only)
+                   args.component_profile_diff_replay_only or args.component_window_replay_only)
     if replay_only:
         with tempfile.TemporaryDirectory() as temporary:
             cases = make_case_manifest(npz, Path(temporary) / "case-manifest.json")
@@ -1248,6 +1389,18 @@ def main():
     if not args.case and greedy_cases != {"tokenizer_prompt_0", "tokenizer_prompt_1"}:
         raise ValueError(f"expected eight-token greedy references for both tokenizer prompts, got {greedy_cases}")
     if replay_only:
+        if args.component_window_replay_only:
+            criterion = policy["bf16"]["physical_block_02"]
+            capture_dir = args.output_dir / cases[0]["name"]
+            if not capture_dir.is_dir(): capture_dir = args.output_dir
+            with np.load(args.block_components_window_default_npz, allow_pickle=False) as default_window, \
+                 np.load(args.block_components_window_math_npz, allow_pickle=False) as math_window:
+                report = compare_component_window(default_window, math_window, capture_dir,
+                    cases[0]["attention_mask"], criterion, args.block_components_window_start,
+                    args.block_components_window_count)
+            (args.output_dir / "block-components-window-three-way.json").write_text(
+                json.dumps(report, indent=2) + "\n", encoding="ascii")
+            return
         if args.component_profile_diff_replay_only:
             criterion = policy["bf16"]["physical_block_02"]
             reference_argmax = int(npz[reference_key(
@@ -1286,6 +1439,9 @@ def main():
                     "--layer0-diagnostic", str(args.layer0_diagnostic),
                     "--all-blocks-diagnostic", str(args.all_blocks_diagnostic),
                     "--block-components-diagnostic", str(args.block_components_diagnostic),
+                    "--block-components-window-diagnostic", str(args.block_components_window_diagnostic),
+                    "--block-components-window-start", str(args.block_components_window_start),
+                    "--block-components-window-count", str(args.block_components_window_count),
                     "--longcat-bf16-boundary-rounding", str(args.longcat_bf16_boundary_rounding),
                     "--longcat-bf16-hidden-surface-rounding", str(args.longcat_bf16_hidden_surface_rounding)]
     try:
@@ -1310,6 +1466,15 @@ def main():
                 cases[0]["attention_mask"], criterion)
         (args.output_dir / "block-components-three-way.json").write_text(
             json.dumps(component_report, indent=2) + "\n", encoding="ascii")
+    if args.block_components_window_diagnostic:
+        criterion = policy["bf16"]["physical_block_02"]
+        with np.load(args.block_components_window_default_npz, allow_pickle=False) as default_window, \
+             np.load(args.block_components_window_math_npz, allow_pickle=False) as math_window:
+            window_report = compare_component_window(default_window, math_window,
+                args.output_dir / cases[0]["name"], cases[0]["attention_mask"], criterion,
+                args.block_components_window_start, args.block_components_window_count)
+        (args.output_dir / "block-components-window-three-way.json").write_text(
+            json.dumps(window_report, indent=2) + "\n", encoding="ascii")
     overall = all(row["passed"] for row in reports.values())
     report = {"precision": args.precision, "tolerance_policy": str(args.tolerance_policy), "cases": reports, "passed": overall}
     (args.output_dir / "comparison-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="ascii")
