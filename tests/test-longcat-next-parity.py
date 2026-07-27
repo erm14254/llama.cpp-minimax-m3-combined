@@ -173,6 +173,90 @@ class ParityHarnessTests(unittest.TestCase):
         np.testing.assert_array_equal(calls[0], p + d)
         np.testing.assert_array_equal(calls[1], first + s)
         np.testing.assert_array_equal(got, original(first + s))
+
+    def test_router_cutoff_uses_complete_scores_not_returned_order(self):
+        scores = -np.arange(PARITY.ROUTED_EXPERT_COUNT, dtype=np.float32)
+        returned_unsorted = np.array([11, 0, 10, 1, 9, 2, 8, 3, 7, 4, 6, 5], np.int32)
+        report = PARITY.router_token_cutoff(scores, returned_unsorted, 7)
+        self.assertEqual(report["selected_expert_set"], list(range(12)))
+        self.assertFalse(report["returned_topk_order_used_for_ranking"])
+        self.assertEqual(report["ranking_source"], "complete_384_wide_selection_scores")
+        self.assertEqual(report["lowest_selected_score"], -11.0)
+        self.assertEqual(report["highest_unselected_score"], -12.0)
+        self.assertEqual(report["topk_cutoff_margin"], 1.0)
+        self.assertEqual([row["rank"] for row in report["ranked_experts_around_cutoff"]],
+                         list(range(8, 17)))
+
+        identity_scores = scores.copy(); identity_scores[300] = -7.5
+        identity_selected = np.array(list(range(11)) + [300], np.int32)
+        identity = PARITY.router_token_cutoff(identity_scores, identity_selected, 7)
+        identity_row = next(row for row in identity["ranked_experts_around_cutoff"]
+                            if row["expert_id"] == 300)
+        self.assertEqual(identity_row["expert_class"], "identity")
+        self.assertTrue(identity_row["selected"])
+
+    def test_router_disputed_experts_sign_flip_and_order_only(self):
+        left_scores = -np.arange(PARITY.ROUTED_EXPERT_COUNT, dtype=np.float32)
+        right_scores = left_scores.copy()
+        right_scores[11], right_scores[12] = right_scores[12], right_scores[11]
+        left = PARITY.router_token_cutoff(left_scores, np.arange(12), 3)
+        right = PARITY.router_token_cutoff(right_scores,
+            np.array(list(range(11)) + [12]), 3)
+        disputed = PARITY.disputed_router_token(left, right, "cpp", "default")
+        self.assertEqual(disputed["experts_selected_only_by_left"], [11])
+        self.assertEqual(disputed["experts_selected_only_by_right"], [12])
+        self.assertTrue(disputed["ordering_inversions"][0]["gap_sign_flips"])
+        self.assertTrue(disputed["has_ordering_inversion"])
+        self.assertEqual(disputed["numerical_scale"]["left_cutoff_margin"], 1.0)
+        self.assertEqual(disputed["numerical_scale"]["right_cutoff_margin"], 1.0)
+        self.assertTrue(all("left_rank_distance_from_top12_boundary" in row and
+                            "right_rank_distance_from_top12_boundary" in row
+                            for row in disputed["disputed_experts"]))
+        reordered = PARITY.router_token_cutoff(left_scores, np.arange(11, -1, -1), 3)
+        self.assertIsNone(PARITY.disputed_router_token(left, reordered, "cpp", "default"))
+
+    def test_router_correction_bias_reconstruction_and_pairwise_mismatch(self):
+        probabilities = np.zeros((1, 2, PARITY.ROUTED_EXPERT_COUNT), np.float32)
+        bias = np.linspace(-0.25, 0.25, PARITY.ROUTED_EXPERT_COUNT, dtype=np.float32)
+        reconstructed, report = PARITY.reconstruct_router_correction_bias(
+            probabilities, probabilities + bias[None, None, :])
+        self.assertTrue(report["token_invariant_byte_exact"])
+        self.assertEqual(report["maximum_per_expert_range_across_tokens"], 0.0)
+        self.assertEqual(report["maximum_absolute_deviation_from_first_token"], 0.0)
+        np.testing.assert_array_equal(reconstructed[0], bias)
+        mismatch = PARITY._vector_metrics(bias, bias + np.float32(0.01))
+        self.assertFalse(mismatch["exact_equality"])
+        self.assertGreater(mismatch["maximum_absolute_difference"], 0)
+        self.assertGreater(mismatch["rms_difference"], 0)
+
+    def test_primary_router_summary_prefers_first_affected_block_and_separates_weight_order(self):
+        dispute = {"attended_token": 1, "has_ordering_inversion": True,
+                   "experts_selected_only_by_left": [11], "experts_selected_only_by_right": [12],
+                   "disputed_experts": [{"expert_id": 11, "left_rank": 12, "right_rank": 13},
+                                        {"expert_id": 12, "left_rank": 13, "right_rank": 12}]}
+        bias_metrics = {"cpp_vs_python_default": {"maximum_absolute_difference": 0.01}}
+        cutoffs = [
+            {"physical_block": 10,
+             "pairwise_disputed_experts": {"cpp_vs_python_default": [dispute]},
+             "reconstructed_correction_bias": {"pairwise_metrics": bias_metrics}},
+            {"physical_block": 12,
+             "pairwise_disputed_experts": {"cpp_vs_python_default": []},
+             "reconstructed_correction_bias": {"pairwise_metrics": bias_metrics}},
+        ]
+        suffixes = ("router_logits", "router_probabilities", "router_selection_scores",
+                    "router_topk_weights", "identity_weight_sum", "identity_residual", "moe_shortcut")
+        components = [{"physical_block": 10, "suffix": suffix,
+                       "cpp_vs_python_default": {"within_diagnostic_criterion":
+                           suffix != "router_topk_weights"}}
+                      for suffix in suffixes]
+        even = [{"physical_block": 10, "expert_id_aligned_topk_weights": {
+            "cpp_vs_python_default": {"within_diagnostic_criterion": True}}}]
+        summary = PARITY.primary_router_cutoff_summary(cutoffs, components, even)
+        self.assertEqual(summary["physical_block"], 10)
+        self.assertEqual(summary["affected_attended_tokens"], [1])
+        self.assertTrue(summary["returned_order_topk_weight_failure_not_treated_as_weight_math_failure"])
+        self.assertEqual(summary["descriptive_evidence"],
+                         "continuous scores remain within criterion while discrete membership differs")
     def _write_profile(self, root, values, legacy_indices, rounding):
         case = root / "eos_window_position_2"; case.mkdir(parents=True)
         direct = [f"{name}\tf32\t1,1,1,1\t{name}.raw" for name in sorted(PARITY.DIRECT_NAMES)]

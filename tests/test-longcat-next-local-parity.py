@@ -346,6 +346,7 @@ def compare_all_blocks(reference_npz, capture_dir, attention_mask, criterion):
                          f"unexpected={sorted(reference_names-ALL_BLOCK_REFERENCE_NAMES)}")
     rows = read_all_blocks_manifest(capture_dir / "all-blocks-diagnostics.tsv")
     mask = np.asarray(attention_mask, dtype=bool)
+    attended_tokens = np.flatnonzero(mask).tolist()
     results = []
     for block in range(28):
         cpp_name = f"l_out-{block}"
@@ -864,6 +865,194 @@ def semantic_router_report(cpp_indices, default_indices, math_indices,
     }
 
 
+def _vector_metrics(left, right):
+    left = np.asarray(left, np.float32); right = np.asarray(right, np.float32)
+    difference = left - right
+    left64 = left.reshape(-1).astype(np.float64)
+    right64 = right.reshape(-1).astype(np.float64)
+    norm_product = np.linalg.norm(left64) * np.linalg.norm(right64)
+    cosine = (float(np.dot(left64, right64) / norm_product) if norm_product else
+              float(np.array_equal(left64, right64)))
+    return {"maximum_absolute_difference": float(np.abs(difference).max(initial=0)),
+            "rms_difference": float(np.sqrt(np.mean(np.square(difference, dtype=np.float64)))),
+            "cosine_similarity": cosine, "exact_equality": bool(np.array_equal(left, right))}
+
+
+def reconstruct_router_correction_bias(probabilities, selection_scores):
+    """Audit the captured float32 correction bias without assuming exact subtraction."""
+    probabilities = np.asarray(probabilities, np.float32).reshape(-1, ROUTED_EXPERT_COUNT)
+    selection_scores = np.asarray(selection_scores, np.float32).reshape(-1, ROUTED_EXPERT_COUNT)
+    if probabilities.shape != selection_scores.shape or probabilities.shape[0] == 0:
+        raise ValueError("router probability/selection-score shape mismatch")
+    reconstructed = selection_scores - probabilities
+    first = reconstructed[0]
+    ranges = reconstructed.max(axis=0) - reconstructed.min(axis=0)
+    byte_exact = all(row.tobytes() == first.tobytes() for row in reconstructed)
+    return reconstructed, {
+        "maximum_per_expert_range_across_tokens": float(ranges.max(initial=0)),
+        "maximum_absolute_deviation_from_first_token":
+            float(np.abs(reconstructed - first).max(initial=0)),
+        "token_invariant_byte_exact": bool(byte_exact),
+        "mean_reconstructed_bias_per_expert": reconstructed.mean(axis=0).tolist(),
+    }
+
+
+def router_token_cutoff(selection_scores, topk_indices, attended_token):
+    """Rank the complete score vector; returned top-k order is membership only."""
+    scores = np.asarray(selection_scores, np.float32).reshape(-1)
+    selected_order = np.asarray(topk_indices).reshape(-1).astype(np.int64)
+    if scores.size != ROUTED_EXPERT_COUNT or selected_order.size != 12:
+        raise ValueError("router cutoff analysis requires 384 scores and 12 selected experts")
+    if len(set(selected_order.tolist())) != 12 or np.any(selected_order < 0) or np.any(selected_order >= scores.size):
+        raise ValueError("router cutoff analysis received invalid selected expert IDs")
+    # Stable expert-ID tie break is diagnostic only; ranking never uses returned top-k order.
+    ranked = np.lexsort((np.arange(scores.size), -scores))
+    ranks = np.empty(scores.size, dtype=np.int64); ranks[ranked] = np.arange(1, scores.size + 1)
+    selected = set(int(value) for value in selected_order)
+    unselected = [expert for expert in range(scores.size) if expert not in selected]
+    lowest = min(float(scores[expert]) for expert in selected)
+    highest = max(float(scores[expert]) for expert in unselected)
+    def expert_row(expert):
+        return {"expert_id": int(expert), "rank": int(ranks[expert]),
+                "selection_score": float(scores[expert]), "selected": expert in selected,
+                "expert_class": "real" if expert < REAL_EXPERT_COUNT else "identity"}
+    return {"attended_token": int(attended_token),
+            "ranking_source": "complete_384_wide_selection_scores",
+            "returned_topk_order_used_for_ranking": False,
+            "selected_expert_set": sorted(selected),
+            "selected_real_expert_set": sorted(expert for expert in selected if expert < REAL_EXPERT_COUNT),
+            "selected_identity_expert_set": sorted(expert for expert in selected if expert >= REAL_EXPERT_COUNT),
+            "lowest_selected_score": lowest, "highest_unselected_score": highest,
+            "topk_cutoff_margin": lowest - highest,
+            "ranked_experts_around_cutoff": [expert_row(ranked[rank - 1]) for rank in range(8, 17)],
+            "expert_ranks": ranks, "scores": scores}
+
+
+def disputed_router_token(left, right, left_name, right_name):
+    left_set = set(left["selected_expert_set"]); right_set = set(right["selected_expert_set"])
+    only_left = sorted(left_set - right_set); only_right = sorted(right_set - left_set)
+    if not only_left and not only_right:
+        return None
+    def detail(expert):
+        return {"expert_id": expert,
+                "left_score": float(left["scores"][expert]),
+                "right_score": float(right["scores"][expert]),
+                "left_rank": int(left["expert_ranks"][expert]),
+                "right_rank": int(right["expert_ranks"][expert]),
+                "left_selected": expert in left_set, "right_selected": expert in right_set,
+                "left_rank_distance_from_top12_boundary": int(left["expert_ranks"][expert]) - 12,
+                "right_rank_distance_from_top12_boundary": int(right["expert_ranks"][expert]) - 12,
+                "expert_class": "real" if expert < REAL_EXPERT_COUNT else "identity"}
+    inversions = []
+    for left_expert in only_left:
+        for right_expert in only_right:
+            left_gap = float(left["scores"][left_expert] - left["scores"][right_expert])
+            right_gap = float(right["scores"][left_expert] - right["scores"][right_expert])
+            inversions.append({"left_only_expert": left_expert, "right_only_expert": right_expert,
+                "left_implementation_score_gap": left_gap,
+                "right_implementation_score_gap": right_gap,
+                "gap_sign_flips": bool((left_gap > 0 > right_gap) or (left_gap < 0 < right_gap))})
+    delta = np.abs(left["scores"] - right["scores"])
+    displaced_gaps = [abs(row[key]) for row in inversions for key in (
+        "left_implementation_score_gap", "right_implementation_score_gap")]
+    scale = {"maximum_absolute_selection_score_difference": float(delta.max(initial=0)),
+             "rms_selection_score_difference": float(np.sqrt(np.mean(np.square(delta, dtype=np.float64)))),
+             "left_cutoff_margin": left["topk_cutoff_margin"],
+             "right_cutoff_margin": right["topk_cutoff_margin"],
+             "minimum_absolute_displaced_expert_score_gap": min(displaced_gaps),
+             "maximum_absolute_displaced_expert_score_gap": max(displaced_gaps)}
+    if left["topk_cutoff_margin"] != 0:
+        scale["maximum_score_delta_over_left_cutoff_margin"] = (
+            scale["maximum_absolute_selection_score_difference"] / left["topk_cutoff_margin"])
+    if right["topk_cutoff_margin"] != 0:
+        scale["maximum_score_delta_over_right_cutoff_margin"] = (
+            scale["maximum_absolute_selection_score_difference"] / right["topk_cutoff_margin"])
+    return {"attended_token": left["attended_token"], "left_implementation": left_name,
+            "right_implementation": right_name, "experts_selected_only_by_left": only_left,
+            "experts_selected_only_by_right": only_right,
+            "disputed_experts": [detail(expert) for expert in sorted(set(only_left + only_right))],
+            "ordering_inversions": inversions,
+            "has_ordering_inversion": any(row["gap_sign_flips"] for row in inversions),
+            "numerical_scale": scale}
+
+
+def router_cutoff_analysis(sides, prefix, attended_tokens):
+    implementations = ("cpp", "default", "math")
+    correction = {}; reconstructed = {}
+    cutoffs = {}
+    for implementation in implementations:
+        reconstructed[implementation], correction[implementation] = reconstruct_router_correction_bias(
+            sides[implementation][prefix + "router_probabilities"],
+            sides[implementation][prefix + "router_selection_scores"])
+        scores = sides[implementation][prefix + "router_selection_scores"].reshape(-1, ROUTED_EXPERT_COUNT)
+        indices = sides[implementation][prefix + "router_topk_indices"].reshape(-1, 12)
+        cutoffs[implementation] = [router_token_cutoff(scores[token], indices[token], attended_tokens[token])
+                                   for token in range(scores.shape[0])]
+    pair_specs = (("cpp_vs_python_default", "cpp", "default"),
+                  ("cpp_vs_python_math", "cpp", "math"),
+                  ("python_default_vs_python_math", "default", "math"))
+    bias_pairs = {label: _vector_metrics(reconstructed[left].mean(axis=0),
+                                         reconstructed[right].mean(axis=0))
+                  for label, left, right in pair_specs}
+    disputes = {}
+    for label, left, right in pair_specs:
+        disputes[label] = [report for token in range(len(attended_tokens))
+            if (report := disputed_router_token(cutoffs[left][token], cutoffs[right][token], left, right))]
+    # Remove large private rank/score vectors after all pairwise reports have been derived.
+    public_cutoffs = {implementation: [{key: value for key, value in row.items()
+        if key not in {"expert_ranks", "scores"}} for row in rows]
+        for implementation, rows in cutoffs.items()}
+    return {"reconstructed_correction_bias": {"implementations": correction,
+                                               "pairwise_metrics": bias_pairs},
+            "token_cutoffs": public_cutoffs, "pairwise_disputed_experts": disputes}
+
+
+def primary_router_cutoff_summary(router_cutoffs, component_rows, even_analysis):
+    primary = next((row for row in router_cutoffs
+        if row["pairwise_disputed_experts"]["cpp_vs_python_default"]), None)
+    if primary is None:
+        return None
+    block = primary["physical_block"]
+    component_by_suffix = {row["suffix"]: row for row in component_rows
+                           if row["physical_block"] == block}
+    shortcut_row = next(row for row in even_analysis if row["physical_block"] == block)
+    disputes = primary["pairwise_disputed_experts"]["cpp_vs_python_default"]
+    def primary_pass(suffix):
+        return component_by_suffix[suffix]["cpp_vs_python_default"]["within_diagnostic_criterion"]
+    aligned_pass = shortcut_row["expert_id_aligned_topk_weights"][
+        "cpp_vs_python_default"]["within_diagnostic_criterion"]
+    continuous_passes = all(primary_pass(suffix) for suffix in (
+        "router_logits", "router_probabilities", "router_selection_scores"))
+    return {"physical_block": block, "affected_attended_token_count": len(disputes),
+        "affected_attended_tokens": [row["attended_token"] for row in disputes],
+        "first_affected_attended_token": disputes[0]["attended_token"],
+        "continuous_router_logits_within_criterion": primary_pass("router_logits"),
+        "continuous_router_probabilities_within_criterion": primary_pass("router_probabilities"),
+        "continuous_router_selection_scores_within_criterion": primary_pass("router_selection_scores"),
+        "returned_order_topk_weights_within_criterion": primary_pass("router_topk_weights"),
+        "expert_id_aligned_topk_weights_within_criterion": aligned_pass,
+        "identity_weight_sum_within_criterion": primary_pass("identity_weight_sum"),
+        "identity_residual_within_criterion": primary_pass("identity_residual"),
+        "complete_moe_shortcut_within_criterion": primary_pass("moe_shortcut"),
+        "reconstructed_correction_bias_pairwise_metrics":
+            primary["reconstructed_correction_bias"]["pairwise_metrics"],
+        "all_selected_set_differences_have_ordering_inversions":
+            all(row["has_ordering_inversion"] for row in disputes),
+        "all_disputed_experts_are_reported_with_cutoff_ranks": all(
+            len(row["disputed_experts"]) ==
+                len(row["experts_selected_only_by_left"]) + len(row["experts_selected_only_by_right"]) and
+            all("left_rank" in expert and "right_rank" in expert for expert in row["disputed_experts"])
+            for row in disputes),
+        "descriptive_evidence": (
+            "continuous scores remain within criterion while discrete membership differs"
+            if continuous_passes else
+            "discrete membership differs and at least one continuous score surface is outside criterion"),
+        "returned_order_topk_weight_failure_not_treated_as_weight_math_failure":
+            bool(not primary_pass("router_topk_weights") and aligned_pass),
+        "returned_order_note":
+            "returned-order top-k weight failure is not treated as a weight-math failure when expert-ID-aligned weights pass"}
+
+
 def reconstruct_odd_coalition(post_attention_residual, dense_output, previous_even_moe_shortcut):
     """Apply the official odd-block association with both observed BF16 boundaries."""
     trunk = bf16_round_to_float32(post_attention_residual + dense_output)
@@ -988,6 +1177,7 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
     manifest = read_component_window_manifest(
         Path(capture_dir) / "block-components-window-diagnostics.tsv", start, count)
     mask = np.asarray(attention_mask, dtype=bool)
+    attended_tokens = np.flatnonzero(mask).tolist()
     sides = {"cpp": {}, "default": {}, "math": {}}
     results = []; first_default = first_math = first_both = None
     for name in component_window_names(start, count):
@@ -1009,6 +1199,7 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
         if hidden and not d["within_diagnostic_criterion"] and not m["within_diagnostic_criterion"] and first_both is None:
             first_both = name
     routers = []; first_real_default = first_real_math = None; even_analysis = []
+    router_cutoffs = []
     for block in range(start, start + count, 2):
         p = f"physical_block_{block:02d}__"
         semantic = semantic_router_report(sides["cpp"][p + "router_topk_indices"],
@@ -1016,6 +1207,9 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
             sides["cpp"][p + "identity_weight_sum"], sides["default"][p + "identity_weight_sum"],
             sides["math"][p + "identity_weight_sum"])
         semantic["physical_block"] = block; routers.append(semantic)
+        cutoff = router_cutoff_analysis(sides, p, attended_tokens)
+        cutoff["physical_block"] = block
+        router_cutoffs.append(cutoff)
         if semantic["has_cpp_vs_python_default_real_expert_set_difference"] and first_real_default is None:
             first_real_default = block
         if semantic["has_cpp_vs_python_math_real_expert_set_difference"] and first_real_math is None:
@@ -1048,6 +1242,7 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
         f"physical_block_{row['physical_block']:02d}__moe_shortcut"
         for row in even_analysis
         if row["shortcut_discrepancy_present_while_even_output_passes_default"]), None)
+    primary_summary = primary_router_cutoff_summary(router_cutoffs, results, even_analysis)
     return {"accepted": False, "array_count": len(expected), "physical_block_start": start,
         "physical_block_count": count, "primary_oracle": "python_default",
         "sensitivity_control": "python_math",
@@ -1062,9 +1257,11 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
         "first_primary_oracle_shortcut_failure_while_even_output_passes":
             first_shortcut_while_even_passes,
         "first_both_backend_component_failure": first_both,
+        "primary_oracle_router_cutoff_summary": primary_summary,
         **{f"block_{block}_dominant_branch_vs_{label}": attribution[f"block_{block}_vs_{label}"]["dominant_branch"]
            for block in range(start + 1, start + count, 2) for label in ("default", "math")},
         "components": results, "router_semantics": routers,
+        "router_cutoff_analysis": router_cutoffs,
         "even_block_shortcut_analysis": even_analysis, "odd_block_cross_substitution": attribution}
 def reconstruction_metrics(target, alternatives):
     reports = {}
