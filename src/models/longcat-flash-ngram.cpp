@@ -401,7 +401,10 @@ llama_model_longcat_flash_ngram::graph::graph(
 
     for (int il = 0; il < n_layer; ++il) {
         ggml_tensor * inpSA = inpL;
-        cb(inpSA, "block_in", il);
+        // cb() assigns a name to its tensor. Use a distinct view so the
+        // upstream inp_embd_ngram/l_out surface retains its capture name.
+        ggml_tensor * block_input_capture = llm_graph_build_longcat_capture_alias(ctx0, gf, inpL);
+        cb(block_input_capture, "block_in", il);
 
         const bool is_even_block = (il % 2 == 0);
 

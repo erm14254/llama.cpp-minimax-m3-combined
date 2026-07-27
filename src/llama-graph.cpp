@@ -1173,6 +1173,17 @@ bool llm_graph_input_sampling::can_reuse(const llm_graph_params & params) {
 }
 
 
+ggml_tensor * llm_graph_build_longcat_capture_alias(
+        ggml_context * ctx,
+        ggml_cgraph * graph,
+        ggml_tensor * source) {
+    ggml_tensor * alias = ggml_view_4d(
+        ctx, source, source->ne[0], source->ne[1], source->ne[2], source->ne[3],
+        source->nb[1], source->nb[2], source->nb[3], 0);
+    ggml_build_forward_expand(graph, alias);
+    return alias;
+}
+
 llm_graph_longcat_moe_route llm_graph_build_longcat_moe_route(
         ggml_context * ctx,
         ggml_tensor * logits,

@@ -672,6 +672,13 @@ struct llm_graph_longcat_moe_route {
     ggml_tensor * identity_weight_sum = nullptr;
 };
 
+// Return a distinct tensor object that aliases the same storage. Diagnostic
+// callbacks may name this view without overwriting the source surface name.
+ggml_tensor * llm_graph_build_longcat_capture_alias(
+        ggml_context * ctx,
+        ggml_cgraph * graph,
+        ggml_tensor * source);
+
 llm_graph_longcat_moe_route llm_graph_build_longcat_moe_route(
         ggml_context * ctx,
         ggml_tensor * logits,

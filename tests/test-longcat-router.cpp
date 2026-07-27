@@ -295,10 +295,79 @@ static void test_odd_ffn_association(testing & t) {
     ggml_free(ctx);
 }
 
+static void test_capture_alias_preserves_source_name(testing & t) {
+    struct ggml_init_params params = {
+        /* .mem_size   = */ 1024 * 1024,
+        /* .mem_buffer = */ nullptr,
+        /* .no_alloc   = */ true,
+    };
+    ggml_context * ctx = ggml_init(params);
+    GGML_ASSERT(ctx != nullptr);
+
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx, 16, false);
+
+    ggml_tensor * embedding_input = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 3, 2);
+    ggml_tensor * embedding = ggml_scale(ctx, embedding_input, 1.0f);
+    ggml_set_name(embedding, "inp_embd_ngram");
+    ggml_tensor * block_0 = llm_graph_build_longcat_capture_alias(ctx, graph, embedding);
+    ggml_set_name(block_0, "block_in-0");
+
+    ggml_tensor * layer_input = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 3, 2);
+    ggml_tensor * layer_out = ggml_scale(ctx, layer_input, 1.0f);
+    ggml_set_name(layer_out, "l_out-0");
+    ggml_tensor * block_1 = llm_graph_build_longcat_capture_alias(ctx, graph, layer_out);
+    ggml_set_name(block_1, "block_in-1");
+
+    t.assert_true("embedding alias has distinct tensor pointer", block_0 != embedding);
+    t.assert_true("layer output alias has distinct tensor pointer", block_1 != layer_out);
+    t.assert_true("embedding source name survives alias naming",
+                  std::strcmp(ggml_get_name(embedding), "inp_embd_ngram") == 0);
+    t.assert_true("layer output source name survives alias naming",
+                  std::strcmp(ggml_get_name(layer_out), "l_out-0") == 0);
+    t.assert_true("block zero alias has independent name",
+                  std::strcmp(ggml_get_name(block_0), "block_in-0") == 0);
+    t.assert_true("block one alias has independent name",
+                  std::strcmp(ggml_get_name(block_1), "block_in-1") == 0);
+    t.assert_true("embedding alias shape matches", ggml_are_same_shape(block_0, embedding));
+    t.assert_true("layer output alias shape matches", ggml_are_same_shape(block_1, layer_out));
+    t.assert_true("embedding alias dtype matches", block_0->type == embedding->type);
+    t.assert_true("layer output alias dtype matches", block_1->type == layer_out->type);
+
+    t.assert_true("embedding source independently addressable",
+                  ggml_graph_get_tensor(graph, "inp_embd_ngram") == embedding);
+    t.assert_true("block zero alias independently addressable",
+                  ggml_graph_get_tensor(graph, "block_in-0") == block_0);
+    t.assert_true("layer output independently addressable",
+                  ggml_graph_get_tensor(graph, "l_out-0") == layer_out);
+    t.assert_true("block one alias independently addressable",
+                  ggml_graph_get_tensor(graph, "block_in-1") == block_1);
+
+    ggml_backend_t backend = ggml_backend_cpu_init();
+    GGML_ASSERT(backend != nullptr);
+    ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
+    GGML_ASSERT(buffer != nullptr);
+    const std::array<float, 6> embedding_values = { 1, 2, 3, 4, 5, 6 };
+    const std::array<float, 6> layer_values = { -1, -2, -3, -4, -5, -6 };
+    ggml_backend_tensor_set(embedding_input, embedding_values.data(), 0, sizeof(embedding_values));
+    ggml_backend_tensor_set(layer_input, layer_values.data(), 0, sizeof(layer_values));
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+    std::array<float, 6> block_0_values = {};
+    std::array<float, 6> block_1_values = {};
+    ggml_backend_tensor_get(block_0, block_0_values.data(), 0, sizeof(block_0_values));
+    ggml_backend_tensor_get(block_1, block_1_values.data(), 0, sizeof(block_1_values));
+    t.assert_true("embedding alias represents identical values", block_0_values == embedding_values);
+    t.assert_true("layer output alias represents identical values", block_1_values == layer_values);
+
+    ggml_backend_buffer_free(buffer);
+    ggml_backend_free(backend);
+    ggml_free(ctx);
+}
+
 int main() {
     testing t(std::cout);
     t.test("longcat router", test_router);
     t.test("longcat production route helper", test_production_route_helper);
     t.test("longcat odd FFN association", test_odd_ffn_association);
+    t.test("longcat capture alias name preservation", test_capture_alias_preserves_source_name);
     return t.summary();
 }

@@ -237,7 +237,8 @@ static int self_test() {
     for (const char * name : {"inp_embd", "inp_embd_ngram", "h_nextn", "l_out-0",
             "l_out-1", "l_out-2", "l_out-27"}) standard.insert(name);
     for (int index = 0; index < 12; ++index) standard.insert("ngram_proj-" + std::to_string(index));
-    if (standard.size() != 19 || !std::all_of(standard.begin(), standard.end(), wanted) ||
+    if (standard.size() + 1 != 20 || !standard.count("inp_embd_ngram") ||
+            !std::all_of(standard.begin(), standard.end(), wanted) ||
             wanted("l_out-3") || wanted("ngram_proj-12")) return 44;
     std::set<std::string> components;
     for (int block = 0; block < 10; ++block) {
@@ -255,6 +256,9 @@ static int self_test() {
     }
     if (components.size() != 110 ||
             !std::all_of(components.begin(), components.end(), wanted_block_component)) return 45;
+    for (int block = 0; block < 10; ++block) {
+        if (!components.count("l_out-" + std::to_string(block))) return 47;
+    }
     if (wanted_block_component("block_in-10") || wanted_block_component("block_in-01") ||
             wanted_block_component("surprise-0") || wanted_block_component("ffn_moe_logits-1")) return 46;
     return 0;
