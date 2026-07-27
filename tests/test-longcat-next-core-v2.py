@@ -300,6 +300,13 @@ def synthetic_router_model(scaling=1.0):
 
 
 class CoreV2Tests(unittest.TestCase):
+    def test_all_block_live_call_uses_sequence_dimension(self):
+        self.assertEqual(core.prepared_sequence_token_count(np.zeros((1, 5), np.int64)), 5)
+        for malformed in (np.zeros((5,), np.int64), np.zeros((2, 5), np.int64),
+                          np.zeros((1, 0), np.int64)):
+            with self.subTest(shape=malformed.shape), self.assertRaises(core.CoreFixtureError):
+                core.prepared_sequence_token_count(malformed)
+
     def test_all_block_diagnostic_inventory_and_contract_isolation(self):
         self.assertEqual(core.diagnostic_serialize_blocks(True), tuple(range(28)))
         self.assertEqual(core.diagnostic_serialize_blocks(False), ())

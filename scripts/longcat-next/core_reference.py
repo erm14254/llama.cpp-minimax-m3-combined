@@ -1207,6 +1207,14 @@ def diagnostic_serialize_blocks(enabled):
     return tuple(range(28)) if enabled else ()
 
 
+def prepared_sequence_token_count(input_ids):
+    shape = tuple(input_ids.shape)
+    require(len(shape) == 2, f"prepared input_ids must have rank 2, got shape {shape}")
+    require(shape[0] == 1, f"prepared input_ids must have batch size 1, got shape {shape}")
+    require(shape[1] > 0, f"prepared input_ids must contain at least one token, got shape {shape}")
+    return int(shape[1])
+
+
 def load_case_ids(weight_free_fixture, tokenizer):
     corpus = read_json(weight_free_fixture, "weight-free fixture")
     cases = []
@@ -1349,7 +1357,8 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_
                     f"{attention_backend} requested but the text trunk did not invoke SDPA")
         if serialize_all_physical_blocks:
             write_all_physical_blocks_diagnostic(
-                diagnostic_blocks, finite_checker.report_dir, len(prepared["input_ids"]))
+                diagnostic_blocks, finite_checker.report_dir,
+                prepared_sequence_token_count(prepared["input_ids"]))
     finally:
         for handle in handles:
             handle.remove()
