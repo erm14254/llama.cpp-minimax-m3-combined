@@ -1216,6 +1216,27 @@ llm_graph_longcat_moe_route llm_graph_build_longcat_moe_route(
     return res;
 }
 
+ggml_tensor * llm_graph_build_longcat_even_ffn_output(
+        ggml_context * ctx,
+        ggml_tensor * residual,
+        ggml_tensor * dense_output) {
+    return ggml_add(ctx, residual, dense_output);
+}
+
+ggml_tensor * llm_graph_build_longcat_odd_ffn_output(
+        ggml_context * ctx,
+        ggml_tensor * residual,
+        ggml_tensor * dense_output,
+        ggml_tensor * & shortcut) {
+    ggml_tensor * result = llm_graph_build_longcat_even_ffn_output(
+        ctx, residual, dense_output);
+    if (shortcut) {
+        result = ggml_add(ctx, result, shortcut);
+        shortcut = nullptr;
+    }
+    return result;
+}
+
 void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
     // LONGCAT_NGRAM_POSITION_AWARE_HISTORY
     if (!ubatch->token) {

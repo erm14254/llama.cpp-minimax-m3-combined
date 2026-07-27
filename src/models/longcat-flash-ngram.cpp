@@ -606,16 +606,17 @@ llama_model_longcat_flash_ngram::graph::graph(
                 NULL, LLM_FFN_SILU, LLM_FFN_PAR, il);
             cb(cur, "ffn_out", il);
 
-            // Add MoE shortcut from the paired even block
-            if (moe_shortcut) {
-                cur = ggml_add(ctx0, cur, moe_shortcut);
-                cb(cur, "ffn_out_with_moe", il);
-                moe_shortcut = nullptr;
-            }
+            // Preserve Python's left-associative grouping exactly:
+            // (residual + dense MLP[1] output) + shortcut.
+            cur = llm_graph_build_longcat_odd_ffn_output(ctx0, ffn_inp, cur, moe_shortcut);
+            cb(cur, "ffn_out_with_moe", il);
         }
 
-        // residual
-        cur = ggml_add(ctx0, cur, ffn_inp);
+        // The odd path consumed its residual in the ordered helper above.
+        // Even blocks retain the single ordinary residual update.
+        if (is_even_block) {
+            cur = llm_graph_build_longcat_even_ffn_output(ctx0, ffn_inp, cur);
+        }
 
         cur = build_cvec(cur, il);
         cb(cur, "l_out", il);

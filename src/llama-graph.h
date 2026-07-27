@@ -682,6 +682,20 @@ llm_graph_longcat_moe_route llm_graph_build_longcat_moe_route(
         int32_t n_expert_used,
         float expert_weights_scale);
 
+// Ordered LongCat residual helpers. The odd-sublayer helper matches
+// LongcatFlashDecoderLayer.forward() exactly:
+// (residual + dense_output) + shortcut.
+ggml_tensor * llm_graph_build_longcat_even_ffn_output(
+        ggml_context * ctx,
+        ggml_tensor * residual,
+        ggml_tensor * dense_output);
+
+ggml_tensor * llm_graph_build_longcat_odd_ffn_output(
+        ggml_context * ctx,
+        ggml_tensor * residual,
+        ggml_tensor * dense_output,
+        ggml_tensor * & shortcut);
+
 // N-gram hash embedding input for LongCat-Flash-Ngram
 // Computes polynomial rolling hash IDs from token history and current batch,
 // then provides them as I32 input tensors for embedding table lookups.

@@ -235,9 +235,70 @@ static void test_production_route_helper(testing & t) {
     t.assert_true("token 2 identity sum", near(0.0, batch[2].identity_sum));
 }
 
+static void test_odd_ffn_association(testing & t) {
+    struct ggml_init_params params = {
+        /* .mem_size   = */ 1024 * 1024,
+        /* .mem_buffer = */ nullptr,
+        /* .no_alloc   = */ true,
+    };
+    ggml_context * ctx = ggml_init(params);
+    GGML_ASSERT(ctx != nullptr);
+
+    ggml_tensor * residual = ggml_new_tensor_1d(ctx, GGML_TYPE_BF16, 1);
+    ggml_tensor * dense    = ggml_new_tensor_1d(ctx, GGML_TYPE_BF16, 1);
+    ggml_tensor * shortcut = ggml_new_tensor_1d(ctx, GGML_TYPE_BF16, 1);
+    ggml_tensor * even = llm_graph_build_longcat_even_ffn_output(ctx, residual, dense);
+    t.assert_true("even output is one add", even->op == GGML_OP_ADD);
+    t.assert_true("even add starts with residual", even->src[0] == residual);
+    t.assert_true("even add uses dense output once", even->src[1] == dense);
+    ggml_tensor * saved_shortcut = shortcut;
+    ggml_tensor * official = llm_graph_build_longcat_odd_ffn_output(
+        ctx, residual, dense, shortcut);
+
+    t.assert_true("odd helper clears shortcut", shortcut == nullptr);
+    t.assert_true("odd final node is add", official->op == GGML_OP_ADD);
+    t.assert_true("odd final add uses shortcut once", official->src[1] == saved_shortcut);
+    ggml_tensor * residual_dense = official->src[0];
+    t.assert_true("odd first node is add", residual_dense->op == GGML_OP_ADD);
+    t.assert_true("odd first add starts with residual", residual_dense->src[0] == residual);
+    t.assert_true("odd first add then uses dense output", residual_dense->src[1] == dense);
+
+    // Retain the previous association only as a numerical counterexample.
+    ggml_tensor * old_grouping = ggml_add(ctx, ggml_add(ctx, dense, saved_shortcut), residual);
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx, 32, false);
+    ggml_build_forward_expand(graph, official);
+    ggml_build_forward_expand(graph, old_grouping);
+
+    ggml_backend_t backend = ggml_backend_cpu_init();
+    GGML_ASSERT(backend != nullptr);
+    ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
+    GGML_ASSERT(buffer != nullptr);
+    const ggml_bf16_t residual_value = ggml_fp32_to_bf16(-1000.0f);
+    const ggml_bf16_t dense_value = ggml_fp32_to_bf16(-1000.0f);
+    const ggml_bf16_t shortcut_value = ggml_fp32_to_bf16(-100.0f);
+    ggml_backend_tensor_set(residual, &residual_value, 0, sizeof(residual_value));
+    ggml_backend_tensor_set(dense, &dense_value, 0, sizeof(dense_value));
+    ggml_backend_tensor_set(saved_shortcut, &shortcut_value, 0, sizeof(shortcut_value));
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+
+    ggml_bf16_t official_value;
+    ggml_bf16_t old_value;
+    ggml_backend_tensor_get(official, &official_value, 0, sizeof(official_value));
+    ggml_backend_tensor_get(old_grouping, &old_value, 0, sizeof(old_value));
+    t.assert_true("official BF16 association expected value",
+                  ggml_bf16_to_fp32(official_value) == -2096.0f);
+    t.assert_true("old BF16 association differs",
+                  ggml_bf16_to_fp32(old_value) == -2112.0f);
+
+    ggml_backend_buffer_free(buffer);
+    ggml_backend_free(backend);
+    ggml_free(ctx);
+}
+
 int main() {
     testing t(std::cout);
     t.test("longcat router", test_router);
     t.test("longcat production route helper", test_production_route_helper);
+    t.test("longcat odd FFN association", test_odd_ffn_association);
     return t.summary();
 }
