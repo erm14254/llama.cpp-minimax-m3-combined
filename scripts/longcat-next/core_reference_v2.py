@@ -168,9 +168,9 @@ def instrument_router_linear(torch):
             output = original(input_tensor, weight, bias)
             checker.check(output, **common, operation="router_logits", role="router_logits")
             active["router_logits"] = output
-            components = getattr(checker, "block_component_capture", None)
-            if components is not None and active["physical_block"] <= 8:
-                components[f"physical_block_{active['physical_block']:02d}__router_logits"] = output
+            name = f"physical_block_{active['physical_block']:02d}__router_logits"
+            if block_component_capture_requested(checker, name):
+                checker.block_component_capture[name] = output
             return output
         except V2Error as error:
             if checker.first_nonfinite is not None:
@@ -205,6 +205,13 @@ def router_component_values(logits, correction_bias, topk_indices, topk_weights,
     identity_residual = (router_input.view(-1, router_input.shape[-1]) *
                          identity_weight_sum).view(*router_input.shape)
     return probabilities, selection_scores, identity_weight_sum, identity_residual
+
+
+def block_component_capture_requested(checker, name):
+    """Return whether an exact canonical component was requested for this run."""
+    capture = getattr(checker, "block_component_capture", None)
+    expected = getattr(checker, "block_component_expected_names", set())
+    return capture is not None and name in expected
 
 
 def numpy_finite_report(name, value):
@@ -561,21 +568,22 @@ def install_trunk_finite_hooks(model, checker, serialize_blocks=(0, 1, 2, 27), c
                 require(active["linear_call_count"] == 1,
                         f"{name}: expected exactly one intercepted router F.linear call, "
                         f"got {active['linear_call_count']}")
-                components = getattr(checker, "block_component_capture", None)
-                if components is not None and physical <= 8:
+                prefix = f"physical_block_{physical:02d}__"
+                requested = [prefix + suffix for suffix in (
+                    "router_probabilities", "router_selection_scores", "router_topk_indices",
+                    "router_topk_weights", "identity_weight_sum", "identity_residual")]
+                if any(block_component_capture_requested(checker, name) for name in requested):
                     require(active["router_logits"] is not None and active["correction_bias"] is not None,
                             f"{name}: live router component capture is incomplete")
                     router_input = active["router_input"]
                     scores, selection, identity_sum, identity_residual = router_component_values(
                         active["router_logits"], active["correction_bias"], topk_indices,
                         original_weights, router_input)
-                    prefix = f"physical_block_{physical:02d}__"
-                    components[prefix + "router_probabilities"] = scores
-                    components[prefix + "router_selection_scores"] = selection
-                    components[prefix + "router_topk_indices"] = topk_indices
-                    components[prefix + "router_topk_weights"] = original_weights
-                    components[prefix + "identity_weight_sum"] = identity_sum
-                    components[prefix + "identity_residual"] = identity_residual
+                    values = (scores, selection, topk_indices, original_weights,
+                              identity_sum, identity_residual)
+                    for component_name, value in zip(requested, values):
+                        if block_component_capture_requested(checker, component_name):
+                            checker.block_component_capture[component_name] = value
                 if original_report["finite_count"] == original_report["total_elements"]:
                     return
                 require(active["router_logits"] is not None,
@@ -846,6 +854,7 @@ def install_block_component_hooks(model, checker, capture, through=9):
         handles.append(layer.register_forward_hook(
             lambda module, args, output, name=odd_prefix + "block_output": save(name, output)))
     checker.block_component_capture = capture
+    checker.block_component_expected_names = set(block_component_names(through))
     return handles
 
 
@@ -895,6 +904,7 @@ def install_block_component_window_hooks(model, checker, capture, start=10, coun
             handles.append(layer.register_forward_hook(
                 lambda module, args, output, name=prefix + "block_output": save(name, output)))
     checker.block_component_capture = capture
+    checker.block_component_expected_names = expected
     return handles
 
 

@@ -619,6 +619,10 @@ int main(int argc, char ** argv) {
         {"schema_version", 1},
         {"longcat_bf16_boundary_rounding", longcat_bf16_boundary_rounding},
         {"longcat_bf16_hidden_surface_rounding", longcat_bf16_hidden_surface_rounding},
+        {"block_components_diagnostic", block_components_diagnostic},
+        {"block_components_window_diagnostic", block_components_window_diagnostic},
+        {"block_components_window_start", block_components_window_start},
+        {"block_components_window_count", block_components_window_count},
         {"environment_gate", "LLAMA_LONGCAT_BF16_BOUNDARY_ROUNDING"},
         {"environment_gates", {
             "LLAMA_LONGCAT_BF16_BOUNDARY_ROUNDING",

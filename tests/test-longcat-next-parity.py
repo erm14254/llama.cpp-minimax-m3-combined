@@ -414,6 +414,37 @@ class ParityHarnessTests(unittest.TestCase):
                       ["--block-components-diagnostic", "1"]):
             with self.assertRaises(ValueError):
                 PARITY.validate_all_blocks_options(parser.parse_args(window + extra))
+        def without_pair(argv, option):
+            index = argv.index(option)
+            return argv[:index] + argv[index + 2:]
+        crossed = [
+            replay + ["--block-components-window-diagnostic", "1"],
+            window + ["--block-components-diagnostic", "1"],
+            without_pair(window, "--block-components-window-diagnostic"),
+            without_pair(replay, "--block-components-diagnostic"),
+            replay + ["--component-attribution-replay-only", "1"],
+        ]
+        for argv in crossed:
+            with self.subTest(argv=argv), self.assertRaises(ValueError):
+                PARITY.validate_all_blocks_options(parser.parse_args(argv))
+
+    def test_component_window_replay_metadata_binds_exact_window(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); path = root / "capture-run-metadata.json"
+            payload = {"block_components_diagnostic": False,
+                       "block_components_window_diagnostic": True,
+                       "block_components_window_start": 10,
+                       "block_components_window_count": 4}
+            path.write_text(json.dumps(payload), encoding="ascii")
+            self.assertEqual(PARITY.validate_component_window_capture_metadata(root, 10, 4), payload)
+            for key, value in (("block_components_window_start", 12),
+                               ("block_components_window_count", 2),
+                               ("block_components_window_diagnostic", False),
+                               ("block_components_diagnostic", True)):
+                invalid = dict(payload); invalid[key] = value
+                path.write_text(json.dumps(invalid), encoding="ascii")
+                with self.subTest(key=key), self.assertRaises(ValueError):
+                    PARITY.validate_component_window_capture_metadata(root, 10, 4)
 
     def test_bf16_round_to_nearest_even_specials_and_subnormals(self):
         bits = np.array([

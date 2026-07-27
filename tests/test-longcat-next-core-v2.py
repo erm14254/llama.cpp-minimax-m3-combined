@@ -377,6 +377,74 @@ class CoreV2Tests(unittest.TestCase):
             self.assertFalse(metadata["accepted"]); self.assertEqual(metadata["array_count"], 44)
             self.assertTrue(all(row["finite_count"] == row["total_elements"] for row in metadata["arrays"]))
 
+    def test_block_component_window_live_router_capture_at_physical_block_10(self):
+        class ComponentLayer(Module):
+            def __init__(self):
+                super().__init__()
+                self.input_layernorm = [Module(), Module()]
+                self.self_attn = [Module(), Module()]
+                self.post_attention_layernorm = [Module(), Module()]
+                self.mlps = [Module(), Module()]
+                self.mlp = Module(); self.mlp.router = Module()
+        model = type("ComponentModel", (), {})()
+        model.model = type("Trunk", (), {})()
+        model.model.layers = [ComponentLayer() for _ in range(14)]
+        router = model.model.layers[5].mlp.router
+        router.classifier = type("Classifier", (), {
+            "weight": FakeTensor(np.zeros((384, 3072), np.float32), "torch.float32"),
+            "bias": None})()
+        router.config = type("Config", (), {"hidden_size": 3072})()
+        router.e_score_correction_bias = FakeTensor(np.zeros(384, np.float32), "torch.float32")
+        router.top_k = 12; router.n_routed_experts = 384
+        router.routed_scaling_factor = 1.0; router.router_bias = False
+        model.model.named_modules = lambda: [("layers.5.mlp.router", router)]
+
+        with tempfile.TemporaryDirectory() as temporary:
+            checker = v2.TorchFiniteChecker(temporary, "case", "default", 0, FakeTorch)
+            capture = {}
+            v2.install_block_component_window_hooks(model, checker, capture, 10, 4)
+            v2.install_trunk_finite_hooks(model, checker, serialize_blocks=())
+            hidden = FakeTensor(np.zeros((1, 2, 3072), np.float32), "torch.bfloat16")
+            indices = FakeTensor(np.tile(np.arange(256, 268), (2, 1)), "torch.int64")
+            weights = FakeTensor(np.full((2, 12), 1 / 12, np.float32), "torch.float32")
+            with v2.instrument_router_linear(FakeTorch):
+                router.pre[0](router, (hidden,))
+                FakeTorch.nn.functional.linear(
+                    hidden.view(-1, 3072).type(FakeTorch.float32),
+                    router.classifier.weight.type(FakeTorch.float32))
+                router.post[0](router, (hidden,), (indices, weights))
+
+            prefix = "physical_block_10__"
+            router_names = {prefix + suffix for suffix in (
+                "router_logits", "router_probabilities", "router_selection_scores",
+                "router_topk_indices", "router_topk_weights", "identity_weight_sum",
+                "identity_residual")}
+            self.assertTrue(router_names <= set(capture))
+
+            for name in list(capture):
+                capture[name] = capture[name].value
+            for name in v2.block_component_window_names(10, 4):
+                if name in capture: continue
+                suffix = name.split("__", 1)[1]
+                width = (384 if suffix in {"router_logits", "router_probabilities", "router_selection_scores"}
+                         else 12 if suffix in {"router_topk_indices", "router_topk_weights"}
+                         else 1 if suffix == "identity_weight_sum" else 3072)
+                capture[name] = np.zeros((1, 2, width),
+                    np.int64 if suffix == "router_topk_indices" else np.float32)
+            core.write_block_components_window_diagnostic(capture, temporary, 2, 10, 4)
+            with np.load(Path(temporary) / "block-components-window.npz") as archive:
+                self.assertEqual(set(archive.files), set(v2.block_component_window_names(10, 4)))
+
+            checker.block_component_capture = {}
+            checker.block_component_expected_names = set(v2.block_component_names(9))
+            with v2.instrument_router_linear(FakeTorch):
+                router.pre[0](router, (hidden,))
+                FakeTorch.nn.functional.linear(
+                    hidden.view(-1, 3072).type(FakeTorch.float32),
+                    router.classifier.weight.type(FakeTorch.float32))
+                router.post[0](router, (hidden,), (indices, weights))
+            self.assertEqual(checker.block_component_capture, {})
+
     def test_block_component_module_structure_and_tuple_attention_output(self):
         class ComponentLayer(Module):
             def __init__(self, valid=True):

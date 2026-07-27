@@ -1314,15 +1314,21 @@ def build_parser():
 def validate_all_blocks_options(args):
     if args.longcat_bf16_hidden_surface_rounding and not args.longcat_bf16_boundary_rounding:
         raise ValueError("--longcat-bf16-hidden-surface-rounding requires boundary rounding")
-    replay_only = (args.component_replay_only or args.component_attribution_replay_only or
-                   args.component_profile_diff_replay_only or args.component_window_replay_only)
+    replay_flags = (args.component_replay_only, args.component_attribution_replay_only,
+                    args.component_profile_diff_replay_only, args.component_window_replay_only)
+    if sum(replay_flags) > 1:
+        raise ValueError("component replay modes are mutually exclusive")
+    replay_only = any(replay_flags)
     if replay_only:
-        if not args.block_components_diagnostic and not args.block_components_window_diagnostic:
-            raise ValueError("--component-replay-only requires --block-components-diagnostic 1")
         if args.model is not None or args.capture_exe is not None:
             raise ValueError("--component-replay-only must not receive --model or --capture-exe")
         if args.all_blocks_diagnostic or args.all_blocks_reference_npz is not None:
             raise ValueError("--component-replay-only cannot run all-block capture")
+        if args.component_window_replay_only:
+            if not args.block_components_window_diagnostic or args.block_components_diagnostic:
+                raise ValueError("window replay requires only --block-components-window-diagnostic 1")
+        elif not args.block_components_diagnostic or args.block_components_window_diagnostic:
+            raise ValueError("canonical replay requires only --block-components-diagnostic 1")
         if args.component_profile_diff_replay_only:
             required = (args.baseline_capture_dir, args.rounded_capture_dir,
                         args.baseline_profile_identity, args.profile_execution_context)
@@ -1358,6 +1364,23 @@ def validate_all_blocks_options(args):
         raise ValueError("component-window NPZs require window diagnostic mode")
 
 
+def validate_component_window_capture_metadata(root, start, count):
+    """Bind replay to the exact diagnostic window recorded by the capture."""
+    path = Path(root) / "capture-run-metadata.json"
+    if not path.is_file():
+        raise ValueError("component-window replay requires capture-run-metadata.json")
+    metadata = json.loads(path.read_text(encoding="ascii"))
+    expected = (True, int(start), int(count))
+    observed = (metadata.get("block_components_window_diagnostic"),
+                metadata.get("block_components_window_start"),
+                metadata.get("block_components_window_count"))
+    if observed != expected:
+        raise ValueError(f"component-window metadata mismatch: expected {expected}, got {observed}")
+    if metadata.get("block_components_diagnostic") is not False:
+        raise ValueError("component-window metadata must disable canonical component capture")
+    return metadata
+
+
 def main():
     args = build_parser().parse_args()
     try:
@@ -1390,6 +1413,9 @@ def main():
         raise ValueError(f"expected eight-token greedy references for both tokenizer prompts, got {greedy_cases}")
     if replay_only:
         if args.component_window_replay_only:
+            validate_component_window_capture_metadata(
+                args.output_dir, args.block_components_window_start,
+                args.block_components_window_count)
             criterion = policy["bf16"]["physical_block_02"]
             capture_dir = args.output_dir / cases[0]["name"]
             if not capture_dir.is_dir(): capture_dir = args.output_dir
