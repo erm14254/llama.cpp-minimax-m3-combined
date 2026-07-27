@@ -45,7 +45,8 @@ class ParityHarnessTests(unittest.TestCase):
                 cpp_name = f"{base}-{block}"
                 raw = root / f"{cpp_name}.raw"
                 cpp.reshape(-1).tofile(raw)
-                rows.append(f"{cpp_name}\t{'i32' if is_indices else 'f32'}\t{width},2,1,1\t{raw.name}")
+                dims = "1,12,2,1" if suffix == "router_topk_weights" else f"{width},2,1,1"
+                rows.append(f"{cpp_name}\t{'i32' if is_indices else 'f32'}\t{dims}\t{raw.name}")
             (root / "block-components-diagnostics.tsv").write_text(
                 "\n".join(rows) + "\n", encoding="ascii")
             default_path = root / "default.npz"; math_path = root / "math.npz"
@@ -65,6 +66,19 @@ class ParityHarnessTests(unittest.TestCase):
             self.assertEqual(report["first_component_outside_diagnostic_criterion_vs_both_backends"],
                              "physical_block_03__attention_output")
             self.assertEqual(report["first_large_discrepancy_classification"], "attention output")
+
+    def test_router_topk_weight_production_layout_decodes_token_expert_order(self):
+        name = "physical_block_00__router_topk_weights"
+        values = np.arange(24, dtype=np.float32).reshape(1, 2, 12)
+        with tempfile.TemporaryDirectory() as td:
+            raw = Path(td) / "weights.raw"
+            values.reshape(-1).tofile(raw)
+            decoded = PARITY.decode_component_raw(name, "f32", (1, 12, 2, 1), raw)
+            self.assertEqual(decoded.shape, (1, 2, 12))
+            np.testing.assert_array_equal(decoded, values)
+            for malformed in ((12, 2, 1, 1), (1, 2, 12, 1), (1, 12, 2, 2)):
+                with self.assertRaisesRegex(ValueError, r"\[1,12,tokens,1\]"):
+                    PARITY.decode_component_raw(name, "f32", malformed, raw)
 
     def test_component_manifest_rejects_duplicate_missing_and_nonfinite(self):
         with tempfile.TemporaryDirectory() as td:

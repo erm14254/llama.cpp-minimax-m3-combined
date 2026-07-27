@@ -169,12 +169,45 @@ def decode_raw(dtype_name, dims, path, kind):
     return raw.reshape((dims[1], dims[0]))[None, :, :]
 
 
-def decode_component_raw(dtype_name, dims, path):
-    if dtype_name == "i32":
+def decode_component_raw(canonical_name, dtype_name, dims, path):
+    """Decode the validated GGML layout for one canonical component surface."""
+    suffix = canonical_name.split("__", 1)[1]
+    expected_width = (384 if suffix in {
+        "router_logits", "router_probabilities", "router_selection_scores"}
+        else 12 if suffix in {"router_topk_indices", "router_topk_weights"}
+        else 1 if suffix == "identity_weight_sum" else 3072)
+    if suffix == "router_topk_weights":
+        if len(dims) != 4 or dims[0] != 1 or dims[1] != 12 or dims[2] <= 0 or dims[3] != 1:
+            raise ValueError(
+                f"{canonical_name}: router top-k weights require GGML layout "
+                f"[1,12,tokens,1], got {dims}")
+        if dtype_name == "i32":
+            raise ValueError(f"{canonical_name}: router top-k weights must be floating point")
+        dtype = {"f32": np.float32, "f16": np.float16, "bf16": np.uint16}[dtype_name]
+        raw = np.fromfile(path, dtype=dtype)
+        if raw.size != np.prod(dims):
+            raise ValueError(f"{path}: raw component element count differs from shape")
+        if dtype_name == "bf16":
+            raw = (raw.astype(np.uint32) << 16).view(np.float32)
+        else:
+            raw = raw.astype(np.float32)
+        # GGML ne[0] is contiguous: [1, top_k, tokens, 1] becomes
+        # the canonical [batch=1, tokens, top_k] surface.
+        return raw.reshape((dims[2], dims[1], dims[0]))[:, :, 0][None, :, :]
+
+    if (len(dims) != 4 or dims[0] != expected_width or dims[1] <= 0 or
+            dims[2] != 1 or dims[3] != 1):
+        raise ValueError(
+            f"{canonical_name}: expected GGML layout [{expected_width},tokens,1,1], got {dims}")
+    if suffix == "router_topk_indices":
+        if dtype_name != "i32":
+            raise ValueError(f"{canonical_name}: router top-k indices must be i32")
         raw = np.fromfile(path, dtype=np.int32)
         if raw.size != np.prod(dims):
             raise ValueError(f"{path}: raw component element count differs from shape")
         return raw.reshape((dims[1], dims[0]))[None, :, :]
+    if dtype_name == "i32":
+        raise ValueError(f"{canonical_name}: floating component unexpectedly uses i32")
     return decode_raw(dtype_name, dims, path, "hidden")
 
 
@@ -309,7 +342,7 @@ def compare_block_components(default_npz, math_npz, capture_dir, attention_mask,
     for name in component_names():
         block = int(name[15:17]); suffix = name.split("__", 1)[1]
         dtype, dims, raw = manifest[name]
-        cpp = decode_component_raw(dtype, dims, raw)
+        cpp = decode_component_raw(name, dtype, dims, raw)
         default = np.asarray(default_npz[name]); math = np.asarray(math_npz[name])
         expected_width = (384 if suffix in {"router_logits", "router_probabilities", "router_selection_scores"}
                           else 12 if suffix in {"router_topk_indices", "router_topk_weights"}
