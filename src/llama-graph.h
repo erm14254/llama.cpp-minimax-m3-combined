@@ -695,13 +695,30 @@ llm_graph_longcat_moe_route llm_graph_build_longcat_moe_route(
 ggml_tensor * llm_graph_build_longcat_even_ffn_output(
         ggml_context * ctx,
         ggml_tensor * residual,
-        ggml_tensor * dense_output);
+        ggml_tensor * dense_output,
+        bool bf16_boundary_rounding = false);
 
 ggml_tensor * llm_graph_build_longcat_odd_ffn_output(
         ggml_context * ctx,
         ggml_tensor * residual,
         ggml_tensor * dense_output,
-        ggml_tensor * & shortcut);
+        ggml_tensor * & shortcut,
+        bool bf16_boundary_rounding = false);
+
+// Temporary diagnostic precision spike. Disabled calls preserve the input
+// pointer; enabled calls perform an actual F32 -> BF16 -> F32 graph round trip.
+ggml_tensor * llm_graph_build_longcat_bf16_round_trip(
+        ggml_context * ctx,
+        ggml_tensor * tensor,
+        bool enabled);
+
+ggml_tensor * llm_graph_build_longcat_boundary_add(
+        ggml_context * ctx,
+        ggml_tensor * lhs,
+        ggml_tensor * rhs,
+        bool bf16_boundary_rounding);
+
+bool llm_graph_longcat_bf16_boundary_rounding_enabled(llm_arch arch);
 
 // N-gram hash embedding input for LongCat-Flash-Ngram
 // Computes polynomial rolling hash IDs from token history and current batch,

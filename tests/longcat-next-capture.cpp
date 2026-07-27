@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <iostream>
 #include <stdexcept>
 #include <set>
 #include <string>
@@ -114,6 +115,15 @@ static bool parse_binary_flag(const std::string & value, bool & result) {
     if (value != "0" && value != "1") return false;
     result = value == "1";
     return true;
+}
+
+static bool set_longcat_bf16_boundary_rounding(bool enabled) {
+    const char * value = enabled ? "1" : "0";
+#ifdef _WIN32
+    return _putenv_s("LLAMA_LONGCAT_BF16_BOUNDARY_ROUNDING", value) == 0;
+#else
+    return setenv("LLAMA_LONGCAT_BF16_BOUNDARY_ROUNDING", value, 1) == 0;
+#endif
 }
 
 static std::vector<uint8_t> read_logical_tensor_bytes(const ggml_tensor * tensor) {
@@ -485,6 +495,7 @@ int main(int argc, char ** argv) {
     bool layer0_diagnostic = false;
     bool all_blocks_diagnostic = false;
     bool block_components_diagnostic = false;
+    bool longcat_bf16_boundary_rounding = false;
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string key = argv[i];
         if (key == "--model") model_path = argv[i + 1];
@@ -506,6 +517,8 @@ int main(int argc, char ** argv) {
             if (!parse_binary_flag(argv[i + 1], all_blocks_diagnostic)) return 2;
         } else if (key == "--block-components-diagnostic") {
             if (!parse_binary_flag(argv[i + 1], block_components_diagnostic)) return 2;
+        } else if (key == "--longcat-bf16-boundary-rounding") {
+            if (!parse_binary_flag(argv[i + 1], longcat_bf16_boundary_rounding)) return 2;
         }
         else return 2;
     }
@@ -516,6 +529,15 @@ int main(int argc, char ** argv) {
     for (const auto & spec : manifest.at("cases")) longest = std::max(longest, spec.at("input_ids").size());
     const uint32_t n_ctx = longest + 8 + 16; // eight generated tokens plus safety margin
     fs::create_directories(output);
+    if (!set_longcat_bf16_boundary_rounding(longcat_bf16_boundary_rounding)) return 2;
+    const json run_metadata = {
+        {"schema_version", 1},
+        {"longcat_bf16_boundary_rounding", longcat_bf16_boundary_rounding},
+        {"environment_gate", "LLAMA_LONGCAT_BF16_BOUNDARY_ROUNDING"},
+    };
+    std::ofstream(output / "capture-run-metadata.json") << run_metadata.dump(2) << '\n';
+    std::cerr << "longcat-next-capture: BF16 boundary rounding = "
+              << (longcat_bf16_boundary_rounding ? "enabled" : "disabled") << '\n';
     llama_backend_init();
     auto model_params = llama_model_default_params();
     model_params.n_gpu_layers = n_gpu_layers;

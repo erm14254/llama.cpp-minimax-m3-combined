@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <numeric>
 #include <string>
@@ -295,6 +296,85 @@ static void test_odd_ffn_association(testing & t) {
     ggml_free(ctx);
 }
 
+static void test_bf16_boundary_rounding(testing & t) {
+    ggml_init_params params = { 1024 * 1024, nullptr, true };
+    ggml_context * ctx = ggml_init(params);
+    GGML_ASSERT(ctx != nullptr);
+    ggml_tensor * input = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 10);
+    t.assert_true("disabled round trip returns input",
+                  llm_graph_build_longcat_bf16_round_trip(ctx, input, false) == input);
+    ggml_tensor * rounded = llm_graph_build_longcat_bf16_round_trip(ctx, input, true);
+    t.assert_true("round trip output stays F32", rounded->type == GGML_TYPE_F32);
+    t.assert_true("round trip final node is cast", rounded->op == GGML_OP_CPY);
+    t.assert_true("round trip intermediate is BF16", rounded->src[0]->type == GGML_TYPE_BF16);
+
+    ggml_tensor * lhs = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1);
+    ggml_tensor * rhs = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1);
+    ggml_tensor * disabled_add = llm_graph_build_longcat_boundary_add(ctx, lhs, rhs, false);
+    t.assert_true("disabled boundary remains one F32 add", disabled_add->op == GGML_OP_ADD &&
+                  disabled_add->src[0] == lhs && disabled_add->src[1] == rhs);
+    ggml_tensor * enabled_add = llm_graph_build_longcat_boundary_add(ctx, lhs, rhs, true);
+    t.assert_true("enabled boundary has one add under two casts",
+                  enabled_add->src[0]->src[0]->op == GGML_OP_ADD);
+
+    ggml_tensor * shortcut = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1);
+    ggml_tensor * saved = shortcut;
+    ggml_tensor * odd = llm_graph_build_longcat_odd_ffn_output(ctx, lhs, rhs, shortcut, true);
+    t.assert_true("enabled odd clears shortcut", shortcut == nullptr);
+    t.assert_true("enabled odd final round trip follows shortcut add",
+                  odd->src[0]->src[0]->op == GGML_OP_ADD &&
+                  odd->src[0]->src[0]->src[1] == saved);
+    t.assert_true("enabled odd first round trip preserves official residual+dense association",
+                  odd->src[0]->src[0]->src[0]->src[0]->src[0]->op == GGML_OP_ADD &&
+                  odd->src[0]->src[0]->src[0]->src[0]->src[0]->src[0] == lhs &&
+                  odd->src[0]->src[0]->src[0]->src[0]->src[0]->src[1] == rhs);
+
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx, 64, false);
+    ggml_build_forward_expand(graph, rounded);
+    ggml_backend_t backend = ggml_backend_cpu_init();
+    ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
+    std::array<uint32_t, 10> bits = {
+        0x3f808000u, 0xbf808000u, 0x3f818000u, 0xbf818000u,
+        0x7f800000u, 0xff800000u, 0x7fc00001u, 0x00000000u,
+        0x80000000u, 0x00000001u };
+    std::array<float, 10> values = {};
+    std::memcpy(values.data(), bits.data(), sizeof(bits));
+    ggml_backend_tensor_set(input, values.data(), 0, sizeof(values));
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+    std::array<float, 10> actual = {};
+    ggml_backend_tensor_get(rounded, actual.data(), 0, sizeof(actual));
+    for (size_t i = 0; i < values.size(); ++i) {
+        const float expected = ggml_bf16_to_fp32(ggml_fp32_to_bf16(values[i]));
+        if (std::isnan(expected)) {
+            t.assert_true("BF16 round trip preserves NaN", std::isnan(actual[i]));
+        } else {
+            uint32_t expected_bits, actual_bits;
+            std::memcpy(&expected_bits, &expected, sizeof(expected_bits));
+            std::memcpy(&actual_bits, &actual[i], sizeof(actual_bits));
+            t.assert_true("BF16 round trip exact bits", expected_bits == actual_bits);
+        }
+    }
+
+#ifdef _WIN32
+    _putenv_s("LLAMA_LONGCAT_BF16_BOUNDARY_ROUNDING", "1");
+#else
+    setenv("LLAMA_LONGCAT_BF16_BOUNDARY_ROUNDING", "1", 1);
+#endif
+    t.assert_true("diagnostic gate enables LongCat Next",
+                  llm_graph_longcat_bf16_boundary_rounding_enabled(LLM_ARCH_LONGCAT_NEXT));
+    t.assert_true("diagnostic gate never affects LongCat Flash Ngram",
+                  !llm_graph_longcat_bf16_boundary_rounding_enabled(LLM_ARCH_LONGCAT_FLASH_NGRAM));
+#ifdef _WIN32
+    _putenv_s("LLAMA_LONGCAT_BF16_BOUNDARY_ROUNDING", "0");
+#else
+    setenv("LLAMA_LONGCAT_BF16_BOUNDARY_ROUNDING", "0", 1);
+#endif
+
+    ggml_backend_buffer_free(buffer);
+    ggml_backend_free(backend);
+    ggml_free(ctx);
+}
+
 static void test_capture_alias_preserves_source_name(testing & t) {
     struct ggml_init_params params = {
         /* .mem_size   = */ 1024 * 1024,
@@ -368,6 +448,7 @@ int main() {
     t.test("longcat router", test_router);
     t.test("longcat production route helper", test_production_route_helper);
     t.test("longcat odd FFN association", test_odd_ffn_association);
+    t.test("longcat BF16 boundary rounding", test_bf16_boundary_rounding);
     t.test("longcat capture alias name preservation", test_capture_alias_preserves_source_name);
     return t.summary();
 }

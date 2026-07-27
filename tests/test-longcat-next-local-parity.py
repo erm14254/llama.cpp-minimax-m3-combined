@@ -539,6 +539,18 @@ def semantic_router_report(cpp_indices, default_indices, math_indices,
             not row["identity_expert_presence_equivalent"] for row in token_rows),
         "has_identity_only_id_substitution": any(
             row["raw_set_mismatch_is_identity_only_id_substitution"] for row in token_rows),
+        "has_cpp_vs_python_default_real_expert_set_difference": any(
+            not row["pairwise_selected_real_expert_set_equality"]["cpp_vs_python_default"]
+            for row in token_rows),
+        "has_cpp_vs_python_math_real_expert_set_difference": any(
+            not row["pairwise_selected_real_expert_set_equality"]["cpp_vs_python_math"]
+            for row in token_rows),
+        "has_cpp_vs_python_default_identity_presence_difference": any(
+            not row["pairwise_identity_expert_presence_equivalent"]["cpp_vs_python_default"]
+            for row in token_rows),
+        "has_cpp_vs_python_math_identity_presence_difference": any(
+            not row["pairwise_identity_expert_presence_equivalent"]["cpp_vs_python_math"]
+            for row in token_rows),
     }
 
 
@@ -596,10 +608,35 @@ def reconstruct_component_boundaries(arrays):
     return output
 
 
-def classify_numerical_attribution(router_reports, floating_reports, first_persistent_block):
+def reconstruction_proves_bf16_boundary_contract(reconstruction):
+    expected = {
+        "cpp": ("pure_f32_addition", "pure_f32_addition", "all_f32_official_association"),
+        "python_default": ("bf16_round_after_addition", "bf16_round_after_addition",
+                           "bf16_after_each_official_addition"),
+        "python_math": ("bf16_round_after_addition", "bf16_round_after_addition",
+                        "bf16_after_each_official_addition"),
+    }
+    for side, (attention_name, even_name, odd_name) in expected.items():
+        rows = reconstruction.get(side, [])
+        if len(rows) != 10:
+            return False
+        for row in rows:
+            if row["attention_residual"]["byte_exact_alternatives"] != [attention_name]:
+                return False
+            output_name = even_name if row["physical_block"] % 2 == 0 else odd_name
+            if row["block_output"]["byte_exact_alternatives"] != [output_name]:
+                return False
+    return True
+
+
+def classify_numerical_attribution(router_reports, floating_reports, first_persistent_block,
+                                   reconstruction=None):
     for router in router_reports:
-        semantic_difference = (router["has_real_expert_set_difference"] or
-                               router["has_identity_presence_difference"])
+        semantic_difference = (
+            (router.get("has_cpp_vs_python_default_real_expert_set_difference", False) or
+             router.get("has_cpp_vs_python_default_identity_presence_difference", False)) and
+            (router.get("has_cpp_vs_python_math_real_expert_set_difference", False) or
+             router.get("has_cpp_vs_python_math_identity_presence_difference", False)))
         if (semantic_difference and not router["shortcut_within_criterion_vs_both"] and
                 (first_persistent_block is None or router["physical_block"] < first_persistent_block)):
             return "real router-selection divergence"
@@ -615,6 +652,8 @@ def classify_numerical_attribution(router_reports, floating_reports, first_persi
     if any(row["suffix"] in {"attention_norm", "ffn_norm"} and row["outside_vs_both"] and
            not row["python_backends_outside_criterion"] for row in floating_reports):
         return "norm sensitivity"
+    if reconstruction is not None and reconstruction_proves_bf16_boundary_contract(reconstruction):
+        return "BF16 residual-boundary precision contract mismatch"
     return "cumulative numerical drift with no discrete local operator failure"
 
 
@@ -668,6 +707,8 @@ def numerical_attribution_report(default_npz, math_npz, capture_dir, attention_m
 
     routers = []
     first_real = None
+    first_cpp_default_real = None
+    first_cpp_math_real = None
     first_identity_only = None
     for block in range(0, 10, 2):
         prefix = f"physical_block_{block:02d}__"
@@ -684,6 +725,10 @@ def numerical_attribution_report(default_npz, math_npz, capture_dir, attention_m
         routers.append(semantic)
         if semantic["has_real_expert_set_difference"] and first_real is None:
             first_real = block
+        if semantic["has_cpp_vs_python_default_real_expert_set_difference"] and first_cpp_default_real is None:
+            first_cpp_default_real = block
+        if semantic["has_cpp_vs_python_math_real_expert_set_difference"] and first_cpp_math_real is None:
+            first_cpp_math_real = block
         if semantic["has_identity_only_id_substitution"] and first_identity_only is None:
             first_identity_only = block
 
@@ -696,12 +741,15 @@ def numerical_attribution_report(default_npz, math_npz, capture_dir, attention_m
             first_persistent = block
             break
     reconstruction = {name: reconstruct_component_boundaries(values) for name, values in sides.items()}
-    classification = classify_numerical_attribution(routers, floating, first_persistent)
+    classification = classify_numerical_attribution(
+        routers, floating, first_persistent, reconstruction)
     return {
         "accepted": False, "kind": "longcat-next-block-component-numerical-attribution",
         "diagnostic_criterion_source": "bf16.physical_block_02",
         "diagnostic_criterion": dict(criterion),
         "first_physical_block_with_real_expert_set_difference": first_real,
+        "first_physical_block_with_cpp_vs_python_default_real_expert_set_difference": first_cpp_default_real,
+        "first_physical_block_with_cpp_vs_python_math_real_expert_set_difference": first_cpp_math_real,
         "first_physical_block_with_identity_only_id_substitution": first_identity_only,
         "first_persistent_block_output_failure_vs_both_backends": first_persistent,
         "first_component_where_cpp_bf16_rounding_changes_default_pass_state": first_default_change,
@@ -829,6 +877,7 @@ def build_parser():
     p.add_argument("--all-blocks-diagnostic", type=int, choices=(0, 1), default=0)
     p.add_argument("--all-blocks-reference-npz", type=Path)
     p.add_argument("--block-components-diagnostic", type=int, choices=(0, 1), default=0)
+    p.add_argument("--longcat-bf16-boundary-rounding", type=int, choices=(0, 1), default=0)
     p.add_argument("--block-components-default-npz", type=Path)
     p.add_argument("--block-components-math-npz", type=Path)
     p.add_argument("--component-replay-only", type=int, choices=(0, 1), default=0)
@@ -919,7 +968,8 @@ def main():
                     "--threads", str(args.threads), "--flash-attn", args.flash_attn,
                     "--layer0-diagnostic", str(args.layer0_diagnostic),
                     "--all-blocks-diagnostic", str(args.all_blocks_diagnostic),
-                    "--block-components-diagnostic", str(args.block_components_diagnostic)]
+                    "--block-components-diagnostic", str(args.block_components_diagnostic),
+                    "--longcat-bf16-boundary-rounding", str(args.longcat_bf16_boundary_rounding)]
     try:
         run_capture_after_validation(validation, command)
     except ValueError as exc:

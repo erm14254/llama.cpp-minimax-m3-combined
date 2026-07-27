@@ -327,6 +327,8 @@ llama_model_longcat_flash_ngram::graph::graph(
 
     // MoE shortcut: computed on even blocks, added on the following odd block
     ggml_tensor * moe_shortcut = nullptr;
+    const bool bf16_boundary_rounding =
+        llm_graph_longcat_bf16_boundary_rounding_enabled(model.arch);
 
     inpL = build_inp_embd(model.tok_embd);
     // Capture the computed token embedding result, not the optional vector-
@@ -519,7 +521,8 @@ llama_model_longcat_flash_ngram::graph::graph(
         }
 
         // attention residual
-        ggml_tensor * ffn_inp = ggml_add(ctx0, cur, inpSA);
+        ggml_tensor * ffn_inp = llm_graph_build_longcat_boundary_add(
+            ctx0, cur, inpSA, bf16_boundary_rounding);
         cb(ffn_inp, "ffn_inp", il);
 
         // FFN norm
@@ -587,7 +590,8 @@ llama_model_longcat_flash_ngram::graph::graph(
                 ggml_tensor * identity_residual = ggml_mul(ctx0, cur, route.identity_weight_sum);
                 cb(identity_residual, "identity_residual", il);
 
-                moe_shortcut = ggml_add(ctx0, moe_out, identity_residual);
+                moe_shortcut = llm_graph_build_longcat_boundary_add(
+                    ctx0, moe_out, identity_residual, bf16_boundary_rounding);
                 cb(moe_shortcut, "moe_shortcut", il);
             }
 
@@ -612,14 +616,16 @@ llama_model_longcat_flash_ngram::graph::graph(
 
             // Preserve Python's left-associative grouping exactly:
             // (residual + dense MLP[1] output) + shortcut.
-            cur = llm_graph_build_longcat_odd_ffn_output(ctx0, ffn_inp, cur, moe_shortcut);
+            cur = llm_graph_build_longcat_odd_ffn_output(
+                ctx0, ffn_inp, cur, moe_shortcut, bf16_boundary_rounding);
             cb(cur, "ffn_out_with_moe", il);
         }
 
         // The odd path consumed its residual in the ordered helper above.
         // Even blocks retain the single ordinary residual update.
         if (is_even_block) {
-            cur = llm_graph_build_longcat_even_ffn_output(ctx0, ffn_inp, cur);
+            cur = llm_graph_build_longcat_even_ffn_output(
+                ctx0, ffn_inp, cur, bf16_boundary_rounding);
         }
 
         cur = build_cvec(cur, il);

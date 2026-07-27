@@ -285,6 +285,8 @@ class ParityHarnessTests(unittest.TestCase):
     def test_router_classification_requires_semantic_difference_and_failing_shortcut(self):
         identity_router = [{"physical_block": 0, "has_real_expert_set_difference": False,
                             "has_identity_presence_difference": False,
+                            "has_cpp_vs_python_default_real_expert_set_difference": False,
+                            "has_cpp_vs_python_math_real_expert_set_difference": False,
                             "shortcut_within_criterion_vs_both": True}]
         local_passes = [{"suffix": suffix, "outside_vs_both": False,
                          "python_backends_outside_criterion": False}
@@ -293,9 +295,38 @@ class ParityHarnessTests(unittest.TestCase):
                          "cumulative numerical drift with no discrete local operator failure")
         real_router = [{"physical_block": 0, "has_real_expert_set_difference": True,
                         "has_identity_presence_difference": False,
+                        "has_cpp_vs_python_default_real_expert_set_difference": True,
+                        "has_cpp_vs_python_math_real_expert_set_difference": True,
                         "shortcut_within_criterion_vs_both": False}]
         self.assertEqual(PARITY.classify_numerical_attribution(real_router, local_passes, 7),
                          "real router-selection divergence")
+
+    def test_bf16_boundary_contract_attribution_and_pairwise_router_fields(self):
+        def metric(exact):
+            return {"byte_exact_alternatives": [exact]}
+        reconstruction = {}
+        expected = {
+            "cpp": ("pure_f32_addition", "pure_f32_addition", "all_f32_official_association"),
+            "python_default": ("bf16_round_after_addition", "bf16_round_after_addition",
+                               "bf16_after_each_official_addition"),
+            "python_math": ("bf16_round_after_addition", "bf16_round_after_addition",
+                            "bf16_after_each_official_addition"),
+        }
+        for side, names in expected.items():
+            reconstruction[side] = [
+                {"physical_block": block, "attention_residual": metric(names[0]),
+                 "block_output": metric(names[1] if block % 2 == 0 else names[2])}
+                for block in range(10)]
+        self.assertTrue(PARITY.reconstruction_proves_bf16_boundary_contract(reconstruction))
+        self.assertEqual(PARITY.classify_numerical_attribution([], [], None, reconstruction),
+                         "BF16 residual-boundary precision contract mismatch")
+
+        sums = np.ones((1, 1, 1), np.float32)
+        report = PARITY.semantic_router_report(
+            np.array([[[1, 256]]]), np.array([[[1, 256]]]), np.array([[[2, 256]]]),
+            sums, sums, sums)
+        self.assertFalse(report["has_cpp_vs_python_default_real_expert_set_difference"])
+        self.assertTrue(report["has_cpp_vs_python_math_real_expert_set_difference"])
 
     def test_residual_reconstruction_f32_bf16_and_odd_groupings(self):
         target_f32 = np.array([[[-2100.0]]], np.float32)

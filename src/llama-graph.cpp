@@ -15,6 +15,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <numeric>
 #include <sstream>
@@ -1230,22 +1231,57 @@ llm_graph_longcat_moe_route llm_graph_build_longcat_moe_route(
 ggml_tensor * llm_graph_build_longcat_even_ffn_output(
         ggml_context * ctx,
         ggml_tensor * residual,
-        ggml_tensor * dense_output) {
-    return ggml_add(ctx, residual, dense_output);
+        ggml_tensor * dense_output,
+        bool bf16_boundary_rounding) {
+    return llm_graph_build_longcat_boundary_add(ctx, residual, dense_output, bf16_boundary_rounding);
 }
 
 ggml_tensor * llm_graph_build_longcat_odd_ffn_output(
         ggml_context * ctx,
         ggml_tensor * residual,
         ggml_tensor * dense_output,
-        ggml_tensor * & shortcut) {
+        ggml_tensor * & shortcut,
+        bool bf16_boundary_rounding) {
     ggml_tensor * result = llm_graph_build_longcat_even_ffn_output(
-        ctx, residual, dense_output);
+        ctx, residual, dense_output, bf16_boundary_rounding);
     if (shortcut) {
-        result = ggml_add(ctx, result, shortcut);
+        result = llm_graph_build_longcat_boundary_add(ctx, result, shortcut, bf16_boundary_rounding);
         shortcut = nullptr;
     }
     return result;
+}
+
+ggml_tensor * llm_graph_build_longcat_bf16_round_trip(
+        ggml_context * ctx,
+        ggml_tensor * tensor,
+        bool enabled) {
+    if (!enabled) {
+        return tensor;
+    }
+    GGML_ASSERT(tensor->type == GGML_TYPE_F32);
+    return ggml_cast(ctx, ggml_cast(ctx, tensor, GGML_TYPE_BF16), GGML_TYPE_F32);
+}
+
+ggml_tensor * llm_graph_build_longcat_boundary_add(
+        ggml_context * ctx,
+        ggml_tensor * lhs,
+        ggml_tensor * rhs,
+        bool bf16_boundary_rounding) {
+    return llm_graph_build_longcat_bf16_round_trip(
+        ctx, ggml_add(ctx, lhs, rhs), bf16_boundary_rounding);
+}
+
+bool llm_graph_longcat_bf16_boundary_rounding_enabled(llm_arch arch) {
+    if (arch != LLM_ARCH_LONGCAT_NEXT) {
+        return false;
+    }
+    const char * value = std::getenv("LLAMA_LONGCAT_BF16_BOUNDARY_ROUNDING");
+    if (value == nullptr || std::strcmp(value, "0") == 0) {
+        return false;
+    }
+    GGML_ASSERT(std::strcmp(value, "1") == 0 &&
+                "LLAMA_LONGCAT_BF16_BOUNDARY_ROUNDING must be exactly 0 or 1");
+    return true;
 }
 
 void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
