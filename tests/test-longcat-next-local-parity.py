@@ -3,9 +3,12 @@
 import argparse
 import json
 import subprocess
+import tempfile
 from pathlib import Path
 
 import numpy as np
+
+ROUTED_EXPERT_COUNT = 384
 
 CPP_TO_REFERENCE = {
     "inp_embd": "base_embedding", "inp_embd_ngram": "fused_pre_trunk_embedding",
@@ -169,7 +172,7 @@ def decode_raw(dtype_name, dims, path, kind):
     return raw.reshape((dims[1], dims[0]))[None, :, :]
 
 
-def decode_component_raw(canonical_name, dtype_name, dims, path):
+def decode_component_raw(canonical_name, dtype_name, dims, path, layout_provenance=None):
     """Decode the validated GGML layout for one canonical component surface."""
     suffix = canonical_name.split("__", 1)[1]
     expected_width = (384 if suffix in {
@@ -203,9 +206,23 @@ def decode_component_raw(canonical_name, dtype_name, dims, path):
         if dtype_name != "i32":
             raise ValueError(f"{canonical_name}: router top-k indices must be i32")
         raw = np.fromfile(path, dtype=np.int32)
-        if raw.size != np.prod(dims):
-            raise ValueError(f"{path}: raw component element count differs from shape")
-        return raw.reshape((dims[1], dims[0]))[None, :, :]
+        compact_count = int(np.prod(dims))
+        legacy_count = (dims[1] - 1) * ROUTED_EXPERT_COUNT + dims[0]
+        if raw.size == compact_count:
+            result = raw.reshape((dims[1], dims[0]))[None, :, :]
+            representation = "compact_logical"
+        elif raw.size == legacy_count:
+            result = np.stack([
+                raw[token * ROUTED_EXPERT_COUNT:token * ROUTED_EXPERT_COUNT + dims[0]]
+                for token in range(dims[1])], axis=0)[None, :, :]
+            representation = "legacy_strided_argsort_view"
+        else:
+            raise ValueError(
+                f"{path}: router top-k index raw count {raw.size} is neither compact "
+                f"{compact_count} nor pinned legacy strided {legacy_count}")
+        if layout_provenance is not None:
+            layout_provenance.append({"name": canonical_name, "representation": representation})
+        return result
     if dtype_name == "i32":
         raise ValueError(f"{canonical_name}: floating component unexpectedly uses i32")
     return decode_raw(dtype_name, dims, path, "hidden")
@@ -339,10 +356,11 @@ def compare_block_components(default_npz, math_npz, capture_dir, attention_mask,
     first_material = None
     classification = None
     indices_by_block = {}
+    decode_provenance = []
     for name in component_names():
         block = int(name[15:17]); suffix = name.split("__", 1)[1]
         dtype, dims, raw = manifest[name]
-        cpp = decode_component_raw(name, dtype, dims, raw)
+        cpp = decode_component_raw(name, dtype, dims, raw, decode_provenance)
         default = np.asarray(default_npz[name]); math = np.asarray(math_npz[name])
         expected_width = (384 if suffix in {"router_logits", "router_probabilities", "router_selection_scores"}
                           else 12 if suffix in {"router_topk_indices", "router_topk_weights"}
@@ -404,6 +422,7 @@ def compare_block_components(default_npz, math_npz, capture_dir, attention_mask,
         classification = "router indices"
     return {"accepted": False, "array_count": 110,
             "diagnostic_criterion_source": "bf16.physical_block_02",
+            "component_decode_provenance": decode_provenance,
             "first_physical_block_with_router_selected_set_difference": first_router_set,
             "first_component_outside_diagnostic_criterion_vs_both_backends": first_material,
             "first_large_discrepancy_classification": classification,
@@ -514,11 +533,11 @@ def compare_case(npz, metadata, case, capture_dir, precision, policy):
 
 def build_parser():
     p = argparse.ArgumentParser()
-    p.add_argument("--model", type=Path, required=True)
+    p.add_argument("--model", type=Path)
     p.add_argument("--reference-dir", type=Path, required=True)
     p.add_argument("--precision", choices=("bf16", "f16"), required=True)
     p.add_argument("--output-dir", type=Path, required=True)
-    p.add_argument("--capture-exe", type=Path, required=True)
+    p.add_argument("--capture-exe", type=Path)
     p.add_argument("--n-gpu-layers", type=int, default=0)
     p.add_argument("--threads", type=int, default=0)
     p.add_argument("--flash-attn", choices=("auto", "disabled", "enabled"), default="auto")
@@ -528,12 +547,22 @@ def build_parser():
     p.add_argument("--block-components-diagnostic", type=int, choices=(0, 1), default=0)
     p.add_argument("--block-components-default-npz", type=Path)
     p.add_argument("--block-components-math-npz", type=Path)
+    p.add_argument("--component-replay-only", type=int, choices=(0, 1), default=0)
     p.add_argument("--case", action="append", default=[], help="capture only this reference case (repeatable)")
     p.add_argument("--tolerance-policy", type=Path, default=Path(__file__).parent / "fixtures/longcat-next/stage1-tolerances.json")
     return p
 
 
 def validate_all_blocks_options(args):
+    if args.component_replay_only:
+        if not args.block_components_diagnostic:
+            raise ValueError("--component-replay-only requires --block-components-diagnostic 1")
+        if args.model is not None or args.capture_exe is not None:
+            raise ValueError("--component-replay-only must not receive --model or --capture-exe")
+        if args.all_blocks_diagnostic or args.all_blocks_reference_npz is not None:
+            raise ValueError("--component-replay-only cannot run all-block capture")
+    elif args.model is None or args.capture_exe is None:
+        raise ValueError("normal parity mode requires --model and --capture-exe")
     if args.all_blocks_diagnostic:
         if len(args.case) != 1:
             raise ValueError("--all-blocks-diagnostic requires exactly one --case")
@@ -562,18 +591,34 @@ def main():
     policy = json.loads(args.tolerance_policy.read_text(encoding="ascii"))
     args.output_dir.mkdir(parents=True, exist_ok=True)
     validation = validate_reference_finiteness(npz, args.output_dir)
-    manifest_path = args.output_dir / "case-manifest.json"
-    cases = make_case_manifest(npz, manifest_path)
+    if args.component_replay_only:
+        with tempfile.TemporaryDirectory() as temporary:
+            cases = make_case_manifest(npz, Path(temporary) / "case-manifest.json")
+    else:
+        manifest_path = args.output_dir / "case-manifest.json"
+        cases = make_case_manifest(npz, manifest_path)
     if args.case:
         selected = set(args.case)
         cases = [case for case in cases if case["reference_prefix"] in selected]
         missing = selected - {case["reference_prefix"] for case in cases}
         if missing:
             raise ValueError(f"unknown requested cases: {sorted(missing)}")
-        manifest_path.write_text(json.dumps({"schema_version": 1, "cases": cases}, indent=2) + "\n", encoding="ascii")
+        if not args.component_replay_only:
+            manifest_path.write_text(json.dumps({"schema_version": 1, "cases": cases}, indent=2) + "\n", encoding="ascii")
     greedy_cases = {case["reference_prefix"] for case in cases if case["greedy_eight_tokens"]}
     if not args.case and greedy_cases != {"tokenizer_prompt_0", "tokenizer_prompt_1"}:
         raise ValueError(f"expected eight-token greedy references for both tokenizer prompts, got {greedy_cases}")
+    if args.component_replay_only:
+        read_manifest(args.output_dir / cases[0]["name"] / "captures.tsv")
+        criterion = policy["bf16"]["physical_block_02"]
+        with np.load(args.block_components_default_npz, allow_pickle=False) as default_components, \
+             np.load(args.block_components_math_npz, allow_pickle=False) as math_components:
+            component_report = compare_block_components(
+                default_components, math_components, args.output_dir / cases[0]["name"],
+                cases[0]["attention_mask"], criterion)
+        (args.output_dir / "block-components-three-way.json").write_text(
+            json.dumps(component_report, indent=2) + "\n", encoding="ascii")
+        return
     command = [str(args.capture_exe), "--model", str(args.model), "--case-manifest", str(manifest_path),
                     "--output-dir", str(args.output_dir), "--n-gpu-layers", str(args.n_gpu_layers),
                     "--threads", str(args.threads), "--flash-attn", args.flash_attn,

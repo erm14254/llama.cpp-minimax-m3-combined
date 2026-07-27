@@ -66,6 +66,28 @@ class ParityHarnessTests(unittest.TestCase):
             self.assertEqual(report["first_component_outside_diagnostic_criterion_vs_both_backends"],
                              "physical_block_03__attention_output")
             self.assertEqual(report["first_large_discrepancy_classification"], "attention output")
+            self.assertTrue(all(row["representation"] == "compact_logical"
+                                for row in report["component_decode_provenance"]))
+
+            # Replay the same complete 110-component capture using the precise
+            # legacy 384-wide argsort-view storage span for every top-k index row.
+            for block in range(0, 10, 2):
+                name = f"physical_block_{block:02d}__router_topk_indices"
+                values = cpp_values[name].reshape(2, 12)
+                legacy = np.full((PARITY.ROUTED_EXPERT_COUNT + 12,), -777, np.int32)
+                legacy[:12] = values[0]
+                legacy[PARITY.ROUTED_EXPERT_COUNT:PARITY.ROUTED_EXPERT_COUNT + 12] = values[1]
+                legacy.tofile(root / f"ffn_moe_topk-{block}.raw")
+            with np.load(default_path, allow_pickle=False) as default_npz, \
+                 np.load(math_path, allow_pickle=False) as math_npz:
+                legacy_report = PARITY.compare_block_components(
+                    default_npz, math_npz, root, [0, 1], {"atol": .125, "rtol": .03125})
+            self.assertTrue(all(row["representation"] == "legacy_strided_argsort_view"
+                                for row in legacy_report["component_decode_provenance"]))
+            legacy_weights = next(row for row in legacy_report["components"]
+                                  if row["name"] == "physical_block_00__router_topk_weights")
+            self.assertEqual(
+                legacy_weights["expert_id_aligned"]["cpp_vs_python_default"]["maximum_absolute_error"], 0)
 
     def test_router_topk_weight_production_layout_decodes_token_expert_order(self):
         name = "physical_block_00__router_topk_weights"
@@ -79,6 +101,33 @@ class ParityHarnessTests(unittest.TestCase):
             for malformed in ((12, 2, 1, 1), (1, 2, 12, 1), (1, 12, 2, 2)):
                 with self.assertRaisesRegex(ValueError, r"\[1,12,tokens,1\]"):
                     PARITY.decode_component_raw(name, "f32", malformed, raw)
+
+    def test_router_topk_indices_compact_and_legacy_strided_replay(self):
+        name = "physical_block_00__router_topk_indices"
+        expected = np.arange(24, dtype=np.int32).reshape(1, 2, 12)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            compact = root / "compact.raw"
+            expected.tofile(compact)
+            provenance = []
+            np.testing.assert_array_equal(
+                PARITY.decode_component_raw(name, "i32", (12, 2, 1, 1), compact, provenance), expected)
+            self.assertEqual(provenance[-1]["representation"], "compact_logical")
+
+            legacy = root / "legacy.raw"
+            storage = np.full((PARITY.ROUTED_EXPERT_COUNT + 12,), 9999, np.int32)
+            storage[:12] = expected[0, 0]
+            storage[PARITY.ROUTED_EXPERT_COUNT:PARITY.ROUTED_EXPERT_COUNT + 12] = expected[0, 1]
+            storage.tofile(legacy)
+            np.testing.assert_array_equal(
+                PARITY.decode_component_raw(name, "i32", (12, 2, 1, 1), legacy, provenance), expected)
+            self.assertEqual(provenance[-1]["representation"], "legacy_strided_argsort_view")
+            for count in (23, 25, PARITY.ROUTED_EXPERT_COUNT + 11,
+                          PARITY.ROUTED_EXPERT_COUNT + 13, 2 * PARITY.ROUTED_EXPERT_COUNT):
+                invalid = root / f"invalid-{count}.raw"
+                np.zeros(count, np.int32).tofile(invalid)
+                with self.assertRaisesRegex(ValueError, "neither compact"):
+                    PARITY.decode_component_raw(name, "i32", (12, 2, 1, 1), invalid)
 
     def test_component_manifest_rejects_duplicate_missing_and_nonfinite(self):
         with tempfile.TemporaryDirectory() as td:
@@ -159,6 +208,19 @@ class ParityHarnessTests(unittest.TestCase):
                                     "--all-blocks-reference-npz", "blocks.npz",
                                     "--case", "eos_window_position_2"])
         PARITY.validate_all_blocks_options(enabled)
+
+    def test_component_replay_mode_forbids_capture_invocation_arguments(self):
+        parser = PARITY.build_parser()
+        replay = ["--reference-dir", "r", "--precision", "bf16", "--output-dir", "existing",
+                  "--component-replay-only", "1", "--block-components-diagnostic", "1",
+                  "--block-components-default-npz", "default.npz",
+                  "--block-components-math-npz", "math.npz",
+                  "--case", "eos_window_position_2"]
+        PARITY.validate_all_blocks_options(parser.parse_args(replay))
+        for extra in (["--model", "model.gguf"], ["--capture-exe", "capture"],
+                      ["--all-blocks-diagnostic", "1"]):
+            with self.assertRaises(ValueError):
+                PARITY.validate_all_blocks_options(parser.parse_args(replay + extra))
 
     def test_reference_finiteness_preflight_writes_report(self):
         class Fixture:

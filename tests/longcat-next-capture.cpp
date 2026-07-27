@@ -1,13 +1,16 @@
 #include "ggml-backend.h"
+#include "ggml-cpu.h"
 #include "llama.h"
 #include "nlohmann/json.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <stdexcept>
 #include <set>
 #include <string>
 #include <utility>
@@ -113,11 +116,34 @@ static bool parse_binary_flag(const std::string & value, bool & result) {
     return true;
 }
 
+static std::vector<uint8_t> read_logical_tensor_bytes(const ggml_tensor * tensor) {
+    if (tensor->type != GGML_TYPE_F32 && tensor->type != GGML_TYPE_F16 &&
+            tensor->type != GGML_TYPE_BF16 && tensor->type != GGML_TYPE_I32) {
+        throw std::runtime_error("unsupported capture tensor type");
+    }
+    if (tensor->nb[0] != ggml_type_size(tensor->type)) {
+        throw std::runtime_error("capture tensor rows are not contiguous along ne[0]");
+    }
+    const size_t row_bytes = ggml_row_size(tensor->type, tensor->ne[0]);
+    const size_t row_count = (size_t) tensor->ne[1] * tensor->ne[2] * tensor->ne[3];
+    std::vector<uint8_t> packed(row_bytes * row_count);
+    size_t destination = 0;
+    for (int64_t i3 = 0; i3 < tensor->ne[3]; ++i3) {
+        for (int64_t i2 = 0; i2 < tensor->ne[2]; ++i2) {
+            for (int64_t i1 = 0; i1 < tensor->ne[1]; ++i1) {
+                const size_t source = i1 * tensor->nb[1] + i2 * tensor->nb[2] + i3 * tensor->nb[3];
+                ggml_backend_tensor_get(tensor, packed.data() + destination, source, row_bytes);
+                destination += row_bytes;
+            }
+        }
+    }
+    return packed;
+}
+
 static void write_capture(ggml_tensor * tensor, const fs::path & dir, std::ofstream & manifest, const std::string & prefix) {
     std::string file = prefix + tensor->name + ".raw";
     for (char & c : file) if (!std::isalnum((unsigned char) c) && c != '-' && c != '_') c = '_';
-    std::vector<uint8_t> bytes(ggml_nbytes(tensor));
-    ggml_backend_tensor_get(tensor, bytes.data(), 0, bytes.size());
+    std::vector<uint8_t> bytes = read_logical_tensor_bytes(tensor);
     std::ofstream(dir / file, std::ios::binary).write((char *) bytes.data(), bytes.size());
     manifest << tensor->name << '\t' << ggml_type_name(tensor->type) << '\t';
     for (int i = 0; i < GGML_MAX_DIMS; ++i) manifest << (i ? "," : "") << tensor->ne[i];
@@ -181,7 +207,92 @@ static llama_context_params capture_context_params(
     return params;
 }
 
+static int packed_serialization_self_test() {
+    ggml_init_params params = { 1024 * 1024, nullptr, true };
+    ggml_context * ctx = ggml_init(params);
+    if (!ctx) return 50;
+    ggml_tensor * logits = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 384, 2);
+    ggml_tensor * topk = ggml_argsort_top_k(ctx, logits, 12);
+    ggml_tensor * hidden = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 3, 2);
+    ggml_tensor * bf16 = ggml_new_tensor_2d(ctx, GGML_TYPE_BF16, 3, 2);
+    ggml_tensor * f16 = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, 3, 2);
+    ggml_tensor * weights = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 1, 12, 2);
+    ggml_tensor * unsupported = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, 1);
+    ggml_cgraph * graph = ggml_new_graph_custom(ctx, 32, false);
+    ggml_build_forward_expand(graph, topk);
+
+    ggml_backend_t backend = ggml_backend_cpu_init();
+    if (!backend) return 51;
+    ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
+    if (!buffer) return 51;
+    std::vector<float> logits_data(384 * 2);
+    for (int expert = 0; expert < 384; ++expert) {
+        logits_data[expert] = (float) expert;
+        logits_data[384 + expert] = (float) -expert;
+    }
+    const std::array<float, 6> hidden_data = { 1, 2, 3, 4, 5, 6 };
+    const std::array<ggml_bf16_t, 6> bf16_data = {
+        ggml_fp32_to_bf16(1), ggml_fp32_to_bf16(2), ggml_fp32_to_bf16(3),
+        ggml_fp32_to_bf16(4), ggml_fp32_to_bf16(5), ggml_fp32_to_bf16(6) };
+    const std::array<ggml_fp16_t, 6> f16_data = {
+        ggml_fp32_to_fp16(1), ggml_fp32_to_fp16(2), ggml_fp32_to_fp16(3),
+        ggml_fp32_to_fp16(4), ggml_fp32_to_fp16(5), ggml_fp32_to_fp16(6) };
+    std::array<float, 24> weights_data = {};
+    for (size_t i = 0; i < weights_data.size(); ++i) weights_data[i] = (float) i;
+    ggml_backend_tensor_set(logits, logits_data.data(), 0, logits_data.size() * sizeof(float));
+    ggml_backend_tensor_set(hidden, hidden_data.data(), 0, sizeof(hidden_data));
+    ggml_backend_tensor_set(bf16, bf16_data.data(), 0, sizeof(bf16_data));
+    ggml_backend_tensor_set(f16, f16_data.data(), 0, sizeof(f16_data));
+    ggml_backend_tensor_set(weights, weights_data.data(), 0, sizeof(weights_data));
+    if (ggml_backend_graph_compute(backend, graph) != GGML_STATUS_SUCCESS) return 52;
+
+    const size_t logical_topk_bytes = 24 * sizeof(int32_t);
+    if (topk->ne[0] != 12 || topk->ne[1] != 2 || topk->nb[1] <= 12 * sizeof(int32_t) ||
+            ggml_nbytes(topk) <= logical_topk_bytes) return 53;
+    const auto packed_topk = read_logical_tensor_bytes(topk);
+    if (packed_topk.size() != logical_topk_bytes) return 54;
+    const int32_t * ids = reinterpret_cast<const int32_t *>(packed_topk.data());
+    for (int k = 0; k < 12; ++k) {
+        if (ids[k] != 383 - k || ids[12 + k] != k) return 55;
+    }
+    const fs::path output = fs::temp_directory_path() / "longcat-next-packed-capture-self-test";
+    fs::remove_all(output);
+    fs::create_directories(output);
+    ggml_set_name(topk, "ffn_moe_topk-0");
+    std::ofstream manifest(output / "manifest.tsv", std::ios::trunc);
+    write_capture(topk, output, manifest, "components_");
+    manifest.close();
+    if (fs::file_size(output / "components_ffn_moe_topk-0_raw") != logical_topk_bytes) return 58;
+    fs::remove_all(output);
+    const auto packed_hidden = read_logical_tensor_bytes(hidden);
+    const auto packed_bf16 = read_logical_tensor_bytes(bf16);
+    const auto packed_f16 = read_logical_tensor_bytes(f16);
+    const auto packed_weights = read_logical_tensor_bytes(weights);
+    if (packed_hidden.size() != sizeof(hidden_data) ||
+            packed_bf16.size() != sizeof(bf16_data) ||
+            packed_f16.size() != sizeof(f16_data) ||
+            packed_weights.size() != sizeof(weights_data) ||
+            std::memcmp(packed_hidden.data(), hidden_data.data(), sizeof(hidden_data)) != 0 ||
+            std::memcmp(packed_bf16.data(), bf16_data.data(), sizeof(bf16_data)) != 0 ||
+            std::memcmp(packed_f16.data(), f16_data.data(), sizeof(f16_data)) != 0 ||
+            std::memcmp(packed_weights.data(), weights_data.data(), sizeof(weights_data)) != 0) return 56;
+    const size_t original_nb0 = hidden->nb[0];
+    hidden->nb[0]++;
+    bool malformed_rejected = false;
+    try { (void) read_logical_tensor_bytes(hidden); } catch (const std::runtime_error &) { malformed_rejected = true; }
+    hidden->nb[0] = original_nb0;
+    bool unsupported_rejected = false;
+    try { (void) read_logical_tensor_bytes(unsupported); } catch (const std::runtime_error &) { unsupported_rejected = true; }
+    if (!malformed_rejected || !unsupported_rejected) return 57;
+
+    ggml_backend_buffer_free(buffer);
+    ggml_backend_free(backend);
+    ggml_free(ctx);
+    return 0;
+}
+
 static int self_test() {
+    if (const int packed = packed_serialization_self_test()) return packed;
     const float tied[] = { 0.0f, 2.0f, 2.0f, 1.0f };
     if (argmax_large_tie(tied, 4) != 2) return 20;
     if (sequence_for_mask(0, 0) == sequence_for_mask(1, 0) || sequence_for_mask(2, 1) != 0) return 21;
