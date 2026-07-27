@@ -68,6 +68,16 @@ class ParityHarnessTests(unittest.TestCase):
             self.assertEqual(report["first_large_discrepancy_classification"], "attention output")
             self.assertTrue(all(row["representation"] == "compact_logical"
                                 for row in report["component_decode_provenance"]))
+            with np.load(default_path, allow_pickle=False) as default_npz, \
+                 np.load(math_path, allow_pickle=False) as math_npz:
+                attribution = PARITY.numerical_attribution_report(
+                    default_npz, math_npz, root, [0, 1], {"atol": .125, "rtol": .03125})
+            self.assertEqual(len(attribution["router_semantics"]), 5)
+            self.assertEqual(len(attribution["floating_components"]), 105)
+            self.assertEqual(set(attribution["residual_reconstruction"]),
+                             {"cpp", "python_default", "python_math"})
+            self.assertEqual(attribution["revised_attribution_classification"],
+                             "attention output divergence")
 
             # Replay the same complete 110-component capture using the precise
             # legacy 384-wide argsort-view storage span for every top-k index row.
@@ -217,10 +227,117 @@ class ParityHarnessTests(unittest.TestCase):
                   "--block-components-math-npz", "math.npz",
                   "--case", "eos_window_position_2"]
         PARITY.validate_all_blocks_options(parser.parse_args(replay))
+        attribution = replay.copy()
+        attribution[attribution.index("--component-replay-only")] = "--component-attribution-replay-only"
+        PARITY.validate_all_blocks_options(parser.parse_args(attribution))
         for extra in (["--model", "model.gguf"], ["--capture-exe", "capture"],
                       ["--all-blocks-diagnostic", "1"]):
             with self.assertRaises(ValueError):
                 PARITY.validate_all_blocks_options(parser.parse_args(replay + extra))
+
+    def test_bf16_round_to_nearest_even_specials_and_subnormals(self):
+        bits = np.array([
+            0x3f808000,  # halfway, even upper BF16 LSB -> down
+            0x3f818000,  # halfway, odd upper BF16 LSB -> up
+            0x7f800000, 0xff800000, 0x7f800001,
+            0x00000000, 0x80000000, 0x00008000, 0x00008001,
+        ], dtype=np.uint32)
+        rounded = PARITY.bf16_round_to_float32(bits.view(np.float32)).view(np.uint32)
+        self.assertEqual(int(rounded[0]), 0x3f800000)
+        self.assertEqual(int(rounded[1]), 0x3f820000)
+        self.assertEqual(int(rounded[2]), 0x7f800000)
+        self.assertEqual(int(rounded[3]), 0xff800000)
+        self.assertTrue(np.isnan(rounded[4:5].view(np.float32))[0])
+        self.assertEqual(int(rounded[5]), 0x00000000)
+        self.assertEqual(int(rounded[6]), 0x80000000)
+        self.assertEqual(int(rounded[7]), 0x00000000)
+        self.assertEqual(int(rounded[8]), 0x00010000)
+
+    def test_bf16_rounding_improves_worsens_and_changes_pass_state(self):
+        raw = np.array([1.003], np.float32)
+        rounded = PARITY.bf16_round_to_float32(raw)
+        criterion = {"atol": 0.001, "rtol": 0.0}
+        improved = PARITY.rounding_comparison(rounded, raw, criterion, True)
+        self.assertEqual(improved["metric_changes_after_bf16_rounding"]["rms_error"], "improved")
+        self.assertTrue(improved["pass_state_changed"])
+        worsened = PARITY.rounding_comparison(raw, raw, criterion, True)
+        self.assertEqual(worsened["metric_changes_after_bf16_rounding"]["rms_error"], "worsened")
+        self.assertTrue(worsened["pass_state_changed"])
+
+    def test_semantic_router_identity_and_real_expert_differences(self):
+        sums = np.ones((1, 1, 1), np.float32)
+        identity_only = PARITY.semantic_router_report(
+            np.array([[[256, 300]]]), np.array([[[270, 301]]]), np.array([[[280, 302]]]),
+            sums, sums, sums)
+        self.assertTrue(identity_only["has_identity_only_id_substitution"])
+        self.assertFalse(identity_only["has_real_expert_set_difference"])
+        self.assertFalse(identity_only["has_identity_presence_difference"])
+        real = PARITY.semantic_router_report(
+            np.array([[[1, 256]]]), np.array([[[2, 256]]]), np.array([[[2, 256]]]),
+            sums, sums, sums)
+        self.assertTrue(real["has_real_expert_set_difference"])
+        self.assertEqual(real["first_token_with_real_expert_set_mismatch"], 0)
+        presence = PARITY.semantic_router_report(
+            np.array([[[1, 2]]]), np.array([[[1, 256]]]), np.array([[[1, 256]]]),
+            sums, sums, sums)
+        self.assertTrue(presence["has_identity_presence_difference"])
+
+    def test_router_classification_requires_semantic_difference_and_failing_shortcut(self):
+        identity_router = [{"physical_block": 0, "has_real_expert_set_difference": False,
+                            "has_identity_presence_difference": False,
+                            "shortcut_within_criterion_vs_both": True}]
+        local_passes = [{"suffix": suffix, "outside_vs_both": False,
+                         "python_backends_outside_criterion": False}
+                        for suffix in ("attention_output", "dense_output", "moe_shortcut", "block_output")]
+        self.assertEqual(PARITY.classify_numerical_attribution(identity_router, local_passes, 7),
+                         "cumulative numerical drift with no discrete local operator failure")
+        real_router = [{"physical_block": 0, "has_real_expert_set_difference": True,
+                        "has_identity_presence_difference": False,
+                        "shortcut_within_criterion_vs_both": False}]
+        self.assertEqual(PARITY.classify_numerical_attribution(real_router, local_passes, 7),
+                         "real router-selection divergence")
+
+    def test_residual_reconstruction_f32_bf16_and_odd_groupings(self):
+        target_f32 = np.array([[[-2100.0]]], np.float32)
+        residual = np.array([[[-1000.0]]], np.float32)
+        dense = np.array([[[-1000.0]]], np.float32)
+        shortcut = np.array([[[-100.0]]], np.float32)
+        first = residual + dense
+        reports = PARITY.reconstruction_metrics(target_f32, {
+            "f32": first + shortcut,
+            "two_stage_bf16": PARITY.bf16_round_to_float32(
+                PARITY.bf16_round_to_float32(first) + shortcut),
+            "old_bf16": PARITY.bf16_round_to_float32(
+                PARITY.bf16_round_to_float32(dense + shortcut) + residual),
+        })
+        self.assertIn("f32", reports["byte_exact_alternatives"])
+        self.assertNotEqual(
+            reports["alternatives"]["two_stage_bf16"]["maximum_absolute_error"],
+            reports["alternatives"]["old_bf16"]["maximum_absolute_error"])
+        bf_target = PARITY.bf16_round_to_float32(first + shortcut)
+        bf_report = PARITY.reconstruction_metrics(bf_target, {
+            "final_bf16": PARITY.bf16_round_to_float32(first + shortcut)})
+        self.assertIn("final_bf16", bf_report["byte_exact_alternatives"])
+
+        arrays = {}
+        for block in range(10):
+            prefix = f"physical_block_{block:02d}__"
+            arrays[prefix + "block_input"] = np.array([[[1.0]]], np.float32)
+            arrays[prefix + "attention_output"] = np.array([[[2.0]]], np.float32)
+            arrays[prefix + "post_attention_residual"] = np.array([[[3.0]]], np.float32)
+            arrays[prefix + "dense_output"] = np.array([[[4.0]]], np.float32)
+            if block % 2 == 0:
+                arrays[prefix + "moe_shortcut"] = np.array([[[5.0]]], np.float32)
+                arrays[prefix + "block_output"] = np.array([[[7.0]]], np.float32)
+            else:
+                arrays[prefix + "block_output"] = np.array([[[12.0]]], np.float32)
+        reconstructed = PARITY.reconstruct_component_boundaries(arrays)
+        self.assertIn("pure_f32_addition",
+                      reconstructed[0]["attention_residual"]["byte_exact_alternatives"])
+        self.assertIn("pure_f32_addition",
+                      reconstructed[0]["block_output"]["byte_exact_alternatives"])
+        self.assertIn("all_f32_official_association",
+                      reconstructed[1]["block_output"]["byte_exact_alternatives"])
 
     def test_reference_finiteness_preflight_writes_report(self):
         class Fixture:

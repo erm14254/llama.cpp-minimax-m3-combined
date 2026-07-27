@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 
 ROUTED_EXPERT_COUNT = 384
+REAL_EXPERT_COUNT = 256
 
 CPP_TO_REFERENCE = {
     "inp_embd": "base_embedding", "inp_embd_ngram": "fused_pre_trunk_embedding",
@@ -429,6 +430,289 @@ def compare_block_components(default_npz, math_npz, capture_dir, attention_mask,
             "components": results}
 
 
+def bf16_round_to_float32(values):
+    """IEEE float32 -> BF16 round-to-nearest-even -> float32, including specials."""
+    array = np.ascontiguousarray(values, dtype=np.float32)
+    bits = array.view(np.uint32)
+    exponent = bits & np.uint32(0x7f800000)
+    mantissa = bits & np.uint32(0x007fffff)
+    special = exponent == np.uint32(0x7f800000)
+    rounded = bits + np.uint32(0x00007fff) + ((bits >> np.uint32(16)) & np.uint32(1))
+    result = np.where(special, bits, rounded) & np.uint32(0xffff0000)
+    # Preserve NaN classification even when its payload exists only in the
+    # discarded low sixteen bits.
+    result = np.where(special & (mantissa != 0), result | np.uint32(0x00010000), result)
+    return np.ascontiguousarray(result).view(np.float32).reshape(array.shape)
+
+
+def metric_change(raw, rounded, lower_is_better=True):
+    if raw == rounded:
+        return "unchanged"
+    improved = rounded < raw if lower_is_better else rounded > raw
+    return "improved" if improved else "worsened"
+
+
+def rounding_comparison(reference, raw_cpp, criterion, hidden):
+    rounded_cpp = bf16_round_to_float32(raw_cpp)
+    raw = all_block_result(reference, raw_cpp, criterion)
+    rounded = all_block_result(reference, rounded_cpp, criterion)
+    if not hidden:
+        for report in (raw, rounded):
+            report.pop("maximum_normalized_violation_under_diagnostic_criterion")
+            report.pop("within_diagnostic_criterion")
+    changes = {
+        "maximum_absolute_error": metric_change(raw["maximum_absolute_error"], rounded["maximum_absolute_error"]),
+        "mean_absolute_error": metric_change(raw["mean_absolute_error"], rounded["mean_absolute_error"]),
+        "rms_error": metric_change(raw["rms_error"], rounded["rms_error"]),
+        "cosine_similarity": metric_change(raw["cosine_similarity"], rounded["cosine_similarity"], False),
+    }
+    return {"raw_cpp_f32": raw, "bf16_rounded_cpp": rounded,
+            "metric_changes_after_bf16_rounding": changes,
+            "pass_state_changed": bool(hidden and
+                raw["within_diagnostic_criterion"] != rounded["within_diagnostic_criterion"])}
+
+
+def semantic_router_report(cpp_indices, default_indices, math_indices,
+                           cpp_identity_sum, default_identity_sum, math_identity_sum):
+    arrays = {"cpp": np.asarray(cpp_indices), "python_default": np.asarray(default_indices),
+              "python_math": np.asarray(math_indices)}
+    flat = {name: value.reshape(-1, value.shape[-1]) for name, value in arrays.items()}
+    token_rows = []
+    first_real_mismatch = None
+    first_real_lists = None
+    for token in range(next(iter(flat.values())).shape[0]):
+        ordered = {name: row[token].tolist() for name, row in flat.items()}
+        raw_sets = {name: sorted(set(values)) for name, values in ordered.items()}
+        real_sets = {name: sorted(value for value in values if value < REAL_EXPERT_COUNT)
+                     for name, values in raw_sets.items()}
+        identity_counts = {name: sum(value >= REAL_EXPERT_COUNT for value in values)
+                           for name, values in ordered.items()}
+        exact_order = len({tuple(values) for values in ordered.values()}) == 1
+        raw_equal = len({tuple(values) for values in raw_sets.values()}) == 1
+        real_equal = len({tuple(values) for values in real_sets.values()}) == 1
+        identity_count_equal = len(set(identity_counts.values())) == 1
+        identity_presence = {name: count > 0 for name, count in identity_counts.items()}
+        identity_presence_equal = len(set(identity_presence.values())) == 1
+        identity_only = (not raw_equal and real_equal and identity_count_equal and
+                         identity_presence_equal)
+        pairs = (("cpp_vs_python_default", "cpp", "python_default"),
+                 ("cpp_vs_python_math", "cpp", "python_math"),
+                 ("python_default_vs_python_math", "python_default", "python_math"))
+        if not real_equal and first_real_mismatch is None:
+            first_real_mismatch = token
+            first_real_lists = real_sets
+        token_rows.append({
+            "token": token, "exact_returned_index_order_equality": exact_order,
+            "raw_expert_id_selected_set_equality": raw_equal,
+            "selected_real_expert_set_equality": real_equal,
+            "pairwise_exact_returned_index_order_equality": {
+                label: ordered[left] == ordered[right] for label, left, right in pairs},
+            "pairwise_raw_expert_id_selected_set_equality": {
+                label: raw_sets[left] == raw_sets[right] for label, left, right in pairs},
+            "pairwise_selected_real_expert_set_equality": {
+                label: real_sets[left] == real_sets[right] for label, left, right in pairs},
+            "identity_expert_counts": identity_counts,
+            "identity_expert_presence_equivalent": identity_presence_equal,
+            "pairwise_identity_expert_presence_equivalent": {
+                label: identity_presence[left] == identity_presence[right]
+                for label, left, right in pairs},
+            "raw_set_mismatch_is_identity_only_id_substitution": identity_only,
+        })
+    identity_metrics = {
+        "cpp_vs_python_default": all_block_result(default_identity_sum, cpp_identity_sum,
+                                                    {"atol": 0.125, "rtol": 0.03125}),
+        "cpp_vs_python_math": all_block_result(math_identity_sum, cpp_identity_sum,
+                                                {"atol": 0.125, "rtol": 0.03125}),
+        "python_default_vs_python_math": all_block_result(default_identity_sum, math_identity_sum,
+                                                           {"atol": 0.125, "rtol": 0.03125}),
+    }
+    for report in identity_metrics.values():
+        report.pop("maximum_normalized_violation_under_diagnostic_criterion")
+        report.pop("within_diagnostic_criterion")
+    return {
+        "tokens": token_rows,
+        "identity_weight_sum_comparisons": identity_metrics,
+        "first_token_with_real_expert_set_mismatch": first_real_mismatch,
+        "real_expert_lists_at_first_mismatch": first_real_lists,
+        "has_real_expert_set_difference": first_real_mismatch is not None,
+        "has_identity_presence_difference": any(
+            not row["identity_expert_presence_equivalent"] for row in token_rows),
+        "has_identity_only_id_substitution": any(
+            row["raw_set_mismatch_is_identity_only_id_substitution"] for row in token_rows),
+    }
+
+
+def reconstruction_metrics(target, alternatives):
+    reports = {}
+    for name, candidate in alternatives.items():
+        difference = np.abs(np.asarray(target, np.float32) - np.asarray(candidate, np.float32))
+        reports[name] = {
+            "byte_exact": (np.asarray(target).dtype == np.asarray(candidate).dtype and
+                           np.asarray(target).shape == np.asarray(candidate).shape and
+                           np.ascontiguousarray(target).tobytes() == np.ascontiguousarray(candidate).tobytes()),
+            "maximum_absolute_error": float(difference.max(initial=0)),
+            "mean_absolute_error": float(difference.mean()),
+            "rms_error": float(np.sqrt(np.mean(np.square(difference, dtype=np.float64)))),
+            "cosine_similarity": all_block_result(
+                np.asarray(target), np.asarray(candidate), {"atol": 0.125, "rtol": 0.03125})[
+                    "cosine_similarity"],
+        }
+    closest = min(reports, key=lambda name: reports[name]["rms_error"])
+    exact = [name for name, report in reports.items() if report["byte_exact"]]
+    return {"alternatives": reports, "closest_by_rms": closest, "byte_exact_alternatives": exact}
+
+
+def reconstruct_component_boundaries(arrays):
+    output = []
+    for block in range(10):
+        prefix = f"physical_block_{block:02d}__"
+        block_input = arrays[prefix + "block_input"]
+        attention_output = arrays[prefix + "attention_output"]
+        post = arrays[prefix + "post_attention_residual"]
+        attention_f32 = block_input + attention_output
+        row = {"physical_block": block, "attention_residual": reconstruction_metrics(post, {
+            "pure_f32_addition": attention_f32,
+            "bf16_round_after_addition": bf16_round_to_float32(attention_f32),
+        })}
+        dense = arrays[prefix + "dense_output"]
+        target = arrays[prefix + "block_output"]
+        first = post + dense
+        if block % 2 == 0:
+            alternatives = {"pure_f32_addition": first,
+                            "bf16_round_after_addition": bf16_round_to_float32(first)}
+        else:
+            shortcut = arrays[f"physical_block_{block - 1:02d}__moe_shortcut"]
+            alternatives = {
+                "all_f32_official_association": first + shortcut,
+                "bf16_after_each_official_addition": bf16_round_to_float32(
+                    bf16_round_to_float32(first) + shortcut),
+                "bf16_only_at_final_output": bf16_round_to_float32(first + shortcut),
+                "previous_grouping_all_f32": (dense + shortcut) + post,
+                "previous_grouping_bf16_after_each_addition": bf16_round_to_float32(
+                    bf16_round_to_float32(dense + shortcut) + post),
+            }
+        row["block_output"] = reconstruction_metrics(target, alternatives)
+        output.append(row)
+    return output
+
+
+def classify_numerical_attribution(router_reports, floating_reports, first_persistent_block):
+    for router in router_reports:
+        semantic_difference = (router["has_real_expert_set_difference"] or
+                               router["has_identity_presence_difference"])
+        if (semantic_difference and not router["shortcut_within_criterion_vs_both"] and
+                (first_persistent_block is None or router["physical_block"] < first_persistent_block)):
+            return "real router-selection divergence"
+    local_suffixes = (("attention_output", "attention output divergence"),
+                      ("dense_output", "dense output divergence"),
+                      ("moe_shortcut", "complete shortcut divergence"))
+    for suffix, label in local_suffixes:
+        if any(row["suffix"] == suffix and row["outside_vs_both"] for row in floating_reports):
+            return label
+    if any(row["suffix"] == "post_attention_residual" and row["outside_vs_both"] and
+           not row["python_backends_outside_criterion"] for row in floating_reports):
+        return "residual/addition precision divergence"
+    if any(row["suffix"] in {"attention_norm", "ffn_norm"} and row["outside_vs_both"] and
+           not row["python_backends_outside_criterion"] for row in floating_reports):
+        return "norm sensitivity"
+    return "cumulative numerical drift with no discrete local operator failure"
+
+
+def numerical_attribution_report(default_npz, math_npz, capture_dir, attention_mask, criterion):
+    manifest = read_component_manifest(capture_dir / "block-components-diagnostics.tsv")
+    mask = np.asarray(attention_mask, dtype=bool)
+    sides = {"cpp": {}, "python_default": {}, "python_math": {}}
+    floating = []
+    first_default_change = None
+    first_math_change = None
+    largest_improvement = None
+    largest_improvement_value = float("-inf")
+    for name in component_names():
+        dtype, dims, raw = manifest[name]
+        cpp = decode_component_raw(name, dtype, dims, raw)
+        default = np.asarray(default_npz[name])
+        math = np.asarray(math_npz[name])
+        cpp, default, math = cpp[:, mask, :], default[:, mask, :], math[:, mask, :]
+        sides["cpp"][name] = cpp
+        sides["python_default"][name] = default
+        sides["python_math"][name] = math
+        if name.endswith("__router_topk_indices"):
+            continue
+        suffix = name.split("__", 1)[1]
+        hidden = cpp.shape[-1] == 3072
+        default_report = rounding_comparison(default, cpp, criterion, hidden)
+        math_report = rounding_comparison(math, cpp, criterion, hidden)
+        if default_report["pass_state_changed"] and first_default_change is None:
+            first_default_change = name
+        if math_report["pass_state_changed"] and first_math_change is None:
+            first_math_change = name
+        for backend, report in (("default", default_report), ("math", math_report)):
+            improvement = (report["raw_cpp_f32"]["rms_error"] -
+                           report["bf16_rounded_cpp"]["rms_error"])
+            if improvement > largest_improvement_value:
+                largest_improvement_value = improvement
+                largest_improvement = {"name": name, "backend": backend,
+                                       "rms_improvement": improvement}
+        raw_default = all_block_result(default, cpp, criterion)
+        raw_math = all_block_result(math, cpp, criterion)
+        py_pair = all_block_result(default, math, criterion)
+        floating.append({"name": name, "physical_block": int(name[15:17]), "suffix": suffix,
+                         "hidden_size_surface": hidden,
+                         "outside_vs_both": bool(hidden and
+                             not raw_default["within_diagnostic_criterion"] and
+                             not raw_math["within_diagnostic_criterion"]),
+                         "python_backends_outside_criterion": bool(hidden and
+                             not py_pair["within_diagnostic_criterion"]),
+                         "cpp_vs_python_default": default_report,
+                         "cpp_vs_python_math": math_report})
+
+    routers = []
+    first_real = None
+    first_identity_only = None
+    for block in range(0, 10, 2):
+        prefix = f"physical_block_{block:02d}__"
+        semantic = semantic_router_report(
+            sides["cpp"][prefix + "router_topk_indices"],
+            sides["python_default"][prefix + "router_topk_indices"],
+            sides["python_math"][prefix + "router_topk_indices"],
+            sides["cpp"][prefix + "identity_weight_sum"],
+            sides["python_default"][prefix + "identity_weight_sum"],
+            sides["python_math"][prefix + "identity_weight_sum"])
+        shortcut = next(row for row in floating if row["name"] == prefix + "moe_shortcut")
+        semantic.update({"physical_block": block,
+                         "shortcut_within_criterion_vs_both": not shortcut["outside_vs_both"]})
+        routers.append(semantic)
+        if semantic["has_real_expert_set_difference"] and first_real is None:
+            first_real = block
+        if semantic["has_identity_only_id_substitution"] and first_identity_only is None:
+            first_identity_only = block
+
+    block_outputs = [row for row in floating if row["suffix"] == "block_output"]
+    failures = [row["physical_block"] for row in block_outputs if row["outside_vs_both"]]
+    first_persistent = None
+    for block in failures:
+        later = [row for row in block_outputs if row["physical_block"] >= block]
+        if later and all(row["outside_vs_both"] for row in later):
+            first_persistent = block
+            break
+    reconstruction = {name: reconstruct_component_boundaries(values) for name, values in sides.items()}
+    classification = classify_numerical_attribution(routers, floating, first_persistent)
+    return {
+        "accepted": False, "kind": "longcat-next-block-component-numerical-attribution",
+        "diagnostic_criterion_source": "bf16.physical_block_02",
+        "diagnostic_criterion": dict(criterion),
+        "first_physical_block_with_real_expert_set_difference": first_real,
+        "first_physical_block_with_identity_only_id_substitution": first_identity_only,
+        "first_persistent_block_output_failure_vs_both_backends": first_persistent,
+        "first_component_where_cpp_bf16_rounding_changes_default_pass_state": first_default_change,
+        "first_component_where_cpp_bf16_rounding_changes_math_pass_state": first_math_change,
+        "component_with_largest_rms_improvement_after_cpp_bf16_rounding": largest_improvement,
+        "revised_attribution_classification": classification,
+        "router_semantics": routers, "floating_components": floating,
+        "residual_reconstruction": reconstruction,
+    }
+
+
 def exact_result(reference, candidate):
     reference = np.asarray(reference)
     candidate = np.asarray(candidate)
@@ -548,13 +832,15 @@ def build_parser():
     p.add_argument("--block-components-default-npz", type=Path)
     p.add_argument("--block-components-math-npz", type=Path)
     p.add_argument("--component-replay-only", type=int, choices=(0, 1), default=0)
+    p.add_argument("--component-attribution-replay-only", type=int, choices=(0, 1), default=0)
     p.add_argument("--case", action="append", default=[], help="capture only this reference case (repeatable)")
     p.add_argument("--tolerance-policy", type=Path, default=Path(__file__).parent / "fixtures/longcat-next/stage1-tolerances.json")
     return p
 
 
 def validate_all_blocks_options(args):
-    if args.component_replay_only:
+    replay_only = args.component_replay_only or args.component_attribution_replay_only
+    if replay_only:
         if not args.block_components_diagnostic:
             raise ValueError("--component-replay-only requires --block-components-diagnostic 1")
         if args.model is not None or args.capture_exe is not None:
@@ -591,7 +877,8 @@ def main():
     policy = json.loads(args.tolerance_policy.read_text(encoding="ascii"))
     args.output_dir.mkdir(parents=True, exist_ok=True)
     validation = validate_reference_finiteness(npz, args.output_dir)
-    if args.component_replay_only:
+    replay_only = args.component_replay_only or args.component_attribution_replay_only
+    if replay_only:
         with tempfile.TemporaryDirectory() as temporary:
             cases = make_case_manifest(npz, Path(temporary) / "case-manifest.json")
     else:
@@ -603,12 +890,12 @@ def main():
         missing = selected - {case["reference_prefix"] for case in cases}
         if missing:
             raise ValueError(f"unknown requested cases: {sorted(missing)}")
-        if not args.component_replay_only:
+        if not replay_only:
             manifest_path.write_text(json.dumps({"schema_version": 1, "cases": cases}, indent=2) + "\n", encoding="ascii")
     greedy_cases = {case["reference_prefix"] for case in cases if case["greedy_eight_tokens"]}
     if not args.case and greedy_cases != {"tokenizer_prompt_0", "tokenizer_prompt_1"}:
         raise ValueError(f"expected eight-token greedy references for both tokenizer prompts, got {greedy_cases}")
-    if args.component_replay_only:
+    if replay_only:
         read_manifest(args.output_dir / cases[0]["name"] / "captures.tsv")
         criterion = policy["bf16"]["physical_block_02"]
         with np.load(args.block_components_default_npz, allow_pickle=False) as default_components, \
@@ -618,6 +905,14 @@ def main():
                 cases[0]["attention_mask"], criterion)
         (args.output_dir / "block-components-three-way.json").write_text(
             json.dumps(component_report, indent=2) + "\n", encoding="ascii")
+        if args.component_attribution_replay_only:
+            with np.load(args.block_components_default_npz, allow_pickle=False) as default_components, \
+                 np.load(args.block_components_math_npz, allow_pickle=False) as math_components:
+                attribution = numerical_attribution_report(
+                    default_components, math_components, args.output_dir / cases[0]["name"],
+                    cases[0]["attention_mask"], criterion)
+            (args.output_dir / "block-components-numerical-attribution.json").write_text(
+                json.dumps(attribution, indent=2) + "\n", encoding="ascii")
         return
     command = [str(args.capture_exe), "--model", str(args.model), "--case-manifest", str(manifest_path),
                     "--output-dir", str(args.output_dir), "--n-gpu-layers", str(args.n_gpu_layers),
