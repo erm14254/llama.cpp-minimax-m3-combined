@@ -49,6 +49,32 @@ class ParityHarnessTests(unittest.TestCase):
             self.assertEqual(set(report["odd_block_cross_substitution"]),
                              {"block_11_vs_default", "block_11_vs_math",
                               "block_13_vs_default", "block_13_vs_math"})
+            self.assertTrue({
+                "first_primary_oracle_component_failure",
+                "first_primary_oracle_real_expert_difference",
+                "first_primary_oracle_identity_presence_difference",
+                "first_primary_oracle_shortcut_failure_while_even_output_passes",
+                "first_both_backend_component_failure"} <= set(report))
+            for attribution in report["odd_block_cross_substitution"].values():
+                self.assertEqual(attribution["coalition_count"], 8)
+                self.assertAlmostEqual(attribution["shapley_additivity_error"], 0.0, places=12)
+                self.assertFalse(attribution["dominant_branch_is_exclusive_causality"])
+            for oracle in (default, math):
+                oracle["physical_block_10__moe_shortcut"][:] = 1.0
+                oracle["physical_block_11__block_output"][:] = 1.0
+                oracle["physical_block_10__router_topk_indices"][..., -1] = 256
+            np.savez(dp, **default); np.savez(mp, **math)
+            with np.load(dp) as d, np.load(mp) as m:
+                events = PARITY.compare_component_window(
+                    d, m, root, [1, 1], {"atol": .125, "rtol": .03125})
+            self.assertEqual(events["first_primary_oracle_component_failure"],
+                             "physical_block_10__moe_shortcut")
+            self.assertEqual(events["first_primary_oracle_real_expert_difference"], 10)
+            self.assertEqual(events["first_primary_oracle_identity_presence_difference"], 10)
+            self.assertEqual(events["first_primary_oracle_shortcut_failure_while_even_output_passes"],
+                             "physical_block_10__moe_shortcut")
+            self.assertEqual(events["first_both_backend_component_failure"],
+                             "physical_block_10__moe_shortcut")
             default[names[0]][0, 0, 0] = np.nan; np.savez(dp, **default)
             with np.load(dp) as d, np.load(mp) as m, self.assertRaisesRegex(ValueError, "non-finite"):
                 PARITY.compare_component_window(d, m, root, [1, 1], {"atol": .125, "rtol": .03125})
@@ -72,6 +98,81 @@ class ParityHarnessTests(unittest.TestCase):
                          "mixed")
         report = PARITY.odd_cross_substitution(*arrays(1, 1, 0, 1), 11, criterion)
         self.assertTrue(report["alternatives"]["all_python_reconstruction"]["exact_reconstruction"])
+
+    def test_three_component_coalitions_shapley_and_pass_restoration(self):
+        def arrays(cpp_values, python_values):
+            cpp = {}; python = {}; p = lambda b, s: f"physical_block_{b:02d}__{s}"
+            for side, values in ((cpp, cpp_values), (python, python_values)):
+                side[p(11, "post_attention_residual")] = np.array([[[values[0]]]], np.float32)
+                side[p(11, "dense_output")] = np.array([[[values[1]]]], np.float32)
+                side[p(10, "moe_shortcut")] = np.array([[[values[2]]]], np.float32)
+            python[p(11, "block_output")] = PARITY.bf16_round_to_float32(
+                PARITY.bf16_round_to_float32(
+                    python[p(11, "post_attention_residual")] + python[p(11, "dense_output")]) +
+                python[p(10, "moe_shortcut")])
+            return cpp, python
+
+        criterion = {"atol": 0.001, "rtol": 0.0}
+        player_fields = (
+            "shapley_rms_reduction_post_attention_residual",
+            "shapley_rms_reduction_dense_output",
+            "shapley_rms_reduction_previous_even_moe_shortcut")
+        for changed, field in enumerate(player_fields):
+            python_values = [0.0, 0.0, 0.0]; python_values[changed] = 1.0
+            report = PARITY.odd_cross_substitution(
+                *arrays((0.0, 0.0, 0.0), python_values), 11, criterion)
+            self.assertEqual(report["coalition_count"], 8)
+            self.assertEqual(len(report["coalitions"]), 8)
+            self.assertTrue(report["coalitions"]["py_P + py_D + py_S"]["exact_reconstruction"])
+            self.assertAlmostEqual(report[field], report["total_all_cpp_to_all_python_rms_reduction"])
+            self.assertTrue(all(abs(report[other]) < 1e-12 for other in player_fields if other != field))
+            self.assertAlmostEqual(report["shapley_additivity_error"], 0.0, places=12)
+
+        interaction = PARITY.odd_cross_substitution(
+            *arrays((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)), 11, criterion)
+        self.assertAlmostEqual(
+            interaction["shapley_rms_reduction_post_attention_residual"],
+            interaction["shapley_rms_reduction_dense_output"], places=12)
+        self.assertAlmostEqual(interaction["shapley_sum"],
+            interaction["total_all_cpp_to_all_python_rms_reduction"], places=12)
+        self.assertLessEqual(abs(interaction["shapley_additivity_error"]), 1e-12)
+
+        multiple = PARITY.odd_cross_substitution(
+            *arrays((0.0, 0.0, 0.0), (1.0, 1.0, 0.0)), 11,
+            {"atol": 1.0, "rtol": 0.0})
+        self.assertEqual(multiple["threshold_crossing_attribution"],
+                         "multiple single components independently sufficient")
+        self.assertTrue(multiple["post_attention_residual_only_restores_pass"])
+        self.assertTrue(multiple["dense_output_only_restores_pass"])
+        self.assertFalse(multiple["dominant_branch_is_exclusive_causality"])
+
+        requires_two = PARITY.odd_cross_substitution(
+            *arrays((0.0, 0.0, 0.0), (1.0, 1.0, 0.0)), 11,
+            {"atol": 0.5, "rtol": 0.0})
+        self.assertEqual(requires_two["threshold_crossing_attribution"],
+                         "requires multiple components")
+        self.assertTrue(requires_two[
+            "post_attention_residual_and_dense_output_restores_pass"])
+
+    def test_odd_coalition_rounds_after_both_official_additions(self):
+        original = PARITY.bf16_round_to_float32
+        calls = []
+        def observed(value):
+            calls.append(np.asarray(value).copy())
+            return original(value)
+        PARITY.bf16_round_to_float32 = observed
+        try:
+            p = np.array([[[1.00390625]]], np.float32)
+            d = np.array([[[0.00390625]]], np.float32)
+            s = np.array([[[0.0078125]]], np.float32)
+            got = PARITY.reconstruct_odd_coalition(p, d, s)
+        finally:
+            PARITY.bf16_round_to_float32 = original
+        self.assertEqual(len(calls), 2)
+        first = original(p + d)
+        np.testing.assert_array_equal(calls[0], p + d)
+        np.testing.assert_array_equal(calls[1], first + s)
+        np.testing.assert_array_equal(got, original(first + s))
     def _write_profile(self, root, values, legacy_indices, rounding):
         case = root / "eos_window_position_2"; case.mkdir(parents=True)
         direct = [f"{name}\tf32\t1,1,1,1\t{name}.raw" for name in sorted(PARITY.DIRECT_NAMES)]

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Opt-in LongCat-Next C++ capture/comparison with frozen Stage-1 policy."""
 import argparse
+import itertools
 import json
+import math
 import subprocess
 import tempfile
 from pathlib import Path
@@ -862,33 +864,120 @@ def semantic_router_report(cpp_indices, default_indices, math_indices,
     }
 
 
+def reconstruct_odd_coalition(post_attention_residual, dense_output, previous_even_moe_shortcut):
+    """Apply the official odd-block association with both observed BF16 boundaries."""
+    trunk = bf16_round_to_float32(post_attention_residual + dense_output)
+    return bf16_round_to_float32(trunk + previous_even_moe_shortcut)
+
+
 def odd_cross_substitution(cpp, python, odd_block, criterion):
     p = lambda block, suffix: f"physical_block_{block:02d}__{suffix}"
-    cpp_trunk = bf16_round_to_float32(cpp[p(odd_block, "post_attention_residual")] +
-                                      cpp[p(odd_block, "dense_output")])
-    py_trunk = bf16_round_to_float32(python[p(odd_block, "post_attention_residual")] +
-                                     python[p(odd_block, "dense_output")])
-    cpp_shortcut = cpp[p(odd_block - 1, "moe_shortcut")]
-    py_shortcut = python[p(odd_block - 1, "moe_shortcut")]
-    actual = python[p(odd_block, "block_output")]
-    candidates = {
-        "all_cpp": bf16_round_to_float32(cpp_trunk + cpp_shortcut),
-        "python_shortcut_only": bf16_round_to_float32(cpp_trunk + py_shortcut),
-        "python_trunk_only": bf16_round_to_float32(py_trunk + cpp_shortcut),
-        "all_python_reconstruction": bf16_round_to_float32(py_trunk + py_shortcut),
+    component_keys = {
+        "post_attention_residual": p(odd_block, "post_attention_residual"),
+        "dense_output": p(odd_block, "dense_output"),
+        "previous_even_moe_shortcut": p(odd_block - 1, "moe_shortcut"),
     }
-    reports = {name: {**all_block_result(actual, value, criterion),
-                      "exact_reconstruction": bool(np.array_equal(actual, value))}
-               for name, value in candidates.items()}
-    baseline = reports["all_cpp"]["rms_error"]
+    actual = python[p(odd_block, "block_output")]
+    players = tuple(component_keys)
+    coalition_labels = {
+        frozenset(): "cpp_P + cpp_D + cpp_S",
+        frozenset({players[0]}): "py_P + cpp_D + cpp_S",
+        frozenset({players[1]}): "cpp_P + py_D + cpp_S",
+        frozenset({players[2]}): "cpp_P + cpp_D + py_S",
+        frozenset({players[0], players[1]}): "py_P + py_D + cpp_S",
+        frozenset({players[0], players[2]}): "py_P + cpp_D + py_S",
+        frozenset({players[1], players[2]}): "cpp_P + py_D + py_S",
+        frozenset(players): "py_P + py_D + py_S",
+    }
+    coalitions = {}
+    rms_by_subset = {}
+    for subset, label in coalition_labels.items():
+        selected = {player: (python if player in subset else cpp)[key]
+                    for player, key in component_keys.items()}
+        candidate = reconstruct_odd_coalition(
+            selected["post_attention_residual"], selected["dense_output"],
+            selected["previous_even_moe_shortcut"])
+        metrics = all_block_result(actual, candidate, criterion)
+        coalitions[label] = {**metrics,
+            "passed": metrics["within_diagnostic_criterion"],
+            "maximum_normalized_criterion_violation":
+                metrics["maximum_normalized_violation_under_diagnostic_criterion"],
+            "exact_reconstruction": bool(np.array_equal(actual, candidate)),
+            "python_components": sorted(subset)}
+        rms_by_subset[subset] = metrics["rms_error"]
+
+    empty = frozenset(); full = frozenset(players)
+    if not coalitions[coalition_labels[full]]["exact_reconstruction"]:
+        raise ValueError(
+            f"physical block {odd_block}: all-Python coalition does not exactly reconstruct output")
+    baseline = rms_by_subset[empty]
+    shapley = {}
+    for player in players:
+        others = [candidate for candidate in players if candidate != player]
+        contribution = 0.0
+        for size in range(3):
+            for members in itertools.combinations(others, size):
+                subset = frozenset(members)
+                weight = math.factorial(size) * math.factorial(2 - size) / math.factorial(3)
+                contribution += weight * (rms_by_subset[subset] - rms_by_subset[subset | {player}])
+        shapley[player] = contribution
+    total_reduction = baseline - rms_by_subset[full]
+    shapley_sum = sum(shapley.values())
+
+    single_labels = {player: coalition_labels[frozenset({player})] for player in players}
+    pair_labels = {"post_attention_residual_and_dense_output": coalition_labels[frozenset(players[:2])],
+                   "post_attention_residual_and_previous_even_moe_shortcut":
+                       coalition_labels[frozenset((players[0], players[2]))],
+                   "dense_output_and_previous_even_moe_shortcut":
+                       coalition_labels[frozenset(players[1:])]}
+    baseline_passes = coalitions[coalition_labels[empty]]["passed"]
+    single_restores = {player: (not baseline_passes and coalitions[label]["passed"])
+                       for player, label in single_labels.items()}
+    pair_restores = {name: (not baseline_passes and coalitions[label]["passed"])
+                     for name, label in pair_labels.items()}
+    sufficient = [player for player, restores in single_restores.items() if restores]
+    display = {players[0]: "post-attention residual", players[1]: "dense output",
+               players[2]: "previous-even MoE shortcut"}
+    if baseline_passes:
+        threshold = "already passing"
+    elif len(sufficient) > 1:
+        threshold = "multiple single components independently sufficient"
+    elif len(sufficient) == 1:
+        threshold = f"single component sufficient: {display[sufficient[0]]}"
+    elif any(pair_restores.values()) or coalitions[coalition_labels[full]]["passed"]:
+        threshold = "requires multiple components"
+    else:
+        threshold = "no tested substitution restores pass"
+
+    # Backward-compatible branch-level views are aliases of the corresponding coalitions.
+    reports = {
+        "all_cpp": coalitions[coalition_labels[empty]],
+        "python_shortcut_only": coalitions[single_labels[players[2]]],
+        "python_trunk_only": coalitions[pair_labels["post_attention_residual_and_dense_output"]],
+        "all_python_reconstruction": coalitions[coalition_labels[full]],
+    }
     shortcut_reduction = baseline - reports["python_shortcut_only"]["rms_error"]
     trunk_reduction = baseline - reports["python_trunk_only"]["rms_error"]
     if shortcut_reduction <= 0 and trunk_reduction <= 0: dominant = "indeterminate"
     elif shortcut_reduction > 1.25 * max(trunk_reduction, 0): dominant = "previous-even MoE shortcut"
     elif trunk_reduction > 1.25 * max(shortcut_reduction, 0): dominant = "odd attention/dense trunk"
     else: dominant = "mixed"
-    return {"alternatives": reports, "rms_reduction_shortcut_only": shortcut_reduction,
-            "rms_reduction_trunk_only": trunk_reduction, "dominant_branch": dominant}
+    return {"alternatives": reports, "coalitions": coalitions,
+            "coalition_count": len(coalitions),
+            "shapley_rms_reduction_post_attention_residual": shapley[players[0]],
+            "shapley_rms_reduction_dense_output": shapley[players[1]],
+            "shapley_rms_reduction_previous_even_moe_shortcut": shapley[players[2]],
+            "shapley_sum": shapley_sum,
+            "total_all_cpp_to_all_python_rms_reduction": total_reduction,
+            "shapley_additivity_error": shapley_sum - total_reduction,
+            "post_attention_residual_only_restores_pass": single_restores[players[0]],
+            "dense_output_only_restores_pass": single_restores[players[1]],
+            "previous_even_moe_shortcut_only_restores_pass": single_restores[players[2]],
+            **{name + "_restores_pass": restores for name, restores in pair_restores.items()},
+            "threshold_crossing_attribution": threshold,
+            "rms_reduction_shortcut_only": shortcut_reduction,
+            "rms_reduction_trunk_only": trunk_reduction, "dominant_branch": dominant,
+            "dominant_branch_is_exclusive_causality": False}
 
 
 def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
@@ -953,6 +1042,12 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
         for label in ("default", "math"):
             attribution[f"block_{block}_vs_{label}"] = odd_cross_substitution(
                 sides["cpp"], sides[label], block, criterion)
+    first_identity_default = next((row["physical_block"] for row in routers
+        if row["has_cpp_vs_python_default_identity_presence_difference"]), None)
+    first_shortcut_while_even_passes = next((
+        f"physical_block_{row['physical_block']:02d}__moe_shortcut"
+        for row in even_analysis
+        if row["shortcut_discrepancy_present_while_even_output_passes_default"]), None)
     return {"accepted": False, "array_count": len(expected), "physical_block_start": start,
         "physical_block_count": count, "primary_oracle": "python_default",
         "sensitivity_control": "python_math",
@@ -961,6 +1056,12 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
         "first_component_outside_criterion_vs_both": first_both,
         "first_physical_block_with_cpp_vs_python_default_real_expert_difference": first_real_default,
         "first_physical_block_with_cpp_vs_python_math_real_expert_difference": first_real_math,
+        "first_primary_oracle_component_failure": first_default,
+        "first_primary_oracle_real_expert_difference": first_real_default,
+        "first_primary_oracle_identity_presence_difference": first_identity_default,
+        "first_primary_oracle_shortcut_failure_while_even_output_passes":
+            first_shortcut_while_even_passes,
+        "first_both_backend_component_failure": first_both,
         **{f"block_{block}_dominant_branch_vs_{label}": attribution[f"block_{block}_vs_{label}"]["dominant_branch"]
            for block in range(start + 1, start + count, 2) for label in ("default", "math")},
         "components": results, "router_semantics": routers,
