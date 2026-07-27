@@ -75,6 +75,9 @@ class ParityHarnessTests(unittest.TestCase):
                              "physical_block_10__moe_shortcut")
             self.assertEqual(events["first_both_backend_component_failure"],
                              "physical_block_10__moe_shortcut")
+            self.assertEqual(events["primary_oracle_router_probability_bias_decomposition"][
+                "physical_block"], 10)
+            self.assertEqual(len(events["router_probability_bias_decomposition"]), 2)
             default[names[0]][0, 0, 0] = np.nan; np.savez(dp, **default)
             with np.load(dp) as d, np.load(mp) as m, self.assertRaisesRegex(ValueError, "non-finite"):
                 PARITY.compare_component_window(d, m, root, [1, 1], {"atol": .125, "rtol": .03125})
@@ -257,6 +260,95 @@ class ParityHarnessTests(unittest.TestCase):
         self.assertTrue(summary["returned_order_topk_weight_failure_not_treated_as_weight_math_failure"])
         self.assertEqual(summary["descriptive_evidence"],
                          "continuous scores remain within criterion while discrete membership differs")
+
+    def test_probability_bias_coalitions_membership_and_decompositions(self):
+        def make_side(probabilities, bias):
+            probabilities = np.asarray(probabilities, np.float32)
+            bias = np.asarray(bias, np.float32)
+            scores = np.asarray(probabilities + bias, np.float32)
+            indices = PARITY._score_topk_indices(scores)
+            return {"router_probabilities": probabilities[None, None, :],
+                    "router_selection_scores": scores[None, None, :],
+                    "router_topk_indices": indices[None, None, :]}
+        def run(left_probability, left_bias, right_probability, right_bias):
+            left = make_side(left_probability, left_bias); right = make_side(right_probability, right_bias)
+            sides = {"cpp": {"p" + key: value for key, value in left.items()},
+                     "default": {"p" + key: value for key, value in right.items()}}
+            return PARITY.probability_bias_pair_decomposition(
+                sides, "p", [0], "cpp", "default")["tokens"][0]
+
+        base = np.full(PARITY.ROUTED_EXPERT_COUNT, -10.0, np.float32)
+        base[:11] = np.arange(20, 9, -1, dtype=np.float32)
+        left_probability = base.copy(); left_probability[11] = 1.0; left_probability[12] = -1.0
+        zero_bias = np.zeros_like(base)
+
+        right_probability = left_probability.copy()
+        right_probability[11], right_probability[12] = -1.0, 1.0
+        probability = run(left_probability, zero_bias, right_probability, zero_bias)
+        self.assertEqual(probability["membership_classification"], "probability component sufficient")
+        self.assertTrue(probability["right_probabilities_only_restores_right_membership"])
+        self.assertFalse(probability["right_bias_only_restores_right_membership"])
+        self.assertTrue(probability["ordering_inversion_decomposition"][0][
+            "probability_component_alone_reverses_ordering"])
+        self.assertFalse(probability["ordering_inversion_decomposition"][0][
+            "bias_component_alone_reverses_ordering"])
+
+        right_bias = zero_bias.copy(); right_bias[11], right_bias[12] = -2.0, 2.0
+        bias = run(left_probability, zero_bias, left_probability, right_bias)
+        self.assertEqual(bias["membership_classification"], "bias component sufficient")
+        self.assertTrue(bias["right_bias_only_restores_right_membership"])
+        self.assertFalse(bias["right_probabilities_only_restores_right_membership"])
+        self.assertFalse(bias["ordering_inversion_decomposition"][0][
+            "probability_component_alone_reverses_ordering"])
+        self.assertTrue(bias["ordering_inversion_decomposition"][0][
+            "bias_component_alone_reverses_ordering"])
+
+        interaction_probability = left_probability.copy()
+        interaction_probability[11], interaction_probability[12] = 0.25, -0.25
+        interaction_bias = zero_bias.copy(); interaction_bias[11], interaction_bias[12] = -0.5, 0.5
+        interaction = run(left_probability, zero_bias, interaction_probability, interaction_bias)
+        self.assertEqual(interaction["membership_classification"], "requires both components")
+        self.assertTrue(interaction["both_required_for_right_membership"])
+        self.assertFalse(interaction["right_probabilities_only_restores_right_membership"])
+        self.assertFalse(interaction["right_bias_only_restores_right_membership"])
+
+        equal = run(left_probability, zero_bias, left_probability, zero_bias)
+        self.assertEqual(equal["membership_classification"], "native memberships already equal")
+        self.assertTrue(equal["native_left_membership_reconstruction_valid"])
+        self.assertTrue(equal["native_right_membership_reconstruction_valid"])
+
+        for expert in interaction["disputed_expert_delta_decomposition"]:
+            self.assertTrue({"total_selection_score_delta", "probability_delta",
+                             "constant_bias_delta", "float32_reconstruction_residual"} <= set(expert))
+            self.assertAlmostEqual(expert["float32_reconstruction_residual"], 0.0, places=6)
+        inversion = interaction["ordering_inversion_decomposition"][0]
+        self.assertGreater(inversion["left_native_score_gap"], 0)
+        self.assertLess(inversion["right_native_score_gap"], 0)
+        self.assertAlmostEqual(inversion["decomposition_residual"], 0.0, places=6)
+        self.assertFalse(inversion["probability_component_alone_reverses_ordering"])
+        self.assertFalse(inversion["bias_component_alone_reverses_ordering"])
+        self.assertTrue(inversion["only_combination_reproduces_native_inversion"])
+
+    def test_constant_bias_native_reconstruction_and_dtype_grid_audit(self):
+        probability = np.zeros((1, 2, PARITY.ROUTED_EXPERT_COUNT), np.float32)
+        probability[..., :12] = np.arange(12, 0, -1, dtype=np.float32)
+        bias = np.linspace(-0.01, 0.01, PARITY.ROUTED_EXPERT_COUNT, dtype=np.float32)
+        scores = np.asarray(probability + bias[None, None, :], np.float32)
+        indices = np.stack([PARITY._score_topk_indices(row) for row in scores.reshape(-1, 384)])
+        constant, reconstructed, report = PARITY.constant_bias_reconstruction(
+            probability, scores, indices, [0, 1])
+        np.testing.assert_array_equal(reconstructed, scores.reshape(-1, 384))
+        self.assertTrue(report["score_reconstruction_exact_equality"])
+        self.assertTrue(report["every_token_reproduces_captured_membership"])
+        self.assertTrue(all(row["selected_set_equality"]
+                            for row in report["per_token_selected_set_equality"]))
+        audit = PARITY.correction_bias_dtype_grid_audit(constant, bias)
+        self.assertEqual(set(audit["candidates"]),
+                         {"raw_float32", "bf16_rne_then_float32", "f16_rne_then_float32"})
+        self.assertEqual(audit["closest_candidate_by_rms"], "raw_float32")
+        self.assertTrue(audit["diagnostic_only_not_a_runtime_dtype_verdict"])
+        self.assertTrue(all("exact_match_count_out_of_384" in row
+                            for row in audit["candidates"].values()))
     def _write_profile(self, root, values, legacy_indices, rounding):
         case = root / "eos_window_position_2"; case.mkdir(parents=True)
         direct = [f"{name}\tf32\t1,1,1,1\t{name}.raw" for name in sorted(PARITY.DIRECT_NAMES)]

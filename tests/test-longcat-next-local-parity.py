@@ -1007,6 +1007,180 @@ def router_cutoff_analysis(sides, prefix, attended_tokens):
             "token_cutoffs": public_cutoffs, "pairwise_disputed_experts": disputes}
 
 
+def _score_topk_indices(scores):
+    scores = np.asarray(scores, np.float32).reshape(-1)
+    if scores.size != ROUTED_EXPERT_COUNT:
+        raise ValueError("router selection decomposition requires 384 scores")
+    return np.lexsort((np.arange(scores.size), -scores))[:12].astype(np.int64)
+
+
+def constant_bias_reconstruction(probabilities, selection_scores, captured_indices, attended_tokens):
+    tokenwise_bias, bias_report = reconstruct_router_correction_bias(probabilities, selection_scores)
+    constant_bias = tokenwise_bias.mean(axis=0, dtype=np.float32)
+    probabilities = np.asarray(probabilities, np.float32).reshape(-1, ROUTED_EXPERT_COUNT)
+    selection_scores = np.asarray(selection_scores, np.float32).reshape(-1, ROUTED_EXPERT_COUNT)
+    captured_indices = np.asarray(captured_indices).reshape(-1, 12)
+    reconstructed = np.asarray(probabilities + constant_bias[None, :], np.float32)
+    difference = reconstructed - selection_scores
+    membership = []
+    for token in range(reconstructed.shape[0]):
+        reconstructed_set = sorted(_score_topk_indices(reconstructed[token]).tolist())
+        captured_set = sorted(captured_indices[token].astype(np.int64).tolist())
+        membership.append({"attended_token": int(attended_tokens[token]),
+                           "selected_set_equality": reconstructed_set == captured_set,
+                           "reconstructed_selected_expert_set": reconstructed_set,
+                           "captured_selected_expert_set": captured_set})
+    report = {**bias_report,
+        "maximum_absolute_score_reconstruction_error": float(np.abs(difference).max(initial=0)),
+        "rms_score_reconstruction_error":
+            float(np.sqrt(np.mean(np.square(difference, dtype=np.float64)))),
+        "score_reconstruction_exact_equality": bool(np.array_equal(reconstructed, selection_scores)),
+        "per_token_selected_set_equality": membership,
+        "every_token_reproduces_captured_membership": all(row["selected_set_equality"] for row in membership)}
+    return constant_bias, reconstructed, report
+
+
+def _public_cutoff(scores, attended_token):
+    cutoff = router_token_cutoff(scores, _score_topk_indices(scores), attended_token)
+    return {key: value for key, value in cutoff.items() if key not in {"expert_ranks", "scores"}}
+
+
+def correction_bias_dtype_grid_audit(left_bias, right_bias):
+    left_bias = np.asarray(left_bias, np.float32); right_bias = np.asarray(right_bias, np.float32)
+    candidates = {"raw_float32": left_bias,
+                  "bf16_rne_then_float32": bf16_round_to_float32(left_bias),
+                  "f16_rne_then_float32": left_bias.astype(np.float16).astype(np.float32)}
+    reports = {}
+    for name, candidate in candidates.items():
+        metrics = _vector_metrics(candidate, right_bias)
+        reports[name] = {**metrics,
+            "exact_match_count_out_of_384": int(np.count_nonzero(candidate == right_bias))}
+    return {"candidates": reports,
+            "closest_candidate_by_rms": min(reports, key=lambda name: reports[name]["rms_difference"]),
+            "diagnostic_only_not_a_runtime_dtype_verdict": True}
+
+
+def probability_bias_pair_decomposition(sides, prefix, attended_tokens,
+                                        left_name, right_name):
+    constants = {}; native_scores = {}; reconstruction = {}
+    for implementation in (left_name, right_name):
+        constants[implementation], native_scores[implementation], reconstruction[implementation] = (
+            constant_bias_reconstruction(
+                sides[implementation][prefix + "router_probabilities"],
+                sides[implementation][prefix + "router_selection_scores"],
+                sides[implementation][prefix + "router_topk_indices"], attended_tokens))
+    probabilities = {name: np.asarray(sides[name][prefix + "router_probabilities"], np.float32).reshape(
+        -1, ROUTED_EXPERT_COUNT) for name in (left_name, right_name)}
+    captured_scores = {name: np.asarray(sides[name][prefix + "router_selection_scores"], np.float32).reshape(
+        -1, ROUTED_EXPERT_COUNT) for name in (left_name, right_name)}
+    captured_sets = {name: [set(np.asarray(sides[name][prefix + "router_topk_indices"]).reshape(-1, 12)[token].tolist())
+        for token in range(len(attended_tokens))] for name in (left_name, right_name)}
+    coalition_specs = {
+        "native_left": (left_name, left_name),
+        "right_probabilities_only": (right_name, left_name),
+        "right_bias_only": (left_name, right_name),
+        "native_right": (right_name, right_name),
+    }
+    rows = []
+    for token, attended_token in enumerate(attended_tokens):
+        coalitions = {}
+        coalition_scores = {}
+        for label, (probability_source, bias_source) in coalition_specs.items():
+            scores = np.asarray(probabilities[probability_source][token] + constants[bias_source], np.float32)
+            coalition_scores[label] = scores
+            cutoff = _public_cutoff(scores, attended_token)
+            selected = set(cutoff["selected_expert_set"])
+            coalitions[label] = {**cutoff,
+                "selected_set_equality_vs_native_left": selected == captured_sets[left_name][token],
+                "selected_set_equality_vs_native_right": selected == captured_sets[right_name][token]}
+        native_equal = captured_sets[left_name][token] == captured_sets[right_name][token]
+        probability_restores = coalitions["right_probabilities_only"]["selected_set_equality_vs_native_right"]
+        bias_restores = coalitions["right_bias_only"]["selected_set_equality_vs_native_right"]
+        reconstruction_valid = (reconstruction[left_name]["per_token_selected_set_equality"][token]["selected_set_equality"] and
+                                reconstruction[right_name]["per_token_selected_set_equality"][token]["selected_set_equality"])
+        both_restores = coalitions["native_right"]["selected_set_equality_vs_native_right"]
+        if native_equal:
+            classification = "native memberships already equal"
+        elif not reconstruction_valid:
+            classification = "neither hybrid reproduces right membership"
+        elif probability_restores and bias_restores:
+            classification = "both components independently sufficient"
+        elif probability_restores:
+            classification = "probability component sufficient"
+        elif bias_restores:
+            classification = "bias component sufficient"
+        elif both_restores and reconstruction_valid:
+            classification = "requires both components"
+        else:
+            classification = "neither hybrid reproduces right membership"
+        only_left = sorted(captured_sets[left_name][token] - captured_sets[right_name][token])
+        only_right = sorted(captured_sets[right_name][token] - captured_sets[left_name][token])
+        disputed = []
+        for expert in sorted(set(only_left + only_right)):
+            total = float(captured_scores[left_name][token, expert] - captured_scores[right_name][token, expert])
+            probability_delta = float(probabilities[left_name][token, expert] - probabilities[right_name][token, expert])
+            bias_delta = float(constants[left_name][expert] - constants[right_name][expert])
+            disputed.append({"expert_id": expert, "orientation": "left_minus_right",
+                "total_selection_score_delta": total, "probability_delta": probability_delta,
+                "constant_bias_delta": bias_delta,
+                "float32_reconstruction_residual": total - probability_delta - bias_delta})
+        inversions = []
+        for left_expert in only_left:
+            for right_expert in only_right:
+                def gap(values): return float(values[left_expert] - values[right_expert])
+                left_gap = gap(captured_scores[left_name][token]); right_gap = gap(captured_scores[right_name][token])
+                probability_change = gap(probabilities[left_name][token]) - gap(probabilities[right_name][token])
+                bias_change = float((constants[left_name][left_expert] - constants[left_name][right_expert]) -
+                                    (constants[right_name][left_expert] - constants[right_name][right_expert]))
+                gap_change = left_gap - right_gap
+                probability_hybrid_gap = gap(coalition_scores["right_probabilities_only"])
+                bias_hybrid_gap = gap(coalition_scores["right_bias_only"])
+                combination_gap = gap(coalition_scores["native_right"])
+                sign_flip = lambda first, second: bool((first > 0 > second) or (first < 0 < second))
+                probability_flips = sign_flip(left_gap, probability_hybrid_gap)
+                bias_flips = sign_flip(left_gap, bias_hybrid_gap)
+                inversions.append({"left_only_expert": left_expert, "right_only_expert": right_expert,
+                    "left_native_score_gap": left_gap, "right_native_score_gap": right_gap,
+                    "score_gap_change_left_minus_right": gap_change,
+                    "probability_gap_change": probability_change, "bias_gap_change": bias_change,
+                    "decomposition_residual": gap_change - probability_change - bias_change,
+                    "probability_component_alone_reverses_ordering": probability_flips,
+                    "bias_component_alone_reverses_ordering": bias_flips,
+                    "only_combination_reproduces_native_inversion":
+                        bool(reconstruction_valid and sign_flip(left_gap, right_gap) and
+                             sign_flip(left_gap, combination_gap) and
+                             not probability_flips and not bias_flips)})
+        rows.append({"attended_token": int(attended_token), "coalitions": coalitions,
+            "native_left_membership_reconstruction_valid":
+                reconstruction[left_name]["per_token_selected_set_equality"][token]["selected_set_equality"],
+            "native_right_membership_reconstruction_valid":
+                reconstruction[right_name]["per_token_selected_set_equality"][token]["selected_set_equality"],
+            "right_probabilities_only_restores_right_membership": bool(
+                not native_equal and reconstruction_valid and probability_restores),
+            "right_bias_only_restores_right_membership": bool(
+                not native_equal and reconstruction_valid and bias_restores),
+            "both_required_for_right_membership": bool(not native_equal and not probability_restores and
+                                                        not bias_restores and both_restores and reconstruction_valid),
+            "neither_hybrid_restores_right_membership": bool(not native_equal and (
+                not reconstruction_valid or (not probability_restores and not bias_restores and not both_restores))),
+            "membership_classification": classification,
+            "membership_classification_decisive": bool(reconstruction_valid),
+            "disputed_expert_delta_decomposition": disputed,
+            "ordering_inversion_decomposition": inversions})
+    return {"left_implementation": left_name, "right_implementation": right_name,
+        "native_reconstruction": reconstruction, "tokens": rows,
+        "correction_bias_dtype_grid_audit": correction_bias_dtype_grid_audit(
+            constants[left_name], constants[right_name])}
+
+
+def router_probability_bias_decomposition(sides, prefix, attended_tokens):
+    pairs = (("cpp_vs_python_default", "cpp", "default"),
+             ("cpp_vs_python_math", "cpp", "math"),
+             ("python_default_vs_python_math", "default", "math"))
+    return {label: probability_bias_pair_decomposition(
+        sides, prefix, attended_tokens, left, right) for label, left, right in pairs}
+
+
 def primary_router_cutoff_summary(router_cutoffs, component_rows, even_analysis):
     primary = next((row for row in router_cutoffs
         if row["pairwise_disputed_experts"]["cpp_vs_python_default"]), None)
@@ -1051,6 +1225,59 @@ def primary_router_cutoff_summary(router_cutoffs, component_rows, even_analysis)
             bool(not primary_pass("router_topk_weights") and aligned_pass),
         "returned_order_note":
             "returned-order top-k weight failure is not treated as a weight-math failure when expert-ID-aligned weights pass"}
+
+
+def primary_probability_bias_summary(block_reports):
+    primary = None
+    affected = []
+    for block_report in block_reports:
+        pair = block_report["pairwise"]["cpp_vs_python_default"]
+        affected = [row for row in pair["tokens"]
+                    if row["membership_classification"] != "native memberships already equal"]
+        if affected:
+            primary = (block_report, pair)
+            break
+    if primary is None:
+        return None
+    block_report, pair = primary
+    probability_tokens = [row["attended_token"] for row in affected
+                          if row["right_probabilities_only_restores_right_membership"]]
+    bias_tokens = [row["attended_token"] for row in affected
+                   if row["right_bias_only_restores_right_membership"]]
+    both_tokens = [row["attended_token"] for row in affected
+                   if row["both_required_for_right_membership"]]
+    neither_tokens = [row["attended_token"] for row in affected
+                      if row["neither_hybrid_restores_right_membership"]]
+    descriptions = []
+    if len(probability_tokens) == len(affected):
+        descriptions.append("probability component is sufficient for all affected tokens")
+    if bias_tokens:
+        descriptions.append("bias component is sufficient for at least one affected token")
+    if both_tokens:
+        descriptions.append("probability and bias changes interact at the cutoff")
+    return {"physical_block": block_report["physical_block"],
+        "affected_attended_tokens": [row["attended_token"] for row in affected],
+        "native_left_membership_reconstruction_valid": all(
+            row["native_left_membership_reconstruction_valid"] for row in affected),
+        "native_right_membership_reconstruction_valid": all(
+            row["native_right_membership_reconstruction_valid"] for row in affected),
+        "tokens_where_probability_swap_alone_restores_default": probability_tokens,
+        "tokens_where_bias_swap_alone_restores_default": bias_tokens,
+        "tokens_where_both_are_required": both_tokens,
+        "tokens_where_neither_hybrid_restores_default": neither_tokens,
+        "per_token_membership_classification": [
+            {"attended_token": row["attended_token"],
+             "classification": row["membership_classification"],
+             "decisive": row["membership_classification_decisive"]} for row in affected],
+        "disputed_expert_delta_decomposition": [
+            {"attended_token": row["attended_token"], "experts": row["disputed_expert_delta_decomposition"]}
+            for row in affected],
+        "ordering_inversion_decomposition": [
+            {"attended_token": row["attended_token"], "pairs": row["ordering_inversion_decomposition"]}
+            for row in affected],
+        "correction_bias_dtype_grid_audit": pair["correction_bias_dtype_grid_audit"],
+        "descriptive_evidence": descriptions,
+        "categorical_membership_results_are_not_continuous_causality_verdicts": True}
 
 
 def reconstruct_odd_coalition(post_attention_residual, dense_output, previous_even_moe_shortcut):
@@ -1199,7 +1426,7 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
         if hidden and not d["within_diagnostic_criterion"] and not m["within_diagnostic_criterion"] and first_both is None:
             first_both = name
     routers = []; first_real_default = first_real_math = None; even_analysis = []
-    router_cutoffs = []
+    router_cutoffs = []; probability_bias_reports = []
     for block in range(start, start + count, 2):
         p = f"physical_block_{block:02d}__"
         semantic = semantic_router_report(sides["cpp"][p + "router_topk_indices"],
@@ -1210,6 +1437,8 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
         cutoff = router_cutoff_analysis(sides, p, attended_tokens)
         cutoff["physical_block"] = block
         router_cutoffs.append(cutoff)
+        probability_bias_reports.append({"physical_block": block,
+            "pairwise": router_probability_bias_decomposition(sides, p, attended_tokens)})
         if semantic["has_cpp_vs_python_default_real_expert_set_difference"] and first_real_default is None:
             first_real_default = block
         if semantic["has_cpp_vs_python_math_real_expert_set_difference"] and first_real_math is None:
@@ -1243,6 +1472,7 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
         for row in even_analysis
         if row["shortcut_discrepancy_present_while_even_output_passes_default"]), None)
     primary_summary = primary_router_cutoff_summary(router_cutoffs, results, even_analysis)
+    primary_probability_bias = primary_probability_bias_summary(probability_bias_reports)
     return {"accepted": False, "array_count": len(expected), "physical_block_start": start,
         "physical_block_count": count, "primary_oracle": "python_default",
         "sensitivity_control": "python_math",
@@ -1258,10 +1488,12 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
             first_shortcut_while_even_passes,
         "first_both_backend_component_failure": first_both,
         "primary_oracle_router_cutoff_summary": primary_summary,
+        "primary_oracle_router_probability_bias_decomposition": primary_probability_bias,
         **{f"block_{block}_dominant_branch_vs_{label}": attribution[f"block_{block}_vs_{label}"]["dominant_branch"]
            for block in range(start + 1, start + count, 2) for label in ("default", "math")},
         "components": results, "router_semantics": routers,
         "router_cutoff_analysis": router_cutoffs,
+        "router_probability_bias_decomposition": probability_bias_reports,
         "even_block_shortcut_analysis": even_analysis, "odd_block_cross_substitution": attribution}
 def reconstruction_metrics(target, alternatives):
     reports = {}
