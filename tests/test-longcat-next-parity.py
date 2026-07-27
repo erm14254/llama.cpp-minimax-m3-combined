@@ -46,6 +46,8 @@ class ParityHarnessTests(unittest.TestCase):
             self.assertEqual(report["array_count"], 44)
             self.assertEqual(report["primary_oracle"], "python_default")
             self.assertEqual(len(report["even_block_shortcut_analysis"]), 2)
+            self.assertEqual(len(report["router_logit_softmax_decomposition"]), 2)
+            self.assertIn("primary_oracle_router_logit_softmax_decomposition", report)
             self.assertEqual(set(report["odd_block_cross_substitution"]),
                              {"block_11_vs_default", "block_11_vs_math",
                               "block_13_vs_default", "block_13_vs_math"})
@@ -349,6 +351,118 @@ class ParityHarnessTests(unittest.TestCase):
         self.assertTrue(audit["diagnostic_only_not_a_runtime_dtype_verdict"])
         self.assertTrue(all("exact_match_count_out_of_384" in row
                             for row in audit["candidates"].values()))
+
+    def test_diagnostic_softmax_references_are_stable_normalized_and_shift_invariant(self):
+        logits = np.linspace(-100, 100, PARITY.ROUTED_EXPERT_COUNT, dtype=np.float32)[None, :]
+        for name, reference in PARITY.DIAGNOSTIC_SOFTMAX_REFERENCES.items():
+            probabilities = reference(logits)
+            shifted = reference(np.asarray(logits + np.float32(17.0), np.float32))
+            self.assertTrue(np.isfinite(probabilities).all(), name)
+            np.testing.assert_allclose(probabilities.sum(axis=-1), 1.0, rtol=0, atol=1e-6)
+            np.testing.assert_allclose(probabilities, shifted, rtol=0, atol=1e-7)
+
+    def test_logit_softmax_residual_coalitions_cover_logit_residual_and_interaction(self):
+        reference = PARITY.diagnostic_softmax_stable_float32
+        def side(logits, residual):
+            logits = np.asarray(logits, np.float32)
+            probabilities = np.asarray(reference(logits[None, :])[0] + residual, np.float32)
+            bias = np.zeros(PARITY.ROUTED_EXPERT_COUNT, np.float32)
+            scores = np.asarray(probabilities + bias, np.float32)
+            return {"router_logits": logits[None, None, :],
+                    "router_probabilities": probabilities[None, None, :],
+                    "router_selection_scores": scores[None, None, :],
+                    "router_topk_indices": PARITY._score_topk_indices(scores)[None, None, :]}
+        def run(left_logits, left_residual, right_logits, right_residual):
+            left = side(left_logits, left_residual); right = side(right_logits, right_residual)
+            sides = {"cpp": {"p" + key: value for key, value in left.items()},
+                     "default": {"p" + key: value for key, value in right.items()}}
+            return PARITY.logit_softmax_pair_variant(
+                sides, "p", [0], "cpp", "default", "stable_float32", reference)["tokens"][0]
+
+        base = np.full(PARITY.ROUTED_EXPERT_COUNT, -10.0, np.float32)
+        base[:11] = np.linspace(6.0, 5.0, 11, dtype=np.float32)
+        base[11], base[12] = 1.0, 0.0
+        swapped = base.copy(); swapped[11], swapped[12] = 0.0, 1.0
+        zero = np.zeros_like(base)
+        logit = run(base, zero, swapped, zero)
+        self.assertEqual(logit["membership_classification"], "logit component sufficient")
+        self.assertTrue(logit["right_logits_only_restores_right_probability_outcome"])
+        self.assertTrue(logit["membership_classification_decisive"])
+
+        left_probability = reference(base[None, :])[0]
+        residual = zero.copy()
+        delta = float(left_probability[11] - left_probability[12])
+        residual[11], residual[12] = -delta, delta
+        residual_case = run(base, zero, base, residual)
+        self.assertEqual(residual_case["membership_classification"],
+                         "softmax-reconstruction residual sufficient")
+        self.assertTrue(residual_case["right_softmax_residual_only_restores_right_probability_outcome"])
+
+        narrowed = base.copy(); narrowed[11], narrowed[12] = 0.6, 0.5
+        narrowed_probability = reference(narrowed[None, :])[0]
+        left_gap = float(left_probability[11] - left_probability[12])
+        right_gap = float(narrowed_probability[11] - narrowed_probability[12])
+        residual_gap = -(left_gap + right_gap) / 2
+        interaction_residual = zero.copy()
+        interaction_residual[11], interaction_residual[12] = residual_gap / 2, -residual_gap / 2
+        interaction = run(base, zero, narrowed, interaction_residual)
+        self.assertEqual(interaction["membership_classification"], "requires both components")
+        self.assertTrue(interaction["both_required_for_right_probability_outcome"])
+        expert = interaction["disputed_expert_probability_decomposition"][0]
+        self.assertTrue({"captured_probability_delta", "diagnostic_softmax_probability_delta",
+                         "softmax_reconstruction_residual_delta", "decomposition_residual",
+                         "raw_logit_delta", "max_centered_logit_delta",
+                         "mean_centered_logit_delta"} <= set(expert))
+        self.assertAlmostEqual(expert["decomposition_residual"], 0.0, places=7)
+        gap = interaction["ordering_gap_decomposition"][0]
+        self.assertGreater(gap["left_captured_probability_gap"], 0)
+        self.assertLess(gap["right_captured_probability_gap"], 0)
+        self.assertAlmostEqual(gap["decomposition_residual"], 0.0, places=7)
+
+        equal = run(base, zero, base, zero)
+        self.assertEqual(equal["membership_classification"], "native probability outcomes already equal")
+
+    def test_softmax_residual_reconstruction_centering_and_variant_disagreement(self):
+        logits = np.linspace(-2, 2, PARITY.ROUTED_EXPERT_COUNT, dtype=np.float32)[None, :]
+        captured = PARITY.diagnostic_softmax_stable_float32(logits)
+        _, _, report = PARITY.diagnostic_softmax_residual(
+            logits, captured, PARITY.diagnostic_softmax_stable_float32)
+        self.assertTrue(report["residual_addback_exactly_reconstructs_captured_probabilities"])
+        self.assertEqual(report["reconstruction_maximum_absolute_error"], 0.0)
+        centered = PARITY.centered_logit_comparison(logits[0], logits[0] + np.float32(7.0))
+        self.assertGreater(centered["raw_logits"]["maximum_absolute_difference"], 0)
+        self.assertLess(centered["max_centered_logits"]["maximum_absolute_difference"], 1e-6)
+        self.assertLess(centered["mean_centered_logits"]["maximum_absolute_difference"], 1e-6)
+
+        def token(classification):
+            return {"attended_token": 1, "membership_classification": classification,
+                    "left_and_right_probability_outcomes_differ": True,
+                    "left_probability_outcome_matches_captured_native_left_membership": True,
+                    "right_probability_outcome_matches_captured_native_right_membership": True,
+                    "membership_classification_decisive": True,
+                    "right_logits_only_restores_right_probability_outcome":
+                        classification == "logit component sufficient",
+                    "right_softmax_residual_only_restores_right_probability_outcome": False,
+                    "both_required_for_right_probability_outcome": classification == "requires both components",
+                    "centered_logit_metrics": {}, "disputed_expert_probability_decomposition": [],
+                    "ordering_gap_decomposition": []}
+        variants = {
+            "stable_float32": {"tokens": [token("logit component sufficient")],
+                               "softmax_reconstruction_metrics": {}},
+            "stable_float64_then_float32": {"tokens": [token("requires both components")],
+                                             "softmax_reconstruction_metrics": {}}}
+        aligned_variants = {name: {"tokens": [token("native probability outcomes already equal")],
+                                   "softmax_reconstruction_metrics": {}}
+                            for name in PARITY.DIAGNOSTIC_SOFTMAX_REFERENCES}
+        for report in aligned_variants.values():
+            report["tokens"][0]["left_and_right_probability_outcomes_differ"] = False
+        summary = PARITY.primary_logit_softmax_summary([
+            {"physical_block": 10, "pairwise": {"cpp_vs_python_default": {"variants": variants}}},
+            {"physical_block": 12, "pairwise": {"cpp_vs_python_default": {"variants": aligned_variants}}}])
+        self.assertEqual(summary["physical_block"], 10)
+        self.assertFalse(summary["all_affected_tokens_have_reference_variant_agreement"])
+        self.assertIn("diagnostic reference choice changes the categorical result",
+                      summary["descriptive_evidence"])
     def _write_profile(self, root, values, legacy_indices, rounding):
         case = root / "eos_window_position_2"; case.mkdir(parents=True)
         direct = [f"{name}\tf32\t1,1,1,1\t{name}.raw" for name in sorted(PARITY.DIRECT_NAMES)]

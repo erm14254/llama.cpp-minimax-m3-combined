@@ -1181,6 +1181,222 @@ def router_probability_bias_decomposition(sides, prefix, attended_tokens):
         sides, prefix, attended_tokens, left, right) for label, left, right in pairs}
 
 
+def diagnostic_softmax_stable_float32(logits):
+    values = np.asarray(logits, np.float32)
+    shifted = np.asarray(values - np.max(values, axis=-1, keepdims=True), np.float32)
+    exponential = np.asarray(np.exp(shifted), np.float32)
+    denominator = np.sum(exponential, axis=-1, keepdims=True, dtype=np.float32)
+    result = np.asarray(exponential / denominator, np.float32)
+    if not np.isfinite(result).all():
+        raise ValueError("stable_float32 diagnostic softmax produced non-finite values")
+    return result
+
+
+def diagnostic_softmax_stable_float64_then_float32(logits):
+    values = np.asarray(logits, np.float64)
+    shifted = values - np.max(values, axis=-1, keepdims=True)
+    result = np.asarray(np.exp(shifted) / np.sum(np.exp(shifted), axis=-1, keepdims=True), np.float32)
+    if not np.isfinite(result).all():
+        raise ValueError("stable_float64_then_float32 diagnostic softmax produced non-finite values")
+    return result
+
+
+DIAGNOSTIC_SOFTMAX_REFERENCES = {
+    "stable_float32": diagnostic_softmax_stable_float32,
+    "stable_float64_then_float32": diagnostic_softmax_stable_float64_then_float32,
+}
+
+
+def diagnostic_softmax_residual(logits, captured_probabilities, reference):
+    captured = np.asarray(captured_probabilities, np.float32).reshape(-1, ROUTED_EXPERT_COUNT)
+    softmax = reference(np.asarray(logits, np.float32).reshape(-1, ROUTED_EXPERT_COUNT))
+    residual = np.asarray(captured - softmax, np.float32)
+    reconstructed = np.asarray(softmax + residual, np.float32)
+    difference = reconstructed - captured
+    probability_difference = softmax - captured
+    metrics = _vector_metrics(softmax, captured)
+    return softmax, residual, {"maximum_absolute_difference_vs_captured_probabilities":
+            metrics["maximum_absolute_difference"],
+        "rms_difference_vs_captured_probabilities": metrics["rms_difference"],
+        "cosine_similarity_vs_captured_probabilities": metrics["cosine_similarity"],
+        "exact_equality_vs_captured_probabilities": metrics["exact_equality"],
+        "maximum_absolute_probability_sum_error":
+            float(np.abs(np.sum(softmax, axis=-1, dtype=np.float32) - np.float32(1)).max(initial=0)),
+        "minimum_probability": float(softmax.min(initial=np.inf)),
+        "maximum_probability": float(softmax.max(initial=-np.inf)), "finite": bool(np.isfinite(softmax).all()),
+        "maximum_absolute_residual": float(np.abs(residual).max(initial=0)),
+        "rms_residual": float(np.sqrt(np.mean(np.square(residual, dtype=np.float64)))),
+        "residual_sum": float(np.sum(residual, dtype=np.float64)),
+        "minimum_residual": float(residual.min(initial=np.inf)),
+        "maximum_residual": float(residual.max(initial=-np.inf)),
+        "residual_addback_exactly_reconstructs_captured_probabilities": bool(np.array_equal(reconstructed, captured)),
+        "reconstruction_maximum_absolute_error": float(np.abs(difference).max(initial=0)),
+        "reconstruction_rms_error": float(np.sqrt(np.mean(np.square(difference, dtype=np.float64)))),
+        "captured_minus_softmax_maximum_absolute": float(np.abs(probability_difference).max(initial=0))}
+
+
+def centered_logit_comparison(left_logits, right_logits):
+    left = np.asarray(left_logits, np.float32); right = np.asarray(right_logits, np.float32)
+    left_max = float(left.max()); right_max = float(right.max())
+    left_mean = float(np.mean(left, dtype=np.float32)); right_mean = float(np.mean(right, dtype=np.float32))
+    return {"raw_logits": _vector_metrics(left, right),
+        "max_centered_logits": _vector_metrics(
+            np.asarray(left - left_max, np.float32), np.asarray(right - right_max, np.float32)),
+        "mean_centered_logits": _vector_metrics(
+            np.asarray(left - left_mean, np.float32), np.asarray(right - right_mean, np.float32)),
+        "left_tokenwise_maximum": left_max, "right_tokenwise_maximum": right_max,
+        "maximum_difference_left_minus_right": left_max - right_max,
+        "left_tokenwise_mean": left_mean, "right_tokenwise_mean": right_mean,
+        "mean_difference_left_minus_right": left_mean - right_mean}
+
+
+def logit_softmax_pair_variant(sides, prefix, attended_tokens, left_name, right_name,
+                               reference_name, reference):
+    logits = {name: np.asarray(sides[name][prefix + "router_logits"], np.float32).reshape(
+        -1, ROUTED_EXPERT_COUNT) for name in (left_name, right_name)}
+    probabilities = {name: np.asarray(sides[name][prefix + "router_probabilities"], np.float32).reshape(
+        -1, ROUTED_EXPERT_COUNT) for name in (left_name, right_name)}
+    captured_indices = {name: np.asarray(sides[name][prefix + "router_topk_indices"]).reshape(-1, 12)
+                        for name in (left_name, right_name)}
+    left_bias, _, _ = constant_bias_reconstruction(
+        sides[left_name][prefix + "router_probabilities"],
+        sides[left_name][prefix + "router_selection_scores"],
+        sides[left_name][prefix + "router_topk_indices"], attended_tokens)
+    softmax = {}; residual = {}; reconstruction = {}
+    for name in (left_name, right_name):
+        softmax[name], residual[name], reconstruction[name] = diagnostic_softmax_residual(
+            logits[name], probabilities[name], reference)
+    rows = []
+    for token, attended_token in enumerate(attended_tokens):
+        captured_outcomes = {name: set(_score_topk_indices(np.asarray(
+            probabilities[name][token] + left_bias, np.float32)).tolist()) for name in (left_name, right_name)}
+        intended = {name: set(captured_indices[name][token].tolist()) for name in (left_name, right_name)}
+        left_valid = captured_outcomes[left_name] == intended[left_name]
+        right_valid = captured_outcomes[right_name] == intended[right_name]
+        specs = {"native_left_probability": (left_name, left_name),
+                 "right_logits_only": (right_name, left_name),
+                 "right_softmax_residual_only": (left_name, right_name),
+                 "native_right_probability": (right_name, right_name)}
+        coalitions = {}; coalition_probabilities = {}
+        all_finite = True
+        for label, (logit_source, residual_source) in specs.items():
+            probability = np.asarray(softmax[logit_source][token] + residual[residual_source][token], np.float32)
+            coalition_probabilities[label] = probability
+            all_finite &= bool(np.isfinite(probability).all())
+            cutoff = _public_cutoff(np.asarray(probability + left_bias, np.float32), attended_token)
+            selected = set(cutoff["selected_expert_set"])
+            coalitions[label] = {**cutoff,
+                "selected_set_equality_vs_left_probability_outcome": selected == captured_outcomes[left_name],
+                "selected_set_equality_vs_right_probability_outcome": selected == captured_outcomes[right_name],
+                "probability_minimum": float(probability.min(initial=np.inf)),
+                "probability_maximum": float(probability.max(initial=-np.inf)),
+                "probability_sum": float(np.sum(probability, dtype=np.float32)),
+                "all_probability_values_finite": bool(np.isfinite(probability).all())}
+        native_residual_valid = all(reconstruction[name][
+            "residual_addback_exactly_reconstructs_captured_probabilities"] for name in (left_name, right_name))
+        decisive = bool(left_valid and right_valid and native_residual_valid and all_finite)
+        outcomes_equal = captured_outcomes[left_name] == captured_outcomes[right_name]
+        logit_restores = coalitions["right_logits_only"]["selected_set_equality_vs_right_probability_outcome"]
+        residual_restores = coalitions["right_softmax_residual_only"]["selected_set_equality_vs_right_probability_outcome"]
+        both_restores = coalitions["native_right_probability"]["selected_set_equality_vs_right_probability_outcome"]
+        if outcomes_equal: classification = "native probability outcomes already equal"
+        elif not decisive: classification = "reconstruction not decisive"
+        elif logit_restores and residual_restores: classification = "both components independently sufficient"
+        elif logit_restores: classification = "logit component sufficient"
+        elif residual_restores: classification = "softmax-reconstruction residual sufficient"
+        elif both_restores: classification = "requires both components"
+        else: classification = "neither hybrid reproduces right probability outcome"
+        only_left = sorted(captured_outcomes[left_name] - captured_outcomes[right_name])
+        only_right = sorted(captured_outcomes[right_name] - captured_outcomes[left_name])
+        left_max = float(logits[left_name][token].max()); right_max = float(logits[right_name][token].max())
+        left_mean = float(np.mean(logits[left_name][token], dtype=np.float32))
+        right_mean = float(np.mean(logits[right_name][token], dtype=np.float32))
+        disputed = []
+        for expert in sorted(set(only_left + only_right)):
+            captured_delta = float(probabilities[left_name][token, expert] - probabilities[right_name][token, expert])
+            softmax_delta = float(softmax[left_name][token, expert] - softmax[right_name][token, expert])
+            residual_delta = float(residual[left_name][token, expert] - residual[right_name][token, expert])
+            disputed.append({"expert_id": expert, "orientation": "left_minus_right",
+                "captured_probability_delta": captured_delta,
+                "diagnostic_softmax_probability_delta": softmax_delta,
+                "softmax_reconstruction_residual_delta": residual_delta,
+                "decomposition_residual": captured_delta - softmax_delta - residual_delta,
+                "left_logit": float(logits[left_name][token, expert]),
+                "right_logit": float(logits[right_name][token, expert]),
+                "raw_logit_delta": float(logits[left_name][token, expert] - logits[right_name][token, expert]),
+                "max_centered_logit_delta": float((logits[left_name][token, expert] - left_max) -
+                                                   (logits[right_name][token, expert] - right_max)),
+                "mean_centered_logit_delta": float((logits[left_name][token, expert] - left_mean) -
+                                                    (logits[right_name][token, expert] - right_mean))})
+        inversions = []
+        for left_expert in only_left:
+            for right_expert in only_right:
+                gap = lambda values: float(values[left_expert] - values[right_expert])
+                left_gap = gap(probabilities[left_name][token]); right_gap = gap(probabilities[right_name][token])
+                softmax_change = gap(softmax[left_name][token]) - gap(softmax[right_name][token])
+                residual_change = gap(residual[left_name][token]) - gap(residual[right_name][token])
+                captured_change = left_gap - right_gap
+                logit_gap = gap(logits[left_name][token]); right_logit_gap = gap(logits[right_name][token])
+                sign_flip = lambda first, second: bool((first > 0 > second) or (first < 0 < second))
+                logits_flip = sign_flip(left_gap, gap(coalition_probabilities["right_logits_only"]))
+                residual_flip = sign_flip(left_gap, gap(coalition_probabilities["right_softmax_residual_only"]))
+                inversions.append({"left_only_expert": left_expert, "right_only_expert": right_expert,
+                    "left_captured_probability_gap": left_gap, "right_captured_probability_gap": right_gap,
+                    "captured_probability_gap_change": captured_change,
+                    "diagnostic_softmax_probability_gap_change": softmax_change,
+                    "softmax_residual_gap_change": residual_change,
+                    "decomposition_residual": captured_change - softmax_change - residual_change,
+                    "left_raw_logit_gap": logit_gap, "right_raw_logit_gap": right_logit_gap,
+                    "raw_logit_gap_change": logit_gap - right_logit_gap,
+                    "replacing_logits_alone_reverses_probability_ordering": logits_flip,
+                    "replacing_residual_alone_reverses_probability_ordering": residual_flip,
+                    "only_combination_reproduces_right_probability_ordering": bool(
+                        decisive and sign_flip(left_gap, right_gap) and not logits_flip and not residual_flip)})
+        rows.append({"attended_token": int(attended_token), "coalitions": coalitions,
+            "left_probability_outcome_matches_captured_native_left_membership": left_valid,
+            "right_probability_outcome_matches_captured_native_right_membership": right_valid,
+            "left_and_right_probability_outcomes_differ": not outcomes_equal,
+            "right_logits_only_restores_right_probability_outcome": bool(decisive and not outcomes_equal and logit_restores),
+            "right_softmax_residual_only_restores_right_probability_outcome": bool(
+                decisive and not outcomes_equal and residual_restores),
+            "both_required_for_right_probability_outcome": bool(
+                decisive and not outcomes_equal and not logit_restores and not residual_restores and both_restores),
+            "neither_hybrid_restores_right_probability_outcome": bool(
+                not outcomes_equal and (not decisive or (not logit_restores and not residual_restores and not both_restores))),
+            "membership_classification": classification,
+            "membership_classification_decisive": decisive,
+            "centered_logit_metrics": centered_logit_comparison(logits[left_name][token], logits[right_name][token]),
+            "disputed_expert_probability_decomposition": disputed,
+            "ordering_gap_decomposition": inversions})
+    return {"reference_variant": reference_name, "left_implementation": left_name,
+        "right_implementation": right_name, "softmax_reconstruction_metrics": reconstruction,
+        "tokens": rows, "diagnostic_softmax_is_not_backend_kernel_identity": True}
+
+
+def router_logit_softmax_decomposition(sides, prefix, attended_tokens):
+    pairs = (("cpp_vs_python_default", "cpp", "default"),
+             ("cpp_vs_python_math", "cpp", "math"),
+             ("python_default_vs_python_math", "default", "math"))
+    result = {}
+    for pair_label, left, right in pairs:
+        variants = {name: logit_softmax_pair_variant(
+            sides, prefix, attended_tokens, left, right, name, reference)
+            for name, reference in DIAGNOSTIC_SOFTMAX_REFERENCES.items()}
+        robustness = []
+        for token, attended_token in enumerate(attended_tokens):
+            classifications = {name: report["tokens"][token]["membership_classification"]
+                               for name, report in variants.items()}
+            robustness.append({"attended_token": int(attended_token),
+                "classifications": classifications,
+                "classification_agreement": len(set(classifications.values())) == 1})
+        affected = [row for row in robustness if variants["stable_float32"]["tokens"][
+            attended_tokens.index(row["attended_token"])]["left_and_right_probability_outcomes_differ"]]
+        result[pair_label] = {"variants": variants, "cross_variant_robustness": robustness,
+            "all_affected_tokens_have_reference_variant_agreement":
+                all(row["classification_agreement"] for row in affected)}
+    return result
+
+
 def primary_router_cutoff_summary(router_cutoffs, component_rows, even_analysis):
     primary = next((row for row in router_cutoffs
         if row["pairwise_disputed_experts"]["cpp_vs_python_default"]), None)
@@ -1278,6 +1494,75 @@ def primary_probability_bias_summary(block_reports):
         "correction_bias_dtype_grid_audit": pair["correction_bias_dtype_grid_audit"],
         "descriptive_evidence": descriptions,
         "categorical_membership_results_are_not_continuous_causality_verdicts": True}
+
+
+def primary_logit_softmax_summary(block_reports):
+    primary = None
+    affected_positions = []
+    for block_report in block_reports:
+        pair = block_report["pairwise"]["cpp_vs_python_default"]
+        f32_tokens = pair["variants"]["stable_float32"]["tokens"]
+        affected_positions = [index for index, row in enumerate(f32_tokens)
+                              if row["left_and_right_probability_outcomes_differ"]]
+        if affected_positions:
+            primary = (block_report, pair)
+            break
+    if primary is None:
+        return None
+    block_report, pair = primary
+    variants = pair["variants"]
+    token_rows = []
+    logits_tokens = set(); residual_tokens = set(); both_tokens = set(); indecisive_tokens = set()
+    for index in affected_positions:
+        attended_token = variants["stable_float32"]["tokens"][index]["attended_token"]
+        classifications = {name: report["tokens"][index]["membership_classification"]
+                           for name, report in variants.items()}
+        agreement = len(set(classifications.values())) == 1
+        token_rows.append({"attended_token": attended_token, "classifications": classifications,
+                           "classification_agreement": agreement})
+        for report in variants.values():
+            row = report["tokens"][index]
+            if row["right_logits_only_restores_right_probability_outcome"]: logits_tokens.add(attended_token)
+            if row["right_softmax_residual_only_restores_right_probability_outcome"]: residual_tokens.add(attended_token)
+            if row["both_required_for_right_probability_outcome"]: both_tokens.add(attended_token)
+            if not row["membership_classification_decisive"]: indecisive_tokens.add(attended_token)
+    descriptions = []
+    affected_tokens = [row["attended_token"] for row in token_rows]
+    if all(all(variants[name]["tokens"][index]["right_logits_only_restores_right_probability_outcome"]
+               for name in variants) for index in affected_positions):
+        descriptions.append("captured-logit differences are sufficient under both diagnostic references")
+    if residual_tokens:
+        descriptions.append("softmax-reconstruction residual is sufficient under at least one reference")
+    if both_tokens:
+        descriptions.append("logit and residual components interact")
+    if not all(row["classification_agreement"] for row in token_rows):
+        descriptions.append("diagnostic reference choice changes the categorical result")
+    return {"physical_block": block_report["physical_block"],
+        "affected_attended_tokens": affected_tokens,
+        "left_probability_outcome_valid": all(variants[name]["tokens"][index][
+            "left_probability_outcome_matches_captured_native_left_membership"]
+            for name in variants for index in affected_positions),
+        "right_probability_outcome_valid": all(variants[name]["tokens"][index][
+            "right_probability_outcome_matches_captured_native_right_membership"]
+            for name in variants for index in affected_positions),
+        "per_token_classifications": token_rows,
+        "tokens_where_logits_alone_are_sufficient": sorted(logits_tokens),
+        "tokens_where_softmax_residual_alone_is_sufficient": sorted(residual_tokens),
+        "tokens_requiring_both": sorted(both_tokens),
+        "tokens_where_analysis_is_not_decisive": sorted(indecisive_tokens),
+        "centered_logit_metrics": {name: [report["tokens"][index]["centered_logit_metrics"]
+            for index in affected_positions] for name, report in variants.items()},
+        "disputed_expert_decompositions": {name: [report["tokens"][index][
+            "disputed_expert_probability_decomposition"] for index in affected_positions]
+            for name, report in variants.items()},
+        "ordering_gap_decompositions": {name: [report["tokens"][index]["ordering_gap_decomposition"]
+            for index in affected_positions] for name, report in variants.items()},
+        "softmax_reconstruction_metrics": {name: report["softmax_reconstruction_metrics"]
+                                            for name, report in variants.items()},
+        "all_affected_tokens_have_reference_variant_agreement":
+            all(row["classification_agreement"] for row in token_rows),
+        "descriptive_evidence": descriptions,
+        "diagnostic_softmax_decomposition_is_not_a_backend_kernel_identity_verdict": True}
 
 
 def reconstruct_odd_coalition(post_attention_residual, dense_output, previous_even_moe_shortcut):
@@ -1426,7 +1711,7 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
         if hidden and not d["within_diagnostic_criterion"] and not m["within_diagnostic_criterion"] and first_both is None:
             first_both = name
     routers = []; first_real_default = first_real_math = None; even_analysis = []
-    router_cutoffs = []; probability_bias_reports = []
+    router_cutoffs = []; probability_bias_reports = []; logit_softmax_reports = []
     for block in range(start, start + count, 2):
         p = f"physical_block_{block:02d}__"
         semantic = semantic_router_report(sides["cpp"][p + "router_topk_indices"],
@@ -1439,6 +1724,8 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
         router_cutoffs.append(cutoff)
         probability_bias_reports.append({"physical_block": block,
             "pairwise": router_probability_bias_decomposition(sides, p, attended_tokens)})
+        logit_softmax_reports.append({"physical_block": block,
+            "pairwise": router_logit_softmax_decomposition(sides, p, attended_tokens)})
         if semantic["has_cpp_vs_python_default_real_expert_set_difference"] and first_real_default is None:
             first_real_default = block
         if semantic["has_cpp_vs_python_math_real_expert_set_difference"] and first_real_math is None:
@@ -1473,6 +1760,7 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
         if row["shortcut_discrepancy_present_while_even_output_passes_default"]), None)
     primary_summary = primary_router_cutoff_summary(router_cutoffs, results, even_analysis)
     primary_probability_bias = primary_probability_bias_summary(probability_bias_reports)
+    primary_logit_softmax = primary_logit_softmax_summary(logit_softmax_reports)
     return {"accepted": False, "array_count": len(expected), "physical_block_start": start,
         "physical_block_count": count, "primary_oracle": "python_default",
         "sensitivity_control": "python_math",
@@ -1489,11 +1777,13 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
         "first_both_backend_component_failure": first_both,
         "primary_oracle_router_cutoff_summary": primary_summary,
         "primary_oracle_router_probability_bias_decomposition": primary_probability_bias,
+        "primary_oracle_router_logit_softmax_decomposition": primary_logit_softmax,
         **{f"block_{block}_dominant_branch_vs_{label}": attribution[f"block_{block}_vs_{label}"]["dominant_branch"]
            for block in range(start + 1, start + count, 2) for label in ("default", "math")},
         "components": results, "router_semantics": routers,
         "router_cutoff_analysis": router_cutoffs,
         "router_probability_bias_decomposition": probability_bias_reports,
+        "router_logit_softmax_decomposition": logit_softmax_reports,
         "even_block_shortcut_analysis": even_analysis, "odd_block_cross_substitution": attribution}
 def reconstruction_metrics(target, alternatives):
     reports = {}
