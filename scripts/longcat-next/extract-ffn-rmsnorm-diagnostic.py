@@ -19,9 +19,22 @@ GGUF_TEMPLATE = "blk.{physical}.ffn_norm.weight"
 
 def canonical_norm_weight(value):
     array = np.asarray(value, np.float32)
-    if array.size != 3072 or array.ndim not in (1, 2):
+    if array.shape not in ((3072,), (1, 3072), (3072, 1)):
         raise ValueError(f"FFN RMSNorm weight must contain exactly 3072 elements, got {array.shape}")
     return np.ascontiguousarray(array.reshape(3072)), bool(array.shape != (3072,))
+
+
+def make_norm_weight_record(logical, physical, source, name, value, source_dtype,
+                            source_was_reshaped, location):
+    array = np.asarray(value, np.float32)
+    return {"logical_layer": logical, "physical_even_block": physical,
+        "name_template_coordinates": {"logical": logical, "physical": physical, "layer_alias": logical},
+        "source": source, "source_tensor_name": name, "source_location": location,
+        "source_dtype": source_dtype, "serialized_dtype": "float32",
+        "canonical_tensor_orientation": "hidden_vector", "canonical_shape": [3072],
+        "source_was_reshaped": bool(source_was_reshaped), "source_was_transposed": False,
+        "sha256": hashlib.sha256(array.tobytes()).hexdigest(),
+        "finite_audit": {"finite": bool(np.isfinite(array).all()), "element_count": int(array.size)}}
 
 
 def python_epsilon(checkpoint_dir):
@@ -73,13 +86,13 @@ def main():
         gg_name = COMMON.resolve_tensor_name(args.gguf_name_template, logical, physical)
         py_raw, py_dtype, shard = COMMON.safetensor_weight(args.checkpoint_dir, index, py_name)
         gg_raw, gg_dtype = gguf_norm_weight(reader, gg_name)
-        py, py_t = canonical_norm_weight(py_raw); gg, gg_t = canonical_norm_weight(gg_raw)
-        for short, source, name, value, dtype, transposed, location in (
-                ("python", "python_checkpoint", py_name, py, py_dtype, py_t, shard),
-                ("gguf", "gguf", gg_name, gg, gg_dtype, gg_t, args.gguf.name)):
+        py, py_reshaped = canonical_norm_weight(py_raw); gg, gg_reshaped = canonical_norm_weight(gg_raw)
+        for short, source, name, value, dtype, reshaped, location in (
+                ("python", "python_checkpoint", py_name, py, py_dtype, py_reshaped, shard),
+                ("gguf", "gguf", gg_name, gg, gg_dtype, gg_reshaped, args.gguf.name)):
             key = f"physical_block_{physical:02d}__{short}_ffn_norm_weight"; arrays[key] = value
-            records.append(COMMON.make_weight_record(logical, physical, source, name, value,
-                                                      dtype, transposed, location))
+            records.append(make_norm_weight_record(logical, physical, source, name, value,
+                                                   dtype, reshaped, location))
     args.output_dir.mkdir(parents=True, exist_ok=True)
     npz = args.output_dir / "ffn-rmsnorm-diagnostic.npz"; COMMON.deterministic_npz(npz, arrays)
     metadata = {"schema_version": 1, "diagnostic_only": True, "model_instantiated": False,

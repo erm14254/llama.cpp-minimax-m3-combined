@@ -1561,7 +1561,9 @@ def load_router_linear_artifacts(npz_path, metadata_path):
 
 
 def load_ffn_rmsnorm_artifacts(npz_path, metadata_path):
-    npz_path = Path(npz_path); metadata = json.loads(Path(metadata_path).read_text(encoding="ascii"))
+    npz_path = Path(npz_path)
+    try: metadata = json.loads(Path(metadata_path).read_text(encoding="ascii"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc: raise ValueError("invalid or swapped RMSNorm JSON") from exc
     if (metadata.get("schema_version") != 1 or metadata.get("bounded_physical_blocks") != [10, 12] or
             metadata.get("model_instantiated") is not False or metadata.get("inference_executed") is not False or
             metadata.get("npz_sha256") != hashlib.sha256(npz_path.read_bytes()).hexdigest()):
@@ -1572,26 +1574,44 @@ def load_ffn_rmsnorm_artifacts(npz_path, metadata_path):
         arrays = {key: np.asarray(handle[key]) for key in handle.files}
     records = metadata.get("weight_records")
     if not isinstance(records, list) or len(records) != 4: raise ValueError("expected four FFN RMSNorm records")
-    identities = set()
+    identities = set(); expected_identities = {(10, "python_checkpoint"), (10, "gguf"),
+                                                (12, "python_checkpoint"), (12, "gguf")}
+    expected_names = {(10, "python_checkpoint"): "model.layers.5.post_attention_layernorm.0.weight",
+        (10, "gguf"): "blk.10.ffn_norm.weight",
+        (12, "python_checkpoint"): "model.layers.6.post_attention_layernorm.0.weight",
+        (12, "gguf"): "blk.12.ffn_norm.weight"}
     for record in records:
         identity = (record.get("physical_even_block"), record.get("source"))
-        if identity in identities: raise ValueError("duplicate FFN RMSNorm record")
+        if identity in identities or identity not in expected_identities: raise ValueError("duplicate or unknown FFN RMSNorm record")
         identities.add(identity)
+        logical = identity[0] // 2
+        if (record.get("logical_layer") != logical or record.get("source_tensor_name") != expected_names[identity] or
+                record.get("name_template_coordinates") != {"logical": logical, "physical": identity[0],
+                                                              "layer_alias": logical} or
+                record.get("canonical_tensor_orientation") != "hidden_vector" or
+                record.get("canonical_shape") != [3072] or record.get("source_was_transposed") is not False or
+                not isinstance(record.get("source_was_reshaped"), bool) or
+                not isinstance(record.get("source_dtype"), str)):
+            raise ValueError("invalid FFN RMSNorm record identity or schema")
         short = "python" if identity[1] == "python_checkpoint" else "gguf"
         key = f"physical_block_{identity[0]:02d}__{short}_ffn_norm_weight"
         value = arrays.get(key)
         if (value is None or value.shape != (3072,) or value.dtype != np.float32 or
-                not np.isfinite(value).all() or record.get("shape") != [3072] or
+                not np.isfinite(value).all() or
                 record.get("serialized_dtype") != "float32" or
-                record.get("sha256") != hashlib.sha256(value.tobytes()).hexdigest()):
+                record.get("sha256") != hashlib.sha256(value.tobytes()).hexdigest() or
+                record.get("finite_audit") != {"finite": True, "element_count": 3072}):
             raise ValueError(f"invalid FFN RMSNorm array/record binding for {key}")
+    if identities != expected_identities: raise ValueError("incomplete FFN RMSNorm record identities")
+    if metadata.get("python_epsilon_key") != "rms_norm_eps" or not isinstance(metadata.get("gguf_epsilon_key"), str):
+        raise ValueError("invalid FFN RMSNorm epsilon keys")
     for name in ("python_epsilon", "gguf_epsilon"):
         if not isinstance(metadata.get(name), (int, float)) or not np.isfinite(metadata[name]):
             raise ValueError(f"invalid {name}")
     return arrays, metadata
 
 
-RMSNORM_VARIANTS = ("python_bf16_intermediate_contract", "float32_rmsnorm_then_final_bf16",
+RMSNORM_VARIANTS = ("python_bf16_input_bf16_weight_contract", "float32_rmsnorm_then_final_bf16",
                     "float64_reference_then_final_bf16")
 
 
@@ -1613,8 +1633,22 @@ def diagnostic_rmsnorm(value, weight, epsilon, variant):
         mean_square = np.mean(square, axis=-1, keepdims=True, dtype=np.float32)
         inv_rms = np.asarray(1.0 / np.sqrt(np.asarray(mean_square + np.float32(epsilon), np.float32)), np.float32)
         normalized = np.asarray(x32 * inv_rms, np.float32)
-        if variant == "python_bf16_intermediate_contract":
+        if variant in ("python_bf16_input_bf16_weight_contract", "python_bf16_input_f32_weight_contract"):
             normalized = bf16_round_to_float32(normalized)
+            if variant == "python_bf16_input_f32_weight_contract":
+                output = np.asarray(normalized * w32, np.float32)
+                if not np.isfinite(output).all(): raise ValueError("non-finite diagnostic RMSNorm")
+                return output, {"mean_square": np.asarray(mean_square).reshape(-1).tolist(),
+                    "inverse_rms": np.asarray(inv_rms).reshape(-1).tolist(),
+                    "minimum_absolute_input": float(np.abs(x32).min(initial=np.inf)),
+                    "maximum_absolute_input": float(np.abs(x32).max(initial=0))}
+        elif variant == "python_f32_input_f32_weight_contract":
+            output = np.asarray(normalized * w32, np.float32)
+            if not np.isfinite(output).all(): raise ValueError("non-finite diagnostic RMSNorm")
+            return output, {"mean_square": np.asarray(mean_square).reshape(-1).tolist(),
+                "inverse_rms": np.asarray(inv_rms).reshape(-1).tolist(),
+                "minimum_absolute_input": float(np.abs(x32).min(initial=np.inf)),
+                "maximum_absolute_input": float(np.abs(x32).max(initial=0))}
         elif variant != "float32_rmsnorm_then_final_bf16":
             raise ValueError(f"unknown RMSNorm diagnostic variant {variant}")
         output = bf16_round_to_float32(np.asarray(normalized * bf16_round_to_float32(w32), np.float32))
@@ -1632,15 +1666,23 @@ def norm_weight_epsilon_equivalence(python_weight, gguf_weight, python_epsilon, 
             "exact_match_count": int(np.count_nonzero(left == right))}
     raw = compare(python, gguf)
     rounded = bf16_round_to_float32(python); bf16 = compare(rounded, gguf)
+    raw_exact = bool(np.array_equal(python, gguf)); runtime_exact = bool(np.array_equal(rounded, gguf))
+    if raw_exact and runtime_exact: representation = "both comparisons exact"
+    elif raw_exact: representation = "raw checkpoint and GGUF exactly equal"
+    elif runtime_exact: representation = "BF16 runtime candidate and GGUF exactly equal"
+    else: representation = "weight representations differ"
+    py_f32 = np.float32(python_epsilon); gg_f32 = np.float32(gguf_epsilon)
     return {"exact_element_count": int(np.asarray(python_weight).size), "raw": raw,
         "python_bf16_rne_vs_gguf": bf16,
-        "gguf_equals_bf16_rounded_python_exactly": bool(np.array_equal(rounded, gguf_weight)),
-        "epsilon": {"python": float(python_epsilon), "gguf": float(gguf_epsilon),
-                    "python_float32": float(np.float32(python_epsilon)),
-                    "gguf_float32": float(np.float32(gguf_epsilon)),
-                    "exact_equality": bool(float(python_epsilon) == float(gguf_epsilon))},
-        "shared_components_valid": bool(np.array_equal(rounded, gguf_weight) and
-                                        float(python_epsilon) == float(gguf_epsilon))}
+        "python_bf16_runtime_candidate_vs_gguf_runtime_weight": bf16,
+        "gguf_equals_bf16_rounded_python_exactly": runtime_exact,
+        "weight_representation_classification": representation,
+        "operational_python_runtime_weight_equals_gguf": runtime_exact,
+        "epsilon": {"raw_epsilon_exact_equality": bool(float(python_epsilon) == float(gguf_epsilon)),
+            "python_epsilon_float64": float(python_epsilon), "gguf_epsilon_float64": float(gguf_epsilon),
+            "python_epsilon_float32": float(py_f32), "gguf_epsilon_float32": float(gg_f32),
+            "operational_float32_epsilon_exact_equality": bool(py_f32 == gg_f32)},
+        "shared_components_valid": bool(runtime_exact and py_f32 == gg_f32)}
 
 
 def _linear_projection_metrics(captured_delta, projected_delta):
@@ -1855,6 +1897,56 @@ def classify_rmsnorm_membership(native_equal, decisive, input_restores, residual
     return "neither hybrid reproduces Python outcome"
 
 
+def ffn_rmsnorm_distinct_weight_fallback(sides, prefix, attended_tokens, python_weight, gguf_weight,
+                                         python_epsilon, gguf_epsilon, router_weight):
+    inputs = {name: np.asarray(sides[name][prefix + "post_attention_residual"], np.float32).reshape(
+        -1, sides[name][prefix + "post_attention_residual"].shape[-1]) for name in ("cpp", "default")}
+    outputs = {name: np.asarray(sides[name][prefix + "ffn_norm"], np.float32).reshape(
+        -1, sides[name][prefix + "ffn_norm"].shape[-1]) for name in ("cpp", "default")}
+    logits = {name: np.asarray(sides[name][prefix + "router_logits"], np.float32).reshape(-1, 384)
+              for name in ("cpp", "default")}
+    probabilities = {name: np.asarray(sides[name][prefix + "router_probabilities"], np.float32).reshape(-1, 384)
+                     for name in ("cpp", "default")}
+    native = {name: [set(row) for row in np.asarray(sides[name][prefix + "router_topk_indices"]).reshape(-1, 12)]
+              for name in ("cpp", "default")}
+    cpp_bias, _, _ = constant_bias_reconstruction(sides["cpp"][prefix + "router_probabilities"],
+        sides["cpp"][prefix + "router_selection_scores"], sides["cpp"][prefix + "router_topk_indices"], attended_tokens)
+    py_runtime = bf16_round_to_float32(python_weight)
+    combinations = (("cpp_input_gguf_weight", "cpp", gguf_weight, np.float32(gguf_epsilon)),
+        ("python_input_gguf_weight", "default", gguf_weight, np.float32(gguf_epsilon)),
+        ("cpp_input_python_bf16_runtime_weight", "cpp", py_runtime, np.float32(python_epsilon)),
+        ("python_input_python_bf16_runtime_weight", "default", py_runtime, np.float32(python_epsilon)))
+    references = {}
+    for norm_variant in RMSNORM_VARIANTS:
+        combos = {}
+        for label, input_side, weight, epsilon in combinations:
+            candidate, scalar = diagnostic_rmsnorm(inputs[input_side], weight, epsilon, norm_variant)
+            comparisons = {name: {**_vector_metrics(candidate, outputs[name]),
+                "finite": bool(np.isfinite(candidate).all())} for name in ("cpp", "default")}
+            downstream = {}
+            for matmul in DIAGNOSTIC_LINEAR_VARIANTS:
+                cpp_residual = logits["cpp"] - diagnostic_router_linear(outputs["cpp"], router_weight, matmul)
+                candidate_logits = diagnostic_router_linear(candidate, router_weight, matmul) + cpp_residual
+                softmax_rows = {}
+                for softmax_name, softmax in DIAGNOSTIC_SOFTMAX_REFERENCES.items():
+                    rows = []
+                    candidate_probs = softmax(candidate_logits)
+                    for token, attended in enumerate(attended_tokens):
+                        cutoff = _public_cutoff(candidate_probs[token] + cpp_bias, attended)
+                        selected = set(cutoff["selected_expert_set"])
+                        rows.append({**cutoff, "attended_token": int(attended),
+                            "equals_captured_cpp_membership": selected == native["cpp"][token],
+                            "equals_captured_python_membership": selected == native["default"][token],
+                            "finite": bool(np.isfinite(candidate_probs[token]).all())})
+                    softmax_rows[softmax_name] = rows
+                downstream[matmul] = softmax_rows
+            combos[label] = {"captured_ffn_norm_comparisons": comparisons, "norm_scalars": scalar,
+                "downstream_router_membership": downstream, "finite": bool(np.isfinite(candidate).all())}
+        references[norm_variant] = combos
+    return {"status": "weight-sensitive analysis required", "classification_is_causal": False,
+        "two_component_input_vs_norm_residual_verdict_emitted": False, "references": references}
+
+
 def ffn_rmsnorm_block_decomposition(sides, prefix, attended_tokens, python_weight, gguf_weight,
                                     python_epsilon, gguf_epsilon, router_weight):
     equivalence = norm_weight_epsilon_equivalence(
@@ -1867,7 +1959,12 @@ def ffn_rmsnorm_block_decomposition(sides, prefix, attended_tokens, python_weigh
     result = {"source_lineage": lineage, "weight_and_epsilon_equivalence": equivalence,
         "diagnostic_is_not_cpu_cuda_torch_ggml_or_rmsnorm_kernel_identity": True, "references": {}}
     if not equivalence["shared_components_valid"]:
-        result["status"] = "weight or epsilon differs; distinct-component analysis required"; return result
+        result["status"] = "weight or epsilon differs; distinct-component analysis required"
+        if not equivalence["operational_python_runtime_weight_equals_gguf"]:
+            result["distinct_weight_fallback"] = ffn_rmsnorm_distinct_weight_fallback(
+                sides, prefix, attended_tokens, python_weight, gguf_weight,
+                python_epsilon, gguf_epsilon, router_weight)
+        return result
     weight = np.asarray(gguf_weight, np.float32); epsilon = float(gguf_epsilon)
     inputs = {name: np.asarray(sides[name][prefix + "post_attention_residual"], np.float32).reshape(
         -1, sides[name][prefix + "post_attention_residual"].shape[-1]) for name in ("cpp", "default", "math")}
@@ -1887,12 +1984,15 @@ def ffn_rmsnorm_block_decomposition(sides, prefix, attended_tokens, python_weigh
             diagnostic[name], scalar[name] = diagnostic_rmsnorm(inputs[name], weight, epsilon, norm_variant)
             residual[name] = np.asarray(outputs[name] - diagnostic[name], np.float32)
             metrics = _vector_metrics(diagnostic[name], outputs[name])
+            input_grid = is_exact_bf16_grid(inputs[name]); output_grid = is_exact_bf16_grid(outputs[name])
+            applicable = bool(output_grid and (norm_variant != "python_bf16_input_bf16_weight_contract" or input_grid))
             captured_metrics[name] = {**metrics, "exact_element_count": int(np.count_nonzero(
                 diagnostic[name] == outputs[name])), "exact_element_fraction": float(np.mean(
                 diagnostic[name] == outputs[name])), "captured_input_dtype": str(inputs[name].dtype),
-                "captured_input_exactly_bf16_grid": is_exact_bf16_grid(inputs[name]),
+                "captured_input_exactly_bf16_grid": input_grid,
                 "captured_output_dtype": str(outputs[name].dtype),
-                "captured_output_exactly_bf16_grid": is_exact_bf16_grid(outputs[name]),
+                "captured_output_exactly_bf16_grid": output_grid,
+                "reference_applicable_to_captured_grids": applicable,
                 "finite": bool(np.isfinite(diagnostic[name]).all()), "norm_scalars": scalar[name],
                 "diagnostic_residual_maximum_absolute": float(np.abs(residual[name]).max(initial=0)),
                 "diagnostic_residual_rms": float(np.sqrt(np.mean(np.square(residual[name], dtype=np.float64))))}
@@ -1928,6 +2028,9 @@ def ffn_rmsnorm_block_decomposition(sides, prefix, attended_tokens, python_weigh
             for token, attended in enumerate(attended_tokens):
                 native_sets = {name: set(_score_topk_indices(probabilities[name][token] + cpp_bias))
                                for name in ("cpp", "default")}
+                captured_sets = {name: set(indices[name][token].tolist()) for name in ("cpp", "default")}
+                cpp_reconstruction_valid = native_sets["cpp"] == captured_sets["cpp"]
+                python_reconstruction_valid = native_sets["default"] == captured_sets["default"]
                 candidates = {"native_cpp": diagnostic["cpp"][token] + residual["cpp"][token],
                     "python_input_only": diagnostic["default"][token] + residual["cpp"][token],
                     "python_norm_residual_only": diagnostic["cpp"][token] + residual["default"][token],
@@ -1944,7 +2047,10 @@ def ffn_rmsnorm_block_decomposition(sides, prefix, attended_tokens, python_weigh
                             "equals_native_cpp_membership": selected == native_sets["cpp"],
                             "equals_native_python_membership": selected == native_sets["default"]}
                     native_equal = native_sets["cpp"] == native_sets["default"]
-                    decisive = (coalitions["native_cpp"]["equals_native_cpp_membership"] and
+                    decisive = (cpp_reconstruction_valid and python_reconstruction_valid and
+                        captured_metrics["cpp"]["reference_applicable_to_captured_grids"] and
+                        captured_metrics["default"]["reference_applicable_to_captured_grids"] and
+                        coalitions["native_cpp"]["equals_native_cpp_membership"] and
                         coalitions["native_python"]["equals_native_python_membership"] and
                         all(row["finite"] for row in coalitions.values()))
                     softmax_reports[softmax_name] = {"coalitions": coalitions,
@@ -1952,7 +2058,9 @@ def ffn_rmsnorm_block_decomposition(sides, prefix, attended_tokens, python_weigh
                             coalitions["python_input_only"]["equals_native_python_membership"],
                             coalitions["python_norm_residual_only"]["equals_native_python_membership"],
                             coalitions["native_python"]["equals_native_python_membership"]),
-                        "decisive": decisive}
+                        "native_cpp_membership_reconstruction_valid": cpp_reconstruction_valid,
+                        "native_python_membership_reconstruction_valid": python_reconstruction_valid,
+                        "classification_decisive": decisive, "decisive": decisive}
                 total_closure = captured_logit_delta[token] - projection_input[token] - projection_norm[token] - remaining_linear[token]
                 disputed = sorted(native_sets["cpp"] ^ native_sets["default"])
                 projected = {"raw": _linear_projection_metrics(captured_logit_delta[token],
@@ -1986,13 +2094,28 @@ def primary_ffn_rmsnorm_summary(block_reports, primary_block):
     selected = next((row for row in block_reports if row["physical_block"] == primary_block), None)
     if selected is None: return None
     analysis = selected["analysis"]
+    def aligned_control(row):
+        if row is None or row["analysis"].get("status") != "complete": return False
+        for norm in row["analysis"]["references"].values():
+            for tokens in norm["router_matmul_references"].values():
+                for token in tokens:
+                    for report in token["softmax_references"].values():
+                        if (not report["classification_decisive"] or
+                                not report["native_cpp_membership_reconstruction_valid"] or
+                                not report["native_python_membership_reconstruction_valid"] or
+                                report["classification"] != "native outcomes already equal"):
+                            return False
+        return True
+    control = next((row for row in block_reports if row["physical_block"] == 12), None)
+    control_aligned = aligned_control(control)
     summary = {"physical_block": primary_block, "source_lineage_status":
         analysis["source_lineage"]["established"], "norm_weight_equivalence":
         analysis["weight_and_epsilon_equivalence"]["gguf_equals_bf16_rounded_python_exactly"],
-        "epsilon_equivalence": analysis["weight_and_epsilon_equivalence"]["epsilon"]["exact_equality"],
+        "epsilon_equivalence": analysis["weight_and_epsilon_equivalence"]["epsilon"][
+            "operational_float32_epsilon_exact_equality"],
         "status": analysis["status"],
         "diagnostic_is_not_cpu_cuda_torch_ggml_or_rmsnorm_kernel_identity": True,
-        "physical_block_12_remains_aligned_control": any(row["physical_block"] == 12 for row in block_reports)}
+        "physical_block_12_remains_aligned_control": control_aligned}
     if analysis["status"] != "complete": return summary
     classifications = {}; input_tokens = set(); residual_tokens = set(); both_tokens = set(); affected = set()
     for norm_name, norm_report in analysis["references"].items():
@@ -2008,7 +2131,7 @@ def primary_ffn_rmsnorm_summary(block_reports, primary_block):
                     if value == "pre-norm input component sufficient": input_tokens.add(row["attended_token"])
                     if value == "RMSNorm diagnostic residual sufficient": residual_tokens.add(row["attended_token"])
                     if value == "requires both components": both_tokens.add(row["attended_token"])
-    per_token = {}
+    per_token = {}; by_matmul_token = {}
     cross_softmax = True
     by_norm_token = {}
     for norm in classifications.values():
@@ -2018,15 +2141,26 @@ def primary_ffn_rmsnorm_summary(block_reports, primary_block):
                 cross_softmax &= len(values) == 1
                 per_token.setdefault(row["attended_token"], set()).update(values)
     for norm_name, norm in classifications.items():
-        for matmul in norm.values():
+        for matmul_name, matmul in norm.items():
             for row in matmul:
                 by_norm_token.setdefault((norm_name, row["attended_token"]), set()).update(
                     row["softmax_classifications"].values())
+                by_matmul_token.setdefault((matmul_name, row["attended_token"]), set()).update(
+                    row["softmax_classifications"].values())
     cross_matmul = all(len(values) == 1 for values in by_norm_token.values())
-    cross_rmsnorm = all(len(values) == 1 for values in per_token.values())
+    cross_rmsnorm = all(len(values) == 1 for values in by_matmul_token.values())
     all_agree = all(len(values) == 1 for values in per_token.values())
     conclusion = None
-    if affected and affected <= input_tokens and not residual_tokens and all_agree:
+    operational_valid = (analysis["weight_and_epsilon_equivalence"]["shared_components_valid"] and
+        analysis["weight_and_epsilon_equivalence"]["epsilon"]["operational_float32_epsilon_exact_equality"])
+    decisive_reconstructions = all(report["classification_decisive"] and
+        report["native_cpp_membership_reconstruction_valid"] and
+        report["native_python_membership_reconstruction_valid"]
+        for norm in analysis["references"].values() for tokens in norm["router_matmul_references"].values()
+        for token in tokens for report in token["softmax_references"].values())
+    if (affected == {1, 3} and affected <= input_tokens and not residual_tokens and all_agree and
+            cross_softmax and cross_matmul and cross_rmsnorm and operational_valid and decisive_reconstructions and
+            control_aligned):
         conclusion = ("The block-10 ffn_norm divergence is inherited from the captured post-attention-residual "
                       "input. No RMSNorm implementation change is justified.")
     summary.update({"affected_attended_tokens": sorted(affected), "per_reference_classifications": classifications,
@@ -2034,6 +2168,7 @@ def primary_ffn_rmsnorm_summary(block_reports, primary_block):
         "cross_rmsnorm_agreement": cross_rmsnorm,
         "cross_router_matmul_agreement": cross_matmul,
         "cross_router_softmax_agreement": cross_softmax,
+        "all_required_references_agree": bool(cross_rmsnorm and cross_matmul and cross_softmax),
         "tokens_explained_by_pre_norm_input": sorted(input_tokens),
         "tokens_explained_by_rmsnorm_residual": sorted(residual_tokens),
         "tokens_requiring_both": sorted(both_tokens),

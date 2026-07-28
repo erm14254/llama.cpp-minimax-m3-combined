@@ -34,6 +34,12 @@ class ParityHarnessTests(unittest.TestCase):
                              expected[(logical, physical)])
         vector, transposed = NORM_EXTRACTOR.canonical_norm_weight(np.zeros((1, 3072), np.float32))
         self.assertEqual(vector.shape, (3072,)); self.assertTrue(transposed)
+        with self.assertRaises(ValueError): NORM_EXTRACTOR.canonical_norm_weight(np.zeros((2, 1536), np.float32))
+        record = NORM_EXTRACTOR.make_norm_weight_record(
+            5, 10, "gguf", "blk.10.ffn_norm.weight", vector, "F32", True, "synthetic")
+        self.assertEqual(record["canonical_tensor_orientation"], "hidden_vector")
+        self.assertEqual(record["canonical_shape"], [3072]); self.assertTrue(record["source_was_reshaped"])
+        self.assertFalse(record["source_was_transposed"])
         with tempfile.TemporaryDirectory() as td:
             root = Path(td); (root / "config.json").write_text('{"rms_norm_eps": 1e-6}')
             value, key = NORM_EXTRACTOR.python_epsilon(root)
@@ -59,11 +65,22 @@ class ParityHarnessTests(unittest.TestCase):
         gguf = PARITY.bf16_round_to_float32(weight)
         equivalent = PARITY.norm_weight_epsilon_equivalence(weight, gguf, 1e-6, 1e-6)
         self.assertTrue(equivalent["shared_components_valid"])
+        self.assertEqual(equivalent["weight_representation_classification"],
+                         "BF16 runtime candidate and GGUF exactly equal")
+        raw_equal = PARITY.norm_weight_epsilon_equivalence(weight, weight.copy(), 1e-6, 1e-6)
+        self.assertEqual(raw_equal["weight_representation_classification"],
+                         "raw checkpoint and GGUF exactly equal")
+        self.assertFalse(raw_equal["shared_components_valid"])
         mismatch = gguf.copy(); mismatch[0] += 1
         self.assertFalse(PARITY.norm_weight_epsilon_equivalence(weight, mismatch, 1e-6, 1e-6)[
             "shared_components_valid"])
         self.assertFalse(PARITY.norm_weight_epsilon_equivalence(weight, gguf, 1e-6, 2e-6)[
-            "epsilon"]["exact_equality"])
+            "epsilon"]["operational_float32_epsilon_exact_equality"])
+        operational = PARITY.norm_weight_epsilon_equivalence(
+            weight, gguf, 1e-6, float(np.float32(1e-6)))
+        self.assertFalse(operational["epsilon"]["raw_epsilon_exact_equality"])
+        self.assertTrue(operational["epsilon"]["operational_float32_epsilon_exact_equality"])
+        self.assertTrue(operational["shared_components_valid"])
         value = np.linspace(-2, 2, 64, dtype=np.float32).reshape(2, 32)
         outputs = {}
         for variant in PARITY.RMSNORM_VARIANTS:
@@ -74,7 +91,35 @@ class ParityHarnessTests(unittest.TestCase):
         inv = np.asarray(1 / np.sqrt(np.asarray(ms + np.float32(1e-6), np.float32)), np.float32)
         manual = PARITY.bf16_round_to_float32(PARITY.bf16_round_to_float32(manual_x * inv) *
                                                PARITY.bf16_round_to_float32(weight))
-        np.testing.assert_array_equal(outputs["python_bf16_intermediate_contract"], manual)
+        np.testing.assert_array_equal(outputs["python_bf16_input_bf16_weight_contract"], manual)
+
+    def test_torch_validates_pinned_python_rmsnorm_dtype_contracts(self):
+        import torch
+        epsilon = 1e-6
+        def pinned(hidden, weight):
+            dtype = hidden.dtype; x32 = hidden.to(torch.float32)
+            variance = x32.pow(2).mean(-1, keepdim=True)
+            normalized = x32 * torch.rsqrt(variance + epsilon)
+            return weight * normalized.to(dtype)
+        hidden_bf16 = torch.linspace(-2, 2, 64).reshape(2, 32).to(torch.bfloat16)
+        weight_bf16 = torch.linspace(.5, 1.5, 32).to(torch.bfloat16)
+        actual = pinned(hidden_bf16, weight_bf16)
+        diagnostic, _ = PARITY.diagnostic_rmsnorm(hidden_bf16.float().numpy(), weight_bf16.float().numpy(),
+            epsilon, "python_bf16_input_bf16_weight_contract")
+        self.assertEqual(actual.dtype, torch.bfloat16)
+        np.testing.assert_array_equal(actual.float().numpy(), diagnostic)
+        weight_f32 = weight_bf16.float() + torch.linspace(0, .001, 32)
+        promoted = pinned(hidden_bf16, weight_f32)
+        promoted_diagnostic, _ = PARITY.diagnostic_rmsnorm(
+            hidden_bf16.float().numpy(), weight_f32.numpy(), epsilon, "python_bf16_input_f32_weight_contract")
+        self.assertEqual(promoted.dtype, torch.float32)
+        np.testing.assert_allclose(promoted.numpy(), promoted_diagnostic, rtol=0, atol=0)
+        hidden_f32 = hidden_bf16.float()
+        actual_f32 = pinned(hidden_f32, weight_f32)
+        f32_diagnostic, _ = PARITY.diagnostic_rmsnorm(
+            hidden_f32.numpy(), weight_f32.numpy(), epsilon, "python_f32_input_f32_weight_contract")
+        self.assertEqual(actual_f32.dtype, torch.float32)
+        np.testing.assert_allclose(actual_f32.numpy(), f32_diagnostic, rtol=0, atol=0)
 
     def _write_norm_artifact(self, root):
         arrays = {key: np.ones((3072,), np.float32) for key in PARITY.FFN_RMSNORM_ARRAY_KEYS}
@@ -83,11 +128,14 @@ class ParityHarnessTests(unittest.TestCase):
         for logical, physical in ((5, 10), (6, 12)):
             for short, source in (("python", "python_checkpoint"), ("gguf", "gguf")):
                 key = f"physical_block_{physical:02d}__{short}_ffn_norm_weight"
-                records.append(EXTRACTOR.make_weight_record(logical, physical, source, key, arrays[key],
-                                                             "BF16", False, "synthetic"))
+                records.append(NORM_EXTRACTOR.make_norm_weight_record(
+                    logical, physical, source,
+                    (f"model.layers.{logical}.post_attention_layernorm.0.weight" if short == "python" else
+                     f"blk.{physical}.ffn_norm.weight"), arrays[key], "BF16", False, "synthetic"))
         metadata = {"schema_version": 1, "bounded_physical_blocks": [10, 12],
             "model_instantiated": False, "inference_executed": False, "weight_records": records,
-            "python_epsilon": 1e-6, "gguf_epsilon": 1e-6,
+            "python_epsilon": 1e-6, "gguf_epsilon": 1e-6, "python_epsilon_key": "rms_norm_eps",
+            "gguf_epsilon_key": "longcat-next.attention.layer_norm_rms_epsilon",
             "npz_sha256": hashlib.sha256(npz.read_bytes()).hexdigest()}
         js = root / "norm.json"; js.write_text(json.dumps(metadata)); return npz, js
 
@@ -96,6 +144,7 @@ class ParityHarnessTests(unittest.TestCase):
             root = Path(td); npz, js = self._write_norm_artifact(root)
             arrays, metadata = PARITY.load_ffn_rmsnorm_artifacts(npz, js)
             self.assertEqual(set(arrays), PARITY.FFN_RMSNORM_ARRAY_KEYS); self.assertEqual(metadata["python_epsilon"], 1e-6)
+            with self.assertRaises(ValueError): PARITY.load_ffn_rmsnorm_artifacts(js, npz)
             damaged = json.loads(js.read_text()); damaged["npz_sha256"] = "0" * 64; js.write_text(json.dumps(damaged))
             with self.assertRaises(ValueError): PARITY.load_ffn_rmsnorm_artifacts(npz, js)
             for mutation in ("extra", "missing", "shape", "dtype", "nonfinite"):
@@ -118,11 +167,15 @@ class ParityHarnessTests(unittest.TestCase):
                   "default": np.ones((1, 1, hidden), np.float32),
                   "math": np.ones((1, 1, hidden), np.float32)}
         inputs["default"][..., 0] += pre_delta; inputs["math"][..., 0] += pre_delta
+        inputs["default"] = PARITY.bf16_round_to_float32(inputs["default"])
+        inputs["math"] = PARITY.bf16_round_to_float32(inputs["math"])
         outputs = {}
         for name in inputs:
             outputs[name], _ = PARITY.diagnostic_rmsnorm(
-                inputs[name], weight, 1e-6, "python_bf16_intermediate_contract")
+                inputs[name], weight, 1e-6, "python_bf16_input_bf16_weight_contract")
         outputs["default"][..., 0] += norm_residual_delta; outputs["math"][..., 0] += norm_residual_delta
+        outputs["default"] = PARITY.bf16_round_to_float32(outputs["default"])
+        outputs["math"] = PARITY.bf16_round_to_float32(outputs["math"])
         router_weight = np.zeros((384, hidden), np.float32); router_weight[12, 0] = 1
         cpp_linear = PARITY.diagnostic_router_linear(outputs["cpp"].reshape(1, hidden), router_weight,
                                                      "float32_matmul").reshape(1, 1, 384)
@@ -171,8 +224,46 @@ class ParityHarnessTests(unittest.TestCase):
             {"physical_block": 10, "analysis": reports[0]},
             {"physical_block": 12, "analysis": reports[-1]}], 10)
         self.assertTrue(primary["physical_block_12_remains_aligned_control"])
+        self.assertTrue(primary["cross_rmsnorm_agreement"])
+        self.assertTrue(primary["cross_router_matmul_agreement"])
+        self.assertTrue(primary["cross_router_softmax_agreement"])
+        self.assertTrue(primary["cross_rmsnorm_matmul_softmax_agreement"])
+        self.assertTrue(primary["all_required_references_agree"])
         self.assertEqual(primary["tokens_explained_by_pre_norm_input"], [0])
-        self.assertIn("No RMSNorm implementation change is justified", primary["stop_condition_conclusion"])
+        self.assertIsNone(primary["stop_condition_conclusion"])
+        negative = PARITY.primary_ffn_rmsnorm_summary([
+            {"physical_block": 10, "analysis": reports[0]},
+            {"physical_block": 12, "analysis": reports[0]}], 10)
+        self.assertFalse(negative["physical_block_12_remains_aligned_control"])
+
+    def test_rmsnorm_captured_membership_mismatch_is_not_decisive(self):
+        sides, weight, router_weight = self._rmsnorm_sides(1.0, 0.0, .1)
+        sides["default"]["physical_block_10__router_topk_indices"][0, 0, -1] = 383
+        report = PARITY.ffn_rmsnorm_block_decomposition(
+            sides, "physical_block_10__", [0], weight, weight, 1e-6, 1e-6, router_weight)
+        for norm in report["references"].values():
+            for tokens in norm["router_matmul_references"].values():
+                for softmax in tokens[0]["softmax_references"].values():
+                    self.assertFalse(softmax["native_python_membership_reconstruction_valid"])
+                    self.assertFalse(softmax["classification_decisive"])
+                    self.assertEqual(softmax["classification"], "analysis not decisive")
+
+    def test_rmsnorm_distinct_weight_fallback_retains_four_combinations(self):
+        sides, weight, router_weight = self._rmsnorm_sides(1.0, 0.0, .1)
+        gguf = weight.copy(); gguf[0] += .25
+        report = PARITY.ffn_rmsnorm_block_decomposition(
+            sides, "physical_block_10__", [0], weight, gguf, 1e-6, 1e-6, router_weight)
+        fallback = report["distinct_weight_fallback"]
+        self.assertFalse(fallback["two_component_input_vs_norm_residual_verdict_emitted"])
+        for combinations in fallback["references"].values():
+            self.assertEqual(len(combinations), 4)
+            for evidence in combinations.values():
+                self.assertEqual(set(evidence["captured_ffn_norm_comparisons"]), {"cpp", "default"})
+                self.assertEqual(set(evidence["downstream_router_membership"]),
+                                 set(PARITY.DIAGNOSTIC_LINEAR_VARIANTS))
+                for softmaxes in evidence["downstream_router_membership"].values():
+                    self.assertEqual(set(softmaxes), set(PARITY.DIAGNOSTIC_SOFTMAX_REFERENCES))
+                    self.assertEqual(len(softmaxes["stable_float32"][0]["selected_expert_set"]), 12)
 
     def test_router_tensor_names_resolve_logical_and_physical_coordinates(self):
         expected = {
