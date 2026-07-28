@@ -585,6 +585,21 @@ class ParityHarnessTests(unittest.TestCase):
             sides, prefix, [1], weight, weight.copy(), 1e-6, 1e-6, router_weight,
             self._residual_profile())
 
+    def _bias_provenance_analysis(self, invalidate_native_python=False):
+        sides, weight, router_weight = self._residual_three_factor_sides()
+        prefix = "physical_block_10__"
+        for target in ("default", "math"):
+            probabilities = sides[target][prefix + "router_probabilities"].copy()
+            bias = np.zeros((1, 1, 384), np.float32); bias[0, 0, 100:112] = 20
+            selection = probabilities + bias
+            sides[target][prefix + "router_selection_scores"] = selection
+            indices = PARITY._score_topk_indices(selection[0, 0]).reshape(1, 1, 12)[..., ::-1]
+            if invalidate_native_python: indices[0, 0, 0] = 383
+            sides[target][prefix + "router_topk_indices"] = indices
+        return PARITY.post_attention_residual_three_factor_decomposition(
+            sides, prefix, [1], weight, weight.copy(), 1e-6, 1e-6, router_weight,
+            self._residual_profile())
+
     def test_residual_three_factor_downstream_and_six_paths(self):
         sides, weight, router_weight = self._residual_three_factor_sides()
         report = PARITY.post_attention_residual_three_factor_decomposition(
@@ -691,6 +706,12 @@ class ParityHarnessTests(unittest.TestCase):
             self.assertIsNone(summary["global_definitive_result"])
             self.assertEqual(summary["definitive_localization_factors"], [])
             self.assertEqual(summary["restrained_next_localization_targets"], [])
+            self.assertTrue(summary["cross_rmsnorm_diagnostic_outcome_agreement"])
+            self.assertFalse(summary["cross_rmsnorm_definitive_causal_agreement"])
+            self.assertTrue(summary["cross_router_matmul_diagnostic_outcome_agreement"])
+            self.assertFalse(summary["cross_router_matmul_definitive_causal_agreement"])
+            self.assertTrue(summary["cross_router_softmax_diagnostic_outcome_agreement"])
+            self.assertFalse(summary["cross_router_softmax_definitive_causal_agreement"])
             for result_name in ("primary_oracle_result", "sensitivity_control_result"):
                 row = summary[result_name]["result"][1]
                 self.assertEqual(row["diagnostic_outcome"], expected)
@@ -699,7 +720,47 @@ class ParityHarnessTests(unittest.TestCase):
                 self.assertFalse(row["native_python_endpoint_membership_reconstruction_valid"])
                 self.assertFalse(row["target_token_causally_decisive"])
                 self.assertEqual(row["non_decisive_reason"],
-                    "native Python operand endpoint does not reproduce captured Python routing membership")
+                    "native Python operand endpoint does not reproduce captured Python routing membership "
+                    "under the fixed C++ downstream contract")
+
+    def test_own_side_bias_reconstruction_is_separate_from_fixed_cpp_cross_evaluation(self):
+        analysis = self._bias_provenance_analysis()
+        for target in analysis["python_targets"].values():
+            self.assertFalse(target["native_correction_bias_exact_equality"])
+            self.assertGreater(target["native_correction_bias_maximum_absolute_difference"], 0)
+            self.assertGreater(target["native_correction_bias_rms_difference"], 0)
+            self.assertIn("candidates", target["native_correction_bias_dtype_grid_audit"])
+            self.assertEqual(set(target["probability_bias_decomposition"]["tokens"][0]["coalitions"]),
+                {"native_left", "right_probabilities_only", "right_bias_only", "native_right"})
+            applicability = target["per_token_applicability"][0]
+            for name in applicability["applicable_cpp_rmsnorm_references"]:
+                for rows in target["references"][name]["router_matmul_references"].values():
+                    for report in rows[0]["softmax_references"].values():
+                        self.assertTrue(report["native_cpp_capture_membership_reconstruction_valid"])
+                        self.assertTrue(report["native_python_capture_membership_reconstruction_valid"])
+                        self.assertTrue(report["native_capture_memberships_reconstruct"])
+                        self.assertFalse(report[
+                            "fixed_cpp_bias_applied_to_captured_python_probabilities_matches_python_membership"])
+                        self.assertTrue(report["structural_prerequisites_valid"])
+                        self.assertEqual(report["diagnostic_outcome"],
+                            "full Python operand coalition does not reproduce Python membership")
+                        self.assertFalse(report["causal_classification_decisive"])
+        invalid = self._bias_provenance_analysis(True)
+        for target in invalid["python_targets"].values():
+            applicability = target["per_token_applicability"][0]
+            for name in applicability["applicable_cpp_rmsnorm_references"]:
+                for rows in target["references"][name]["router_matmul_references"].values():
+                    for report in rows[0]["softmax_references"].values():
+                        self.assertFalse(report["native_python_capture_membership_reconstruction_valid"])
+                        self.assertFalse(report["structural_prerequisites_valid"])
+                        self.assertEqual(report["diagnostic_outcome"], "analysis not decisive")
+
+    def test_equal_native_bias_provenance_is_exact(self):
+        analysis = self._differing_contract_endpoint_failure_analysis()
+        for target in analysis["python_targets"].values():
+            self.assertTrue(target["native_correction_bias_exact_equality"])
+            self.assertEqual(target["native_correction_bias_maximum_absolute_difference"], 0)
+            self.assertEqual(target["native_correction_bias_rms_difference"], 0)
 
     def test_exact_native_path_closure_gates_primary_result(self):
         for analysis, expected_paths in ((self._equal_contract_residual_analysis(), 2),
@@ -794,7 +855,14 @@ class ParityHarnessTests(unittest.TestCase):
                 {"physical_block": 10, "analysis": analysis},
                 {"physical_block": 12, "analysis": control}], 10)[
                     "physical_block_12_remains_aligned_control"]
-        self.assertTrue(control_flag(copy.deepcopy(analysis)))
+        positive_summary = PARITY.primary_post_attention_residual_three_factor_summary([
+            {"physical_block": 10, "analysis": analysis},
+            {"physical_block": 12, "analysis": copy.deepcopy(analysis)}], 10)
+        self.assertTrue(positive_summary["physical_block_12_remains_aligned_control"])
+        self.assertEqual(positive_summary["physical_block_12_control_failure_reasons"], [])
+        self.assertTrue(positive_summary["physical_block_12_per_target_token_control_status"])
+        self.assertTrue(all(row["final_control_status"] for row in
+                            positive_summary["physical_block_12_per_target_token_control_status"]))
         for key, field in (("00", "equals_captured_cpp_membership"),
                            ("11", "equals_captured_python_membership")):
             control = copy.deepcopy(analysis)
@@ -804,7 +872,59 @@ class ParityHarnessTests(unittest.TestCase):
                 rows = next(iter(target["references"][name]["router_matmul_references"].values()))
                 next(iter(rows[0]["softmax_references"].values()))["coalitions"][key][field] = False
                 break
-            self.assertFalse(control_flag(control))
+            negative = PARITY.primary_post_attention_residual_three_factor_summary([
+                {"physical_block": 10, "analysis": analysis},
+                {"physical_block": 12, "analysis": control}], 10)
+            self.assertFalse(negative["physical_block_12_remains_aligned_control"])
+            self.assertTrue(negative["physical_block_12_control_failure_reasons"])
+        for field, expected_reason in (
+                ("native_python_capture_membership_reconstruction_valid",
+                 "native Python capture membership reconstruction failed"),
+                ("fixed_cpp_downstream_python_operand_endpoint_matches_python_membership",
+                 "fixed-C++ Python operand endpoint reconstruction failed")):
+            control = copy.deepcopy(analysis)
+            target = control["python_targets"]["default"]
+            name = target["per_token_applicability"][0]["applicable_cpp_rmsnorm_references"][0]
+            rows = next(iter(target["references"][name]["router_matmul_references"].values()))
+            next(iter(rows[0]["softmax_references"].values()))[field] = False
+            negative = PARITY.primary_post_attention_residual_three_factor_summary([
+                {"physical_block": 10, "analysis": analysis},
+                {"physical_block": 12, "analysis": control}], 10)
+            self.assertFalse(negative["physical_block_12_remains_aligned_control"])
+            self.assertTrue(any(expected_reason in reason for reason in
+                                negative["physical_block_12_control_failure_reasons"]))
+
+    def test_primary_oracle_local_factors_survive_non_global_sensitivity_disagreement(self):
+        control = self._equal_contract_residual_analysis()
+        analysis = copy.deepcopy(control)
+        for target_name, classification, factors in (
+                ("default", "block-input component sufficient", [["block_input"]]),
+                ("math", "attention-output component sufficient", [["attention_output"]])):
+            target = analysis["python_targets"][target_name]
+            for applicability in target["per_token_applicability"]:
+                for name in applicability["applicable_cpp_rmsnorm_references"]:
+                    for rows in target["references"][name]["router_matmul_references"].values():
+                        for report in rows[0]["softmax_references"].values():
+                            report.update({"diagnostic_outcome": classification,
+                                "classification": classification,
+                                "definitive_causal_classification": classification,
+                                "minimal_sufficient_factor_sets": factors,
+                                "structural_prerequisites_valid": True,
+                                "native_python_endpoint_membership_reconstruction_valid": True,
+                                "causal_classification_decisive": True,
+                                "classification_decisive": True})
+        summary = PARITY.primary_post_attention_residual_three_factor_summary([
+            {"physical_block": 10, "analysis": analysis},
+            {"physical_block": 12, "analysis": control}], 10)
+        self.assertFalse(summary["cross_python_reference_agreement"])
+        self.assertEqual(summary["primary_oracle_localization_factors"], ["block_input"])
+        self.assertTrue(summary["primary_oracle_next_localization_targets"])
+        self.assertFalse(summary["primary_oracle_is_global"])
+        self.assertEqual(summary["sensitivity_control_localization_factors"], ["attention_output"])
+        self.assertFalse(summary["sensitivity_control_is_global"])
+        self.assertIsNone(summary["global_definitive_result"])
+        self.assertEqual(summary["definitive_localization_factors"], [])
+        self.assertEqual(summary["restrained_next_localization_targets"], [])
 
     def test_residual_three_factor_stage_finiteness_failures_are_non_decisive(self):
         sides, weight, router_weight = self._residual_three_factor_sides()
