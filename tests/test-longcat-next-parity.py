@@ -440,6 +440,8 @@ class ParityHarnessTests(unittest.TestCase):
         self.assertEqual(summary["decisive_tokens_explained_by_pre_norm_input"], [1, 3])
         self.assertEqual(summary["decisive_tokens_explained_by_operational_contract"], [])
         self.assertIn("supersedes that result", summary["restrained_final_conclusion"])
+        self.assertEqual(summary["next_tracks_not_implemented"],
+                         ["upstream localization of post_attention_residual"])
         joint = self._side_specific_summary_analysis({
             1: "pre-norm input component sufficient", 3: "requires both components"})
         joint_summary = PARITY.primary_side_specific_rmsnorm_summary([
@@ -454,6 +456,101 @@ class ParityHarnessTests(unittest.TestCase):
             {"physical_block": 10, "analysis": all_input},
             {"physical_block": 12, "analysis": bad_control}], 10)[
                 "physical_block_12_remains_aligned_control"])
+
+    def test_residual_add_contracts_coalitions_and_minimal_sets(self):
+        block_cpp = np.array([[-.9535515, -.8060354]], np.float32)
+        attention_cpp = np.array([[1.2569029, -1.6323363]], np.float32)
+        block_python = np.array([[.4004021, .9142421]], np.float32)
+        attention_python = np.array([[-1.2483957, -1.7794135]], np.float32)
+        cpp = PARITY.residual_add_contract(block_cpp, attention_cpp, "cpp_float32_add")
+        python = PARITY.residual_add_contract(
+            block_python, attention_python, "python_final_bf16_rne_add")
+        np.testing.assert_array_equal(cpp, np.asarray(block_cpp + attention_cpp, np.float32))
+        np.testing.assert_array_equal(python, PARITY.bf16_round_to_float32(
+            np.asarray(block_python + attention_python, np.float32)))
+        coalitions = PARITY.residual_three_factor_coalitions(
+            block_cpp, attention_cpp, block_python, attention_python)
+        self.assertEqual(set(coalitions), {f"{b}{a}{c}" for b in (0, 1) for a in (0, 1) for c in (0, 1)})
+        np.testing.assert_array_equal(coalitions["101"], PARITY.residual_add_contract(
+            block_python, attention_cpp, "python_final_bf16_rne_add"))
+        self.assertFalse(np.array_equal(coalitions["101"] - coalitions["100"],
+                                        coalitions["001"] - coalitions["000"]))
+        cases = [({"100": True, "111": True}, "block-input component sufficient"),
+                 ({"010": True, "111": True}, "attention-output component sufficient"),
+                 ({"001": True, "111": True}, "residual-add operational-contract component sufficient"),
+                 ({"110": True, "111": True}, "requires block-input and attention-output"),
+                 ({"101": True, "111": True}, "requires block-input and add contract"),
+                 ({"011": True, "111": True}, "requires attention-output and add contract"),
+                 ({"111": True}, "requires all three components"),
+                 ({"100": True, "010": True, "111": True},
+                  "multiple single components independently sufficient"),
+                 ({"110": True, "101": True, "111": True}, "multiple minimal sufficient coalitions")]
+        for partial, expected in cases:
+            truth = {key: partial.get(key, False) for key in coalitions}
+            _, classification = PARITY.minimal_sufficient_residual_coalitions(truth)
+            self.assertEqual(classification, expected)
+        _, failed = PARITY.minimal_sufficient_residual_coalitions({key: False for key in coalitions})
+        self.assertEqual(failed, "full Python coalition does not reproduce Python membership")
+
+    def _residual_three_factor_sides(self):
+        hidden = 32; prefix = "physical_block_10__"; weight = np.ones(hidden, np.float32)
+        cpp_block = np.linspace(.2, 1.8, hidden, dtype=np.float32).reshape(1, hidden)
+        cpp_attention = np.linspace(-.1, .1, hidden, dtype=np.float32).reshape(1, hidden)
+        python_block = cpp_block.copy(); python_block[0, 0] += .5
+        python_attention = cpp_attention.copy(); python_attention[0, 0] += .25
+        cpp_post = PARITY.residual_add_contract(cpp_block, cpp_attention, "cpp_float32_add")
+        python_post = PARITY.residual_add_contract(
+            python_block, python_attention, "python_final_bf16_rne_add")
+        cpp_ffn, _ = PARITY.diagnostic_rmsnorm_with_operational_weight(cpp_post, weight, 1e-6,
+            PARITY.SIDE_SPECIFIC_CPP_ARITHMETIC_REFERENCES[0], "gguf_float32_runtime_weight")
+        python_downstream_ffn, _ = PARITY.diagnostic_rmsnorm_with_operational_weight(
+            python_post, weight, 1e-6, PARITY.SIDE_SPECIFIC_CPP_ARITHMETIC_REFERENCES[0],
+            "gguf_float32_runtime_weight")
+        router_weight = np.zeros((384, hidden), np.float32); router_weight[12, 0] = 1
+        cpp_linear = PARITY.diagnostic_router_linear(cpp_ffn, router_weight, "float32_matmul")
+        python_linear = PARITY.diagnostic_router_linear(python_downstream_ffn, router_weight, "float32_matmul")
+        threshold = np.float32((cpp_linear[0, 12] + python_linear[0, 12]) / 2)
+        base = np.full((1, 384), -10, np.float32); base[:, :11] = 10; base[:, 11] = threshold
+        residual = base - cpp_linear; sides = {}
+        for name, block, attention, post, ffn in (("cpp", cpp_block, cpp_attention, cpp_post, cpp_ffn),
+                ("default", python_block, python_attention, python_post, python_downstream_ffn),
+                ("math", python_block, python_attention, python_post, python_downstream_ffn)):
+            logits = PARITY.diagnostic_router_linear(ffn, router_weight, "float32_matmul") + residual
+            probabilities = PARITY.diagnostic_softmax_stable_float32(logits)
+            indices = PARITY._score_topk_indices(probabilities[0]).reshape(1, 1, 12)[..., ::-1]
+            sides[name] = {prefix + "block_input": block.reshape(1, 1, hidden),
+                prefix + "attention_output": attention.reshape(1, 1, hidden),
+                prefix + "post_attention_residual": post.reshape(1, 1, hidden),
+                prefix + "ffn_norm": ffn.reshape(1, 1, hidden),
+                prefix + "router_logits": logits.reshape(1, 1, 384),
+                prefix + "router_probabilities": probabilities.reshape(1, 1, 384),
+                prefix + "router_selection_scores": probabilities.reshape(1, 1, 384),
+                prefix + "router_topk_indices": indices}
+        return sides, weight, router_weight
+
+    def test_residual_three_factor_downstream_and_six_paths(self):
+        sides, weight, router_weight = self._residual_three_factor_sides()
+        report = PARITY.post_attention_residual_three_factor_decomposition(
+            sides, "physical_block_10__", [1], weight, weight.copy(), 1e-6, 1e-6, router_weight)
+        self.assertEqual(report["status"], "complete")
+        for target in report["python_targets"].values():
+            self.assertTrue(target["native_residual_add_reconstruction"][0]["cpp_native_exact"])
+            self.assertTrue(target["native_residual_add_reconstruction"][0]["python_native_exact"])
+            self.assertTrue(target["per_token_applicability"][0]["applicable_cpp_rmsnorm_references"])
+            for reference in target["references"].values():
+                for rows in reference["router_matmul_references"].values():
+                    row = rows[0]
+                    self.assertEqual(len(row["six_factor_order_paths"]), 6)
+                    for path in row["six_factor_order_paths"]:
+                        self.assertLess(path["residual_surface"]["closure_rms"], 1e-6)
+                        self.assertLess(path["fixed_cpp_rmsnorm_output"]["closure_rms"], 1e-6)
+                        self.assertLess(path["evaluated_router_logits"]["closure_rms"], 1e-6)
+                        for expert in path["evaluated_router_logits"]["disputed_experts"]:
+                            self.assertLess(abs(expert["closure_residual"]), 1e-6)
+                    for softmax in row["softmax_references"].values():
+                        self.assertEqual(len(softmax["coalitions"]), 8)
+                        self.assertTrue(softmax["coalitions"]["000"]["equals_captured_cpp_membership"])
+                        self.assertTrue(softmax["coalitions"]["111"]["equals_captured_python_membership"])
 
     def test_router_tensor_names_resolve_logical_and_physical_coordinates(self):
         expected = {

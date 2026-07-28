@@ -2570,6 +2570,9 @@ def primary_side_specific_rmsnorm_summary(block_reports, primary_block):
         "router_projected_path_decomposition": row["router_projected_path_decomposition"]} for row in rows]
         for matmul, rows in reference["router_matmul_references"].items()}
         for arithmetic, reference in analysis.get("cpp_arithmetic_references", {}).items()}
+    next_tracks = ["upstream localization of post_attention_residual"]
+    if both_tokens or contract_tokens:
+        next_tracks.append("bounded C++ RMSNorm-contract implementation experiment")
     return {"physical_block": primary_block, "affected_attended_tokens": affected,
         "native_side_matched_reconstructions_required": True,
         "applicable_reference_results": applicable_results,
@@ -2584,9 +2587,305 @@ def primary_side_specific_rmsnorm_summary(block_reports, primary_block):
         "exact_path_decompositions": exact_paths,
         "router_projected_path_decompositions": router_paths,
         "restrained_final_conclusion": conclusion,
-        "next_tracks_not_implemented": ["upstream localization of post_attention_residual",
-            "bounded C++ RMSNorm-contract implementation experiment"],
+        "next_tracks_not_implemented": next_tracks,
         "diagnostic_is_not_torch_ggml_cpu_cuda_or_rmsnorm_kernel_identity": True}
+
+
+RESIDUAL_FACTOR_NAMES = {"B": "block_input", "A": "attention_output", "C": "residual_add_contract"}
+RESIDUAL_PATH_ORDERS = (("B", "A", "C"), ("B", "C", "A"), ("A", "B", "C"),
+                        ("A", "C", "B"), ("C", "B", "A"), ("C", "A", "B"))
+
+
+def residual_add_contract(block_input, attention_output, contract):
+    value = np.asarray(block_input, np.float32) + np.asarray(attention_output, np.float32)
+    if contract == "cpp_float32_add": return np.asarray(value, np.float32)
+    if contract == "python_final_bf16_rne_add": return bf16_round_to_float32(value)
+    raise ValueError(f"unknown residual-add contract {contract}")
+
+
+def residual_three_factor_coalitions(cpp_block, cpp_attention, python_block, python_attention):
+    coalitions = {}
+    for b in (0, 1):
+        for a in (0, 1):
+            for c in (0, 1):
+                key = f"{b}{a}{c}"
+                coalitions[key] = residual_add_contract(
+                    python_block if b else cpp_block, python_attention if a else cpp_attention,
+                    "python_final_bf16_rne_add" if c else "cpp_float32_add")
+    return coalitions
+
+
+def minimal_sufficient_residual_coalitions(truth_table, native_equal=False, decisive=True):
+    if native_equal: return [], "native outcomes already equal"
+    if not decisive: return [], "analysis not decisive"
+    if not truth_table.get("111", False): return [], "full Python coalition does not reproduce Python membership"
+    successful = []
+    for key, restored in truth_table.items():
+        factors = frozenset(name for bit, name in zip(key, ("B", "A", "C")) if bit == "1")
+        if restored and factors: successful.append(factors)
+    minimal = sorted({factors for factors in successful
+        if not any(other < factors for other in successful)}, key=lambda value: (len(value), sorted(value)))
+    labels = [[RESIDUAL_FACTOR_NAMES[name] for name in ("B", "A", "C") if name in factors]
+              for factors in minimal]
+    if len(minimal) > 1:
+        if all(len(value) == 1 for value in minimal): classification = "multiple single components independently sufficient"
+        else: classification = "multiple minimal sufficient coalitions"
+    elif minimal == [frozenset(("B",))]: classification = "block-input component sufficient"
+    elif minimal == [frozenset(("A",))]: classification = "attention-output component sufficient"
+    elif minimal == [frozenset(("C",))]: classification = "residual-add operational-contract component sufficient"
+    elif minimal == [frozenset(("B", "A"))]: classification = "requires block-input and attention-output"
+    elif minimal == [frozenset(("B", "C"))]: classification = "requires block-input and add contract"
+    elif minimal == [frozenset(("A", "C"))]: classification = "requires attention-output and add contract"
+    elif minimal == [frozenset(("B", "A", "C"))]: classification = "requires all three components"
+    else: classification = "analysis not decisive"
+    return labels, classification
+
+
+def _telescoping_stage_report(values, path_keys, target_delta, disputed_experts=None):
+    terms = [np.asarray(values[right] - values[left], np.float32)
+             for left, right in zip(path_keys, path_keys[1:])]
+    reconstructed = sum(terms, np.zeros_like(target_delta, dtype=np.float32))
+    closure = np.asarray(target_delta - reconstructed, np.float32)
+    report = {"coalition_path": path_keys,
+        "component_rms": [float(np.sqrt(np.mean(np.square(term, dtype=np.float64)))) for term in terms],
+        "closure_maximum_absolute": float(np.abs(closure).max(initial=0)),
+        "closure_rms": float(np.sqrt(np.mean(np.square(closure, dtype=np.float64)))),
+        "closure_cosine_similarity": _vector_metrics(target_delta, reconstructed)["cosine_similarity"],
+        "path_order_contributions_are_not_unique_causal_percentages": True}
+    if disputed_experts is not None:
+        report["disputed_experts"] = [{"expert_id": int(expert),
+            "target_delta": float(target_delta[expert]),
+            "path_terms": [float(term[expert]) for term in terms],
+            "closure_residual": float(closure[expert])} for expert in disputed_experts]
+    return report
+
+
+def post_attention_residual_three_factor_decomposition(sides, prefix, attended_tokens,
+                                                        python_weight, gguf_weight,
+                                                        python_epsilon, gguf_epsilon, router_weight):
+    result = {"diagnostic_boundary_contract_analysis_is_not_cpu_torch_ggml_cuda_or_kernel_identity": True,
+        "python_targets": {}}
+    if not norm_weight_epsilon_equivalence(python_weight, gguf_weight, python_epsilon,
+                                           gguf_epsilon)["raw"]["exact_byte_equality"]:
+        result["status"] = "analysis not decisive"; return result
+    hidden = np.asarray(sides["cpp"][prefix + "block_input"]).shape[-1]
+    cpp_block = np.asarray(sides["cpp"][prefix + "block_input"], np.float32).reshape(-1, hidden)
+    cpp_attention = np.asarray(sides["cpp"][prefix + "attention_output"], np.float32).reshape(-1, hidden)
+    cpp_post = np.asarray(sides["cpp"][prefix + "post_attention_residual"], np.float32).reshape(-1, hidden)
+    cpp_ffn = np.asarray(sides["cpp"][prefix + "ffn_norm"], np.float32).reshape(-1, hidden)
+    cpp_logits = np.asarray(sides["cpp"][prefix + "router_logits"], np.float32).reshape(-1, 384)
+    cpp_probabilities = np.asarray(sides["cpp"][prefix + "router_probabilities"], np.float32).reshape(-1, 384)
+    cpp_sets = [set(row) for row in np.asarray(sides["cpp"][prefix + "router_topk_indices"]).reshape(-1, 12)]
+    cpp_bias, _, _ = constant_bias_reconstruction(sides["cpp"][prefix + "router_probabilities"],
+        sides["cpp"][prefix + "router_selection_scores"], sides["cpp"][prefix + "router_topk_indices"],
+        attended_tokens)
+    cpp_probability_sets = [set(_score_topk_indices(row + cpp_bias)) for row in cpp_probabilities]
+    cpp_native_add = residual_add_contract(cpp_block, cpp_attention, "cpp_float32_add")
+    for target_name in ("default", "math"):
+        target_block = np.asarray(sides[target_name][prefix + "block_input"], np.float32).reshape(-1, hidden)
+        target_attention = np.asarray(sides[target_name][prefix + "attention_output"], np.float32).reshape(-1, hidden)
+        target_post = np.asarray(sides[target_name][prefix + "post_attention_residual"], np.float32).reshape(-1, hidden)
+        target_probabilities = np.asarray(sides[target_name][prefix + "router_probabilities"], np.float32).reshape(-1, 384)
+        target_sets = [set(row) for row in np.asarray(
+            sides[target_name][prefix + "router_topk_indices"]).reshape(-1, 12)]
+        target_probability_sets = [set(_score_topk_indices(row + cpp_bias)) for row in target_probabilities]
+        target_native_add = residual_add_contract(target_block, target_attention, "python_final_bf16_rne_add")
+        coalitions = residual_three_factor_coalitions(cpp_block, cpp_attention, target_block, target_attention)
+        native_rows = []
+        for token, attended in enumerate(attended_tokens):
+            cpp_diff = cpp_native_add[token] - cpp_post[token]; py_diff = target_native_add[token] - target_post[token]
+            native_rows.append({"attended_token": int(attended),
+                "cpp_native_exact": bool(np.array_equal(cpp_native_add[token], cpp_post[token])),
+                "cpp_native_maximum_absolute_error": float(np.abs(cpp_diff).max(initial=0)),
+                "cpp_native_rms_error": float(np.sqrt(np.mean(np.square(cpp_diff, dtype=np.float64)))),
+                "python_native_exact": bool(np.array_equal(target_native_add[token], target_post[token])),
+                "python_native_maximum_absolute_error": float(np.abs(py_diff).max(initial=0)),
+                "python_native_rms_error": float(np.sqrt(np.mean(np.square(py_diff, dtype=np.float64))))})
+        references = {}
+        for arithmetic in SIDE_SPECIFIC_CPP_ARITHMETIC_REFERENCES:
+            norm_values = {key: diagnostic_rmsnorm_with_operational_weight(value, gguf_weight,
+                np.float32(gguf_epsilon), arithmetic, "gguf_float32_runtime_weight")[0]
+                for key, value in coalitions.items()}
+            cpp_exact = [bool(np.array_equal(norm_values["000"][token], cpp_ffn[token]))
+                         for token in range(len(attended_tokens))]
+            matmuls = {}
+            for matmul in DIAGNOSTIC_LINEAR_VARIANTS:
+                linear_residual = cpp_logits - diagnostic_router_linear(cpp_ffn, router_weight, matmul)
+                coalition_logits = {key: diagnostic_router_linear(value, router_weight, matmul) + linear_residual
+                                    for key, value in norm_values.items()}
+                token_rows = []
+                for token, attended in enumerate(attended_tokens):
+                    softmaxes = {}
+                    for softmax_name, softmax in DIAGNOSTIC_SOFTMAX_REFERENCES.items():
+                        evidence = {}
+                        for key in sorted(coalitions):
+                            probabilities = softmax(coalition_logits[key][token])
+                            cutoff = _public_cutoff(probabilities + cpp_bias, int(attended))
+                            selected = set(cutoff["selected_expert_set"])
+                            evidence[key] = {**cutoff, "coalition_factors": [RESIDUAL_FACTOR_NAMES[name]
+                                for bit, name in zip(key, ("B", "A", "C")) if bit == "1"],
+                                "equals_captured_cpp_membership": selected == cpp_sets[token],
+                                "equals_captured_python_membership": selected == target_sets[token],
+                                "finite": bool(np.isfinite(probabilities).all()),
+                                "applicable_rmsnorm_reference": arithmetic,
+                                "router_matmul_reference": matmul, "softmax_reference": softmax_name}
+                        native_membership_valid = (cpp_probability_sets[token] == cpp_sets[token] and
+                                                   target_probability_sets[token] == target_sets[token])
+                        base_decisive = (native_rows[token]["cpp_native_exact"] and
+                            native_rows[token]["python_native_exact"] and cpp_exact[token] and
+                            native_membership_valid and evidence["000"]["equals_captured_cpp_membership"] and
+                            evidence["111"]["equals_captured_python_membership"] and
+                            all(row["finite"] for row in evidence.values()))
+                        truth = {key: row["equals_captured_python_membership"] for key, row in evidence.items()}
+                        minimal, classification = minimal_sufficient_residual_coalitions(truth,
+                            cpp_sets[token] == target_sets[token], base_decisive)
+                        softmaxes[softmax_name] = {"coalitions": evidence, "truth_table": truth,
+                            "minimal_sufficient_factor_sets": minimal, "classification": classification,
+                            "classification_decisive": base_decisive, "reference_applicable_to_token": cpp_exact[token],
+                            "captured_topk_membership_reconstruction_valid": native_membership_valid}
+                    disputed = sorted(cpp_sets[token] ^ target_sets[token])
+                    paths = []
+                    for order in RESIDUAL_PATH_ORDERS:
+                        state = {"B": "0", "A": "0", "C": "0"}; keys = ["000"]
+                        for factor in order:
+                            state[factor] = "1"; keys.append("".join(state[name] for name in ("B", "A", "C")))
+                        residual_path = _telescoping_stage_report(
+                            {key: coalitions[key][token] for key in keys}, keys,
+                            target_post[token] - cpp_post[token])
+                        norm_path = _telescoping_stage_report(
+                            {key: norm_values[key][token] for key in keys}, keys,
+                            norm_values["111"][token] - norm_values["000"][token])
+                        router_path = _telescoping_stage_report(
+                            {key: coalition_logits[key][token] for key in keys}, keys,
+                            coalition_logits["111"][token] - coalition_logits["000"][token], disputed)
+                        router_target = coalition_logits["111"][token] - coalition_logits["000"][token]
+                        router_reconstructed = sum((coalition_logits[right][token] - coalition_logits[left][token]
+                            for left, right in zip(keys, keys[1:])), np.zeros_like(router_target))
+                        router_path["maximum_centered_closure"] = _linear_projection_metrics(
+                            router_target - router_target.max(), router_reconstructed - router_reconstructed.max())
+                        router_path["mean_centered_closure"] = _linear_projection_metrics(
+                            router_target - router_target.mean(), router_reconstructed - router_reconstructed.mean())
+                        paths.append({"factor_order": list(order), "residual_surface": residual_path,
+                            "fixed_cpp_rmsnorm_output": norm_path, "evaluated_router_logits": router_path})
+                    token_rows.append({"attended_token": int(attended),
+                        "native_cpp_ffn_norm_exact_for_token": cpp_exact[token],
+                        "softmax_references": softmaxes, "six_factor_order_paths": paths})
+                matmuls[matmul] = token_rows
+            references[arithmetic] = {"router_matmul_references": matmuls}
+        # Only applicable references participate in the causal agreement gate.
+        applicability = []
+        for token, attended in enumerate(attended_tokens):
+            applicable = [name for name in SIDE_SPECIFIC_CPP_ARITHMETIC_REFERENCES
+                if next(iter(references[name]["router_matmul_references"].values()))[token][
+                    "native_cpp_ffn_norm_exact_for_token"]]
+            reports = [report for name in applicable for rows in references[name]["router_matmul_references"].values()
+                for report in rows[token]["softmax_references"].values()]
+            agreement = bool(reports) and len({report["classification"] for report in reports}) == 1
+            for name, reference in references.items():
+                for rows in reference["router_matmul_references"].values():
+                    for report in rows[token]["softmax_references"].values():
+                        if name not in applicable:
+                            report["classification"] = "analysis not decisive — native C++ RMSNorm surface not reconstructed"
+                            report["classification_decisive"] = False
+                        elif not agreement:
+                            report["classification"] = "analysis not decisive"; report["classification_decisive"] = False
+            applicability.append({"attended_token": int(attended),
+                "applicable_cpp_rmsnorm_references": applicable,
+                "non_applicable_cpp_rmsnorm_references": [name for name in SIDE_SPECIFIC_CPP_ARITHMETIC_REFERENCES
+                                                            if name not in applicable],
+                "applicable_reference_classification_agreement": agreement})
+        result["python_targets"][target_name] = {"native_residual_add_reconstruction": native_rows,
+            "references": references, "per_token_applicability": applicability}
+    result["status"] = "complete"
+    return result
+
+
+def primary_post_attention_residual_three_factor_summary(block_reports, primary_block):
+    selected = next((row for row in block_reports if row["physical_block"] == primary_block), None)
+    control = next((row for row in block_reports if row["physical_block"] == 12), None)
+    if selected is None: return None
+    analysis = selected["analysis"]; results = {}; factors = set(); all_decisive = True
+    for target, target_report in analysis.get("python_targets", {}).items():
+        results[target] = {}
+        for applicability in target_report["per_token_applicability"]:
+            token = applicability["attended_token"]; classifications = []; minimal = []
+            for name in applicability["applicable_cpp_rmsnorm_references"]:
+                for rows in target_report["references"][name]["router_matmul_references"].values():
+                    row = next(item for item in rows if item["attended_token"] == token)
+                    for report in row["softmax_references"].values():
+                        classifications.append(report["classification"])
+                        minimal.extend(report["minimal_sufficient_factor_sets"])
+                        all_decisive &= report["classification_decisive"]
+            classification = classifications[0] if classifications and len(set(classifications)) == 1 else "analysis not decisive"
+            unique_minimal = []
+            for item in minimal:
+                if item not in unique_minimal: unique_minimal.append(item)
+            results[target][token] = {"classification": classification,
+                "minimal_sufficient_factor_sets": unique_minimal,
+                "applicable_cpp_rmsnorm_references": applicability["applicable_cpp_rmsnorm_references"],
+                "applicable_reference_classification_agreement": applicability[
+                    "applicable_reference_classification_agreement"]}
+            for item in unique_minimal: factors.update(item)
+    cross_python = all(results.get("default", {}).get(token, {}).get("classification") ==
+                       results.get("math", {}).get(token, {}).get("classification")
+                       for token in set(results.get("default", {})) | set(results.get("math", {})))
+    def reference_dimension_agreement(dimension):
+        groups = {}
+        for target, target_report in analysis.get("python_targets", {}).items():
+            applicable_by_token = {row["attended_token"]: set(row["applicable_cpp_rmsnorm_references"])
+                                   for row in target_report["per_token_applicability"]}
+            for arithmetic, reference in target_report["references"].items():
+                for matmul, rows in reference["router_matmul_references"].items():
+                    for row in rows:
+                        if arithmetic not in applicable_by_token[row["attended_token"]]: continue
+                        for softmax, report in row["softmax_references"].items():
+                            coordinates = {"rmsnorm": arithmetic, "matmul": matmul, "softmax": softmax}
+                            key = (target, row["attended_token"], *(
+                                coordinates[name] for name in ("rmsnorm", "matmul", "softmax") if name != dimension))
+                            groups.setdefault(key, set()).add(report["classification"])
+        return bool(groups) and all(len(values) == 1 for values in groups.values())
+    cross_rmsnorm = reference_dimension_agreement("rmsnorm")
+    cross_matmul = reference_dimension_agreement("matmul")
+    cross_softmax = reference_dimension_agreement("softmax")
+    def aligned_control():
+        if control is None or control["analysis"].get("status") != "complete": return False
+        for target_report in control["analysis"]["python_targets"].values():
+            native = {row["attended_token"]: row for row in target_report["native_residual_add_reconstruction"]}
+            for applicability in target_report["per_token_applicability"]:
+                token = applicability["attended_token"]
+                if (not native[token]["cpp_native_exact"] or not native[token]["python_native_exact"] or
+                        not applicability["applicable_cpp_rmsnorm_references"] or
+                        not applicability["applicable_reference_classification_agreement"]): return False
+                for name in applicability["applicable_cpp_rmsnorm_references"]:
+                    for rows in target_report["references"][name]["router_matmul_references"].values():
+                        row = next(item for item in rows if item["attended_token"] == token)
+                        for report in row["softmax_references"].values():
+                            if (not report["classification_decisive"] or
+                                    not report["captured_topk_membership_reconstruction_valid"] or
+                                    not report["coalitions"]["000"]["equals_captured_cpp_membership"] or
+                                    not report["coalitions"]["111"]["equals_captured_python_membership"] or
+                                    report["classification"] != "native outcomes already equal"): return False
+        return True
+    next_targets = []
+    if "block_input" in factors:
+        next_targets.append("producer of physical_block_10__block_input (physical_block_09__block_output)")
+    if "attention_output" in factors: next_targets.append("physical-block-10 attention computation")
+    if "residual_add_contract" in factors: next_targets.append("bounded residual-add boundary experiment")
+    if any(len(item) > 1 for target in results.values() for row in target.values()
+           for item in row["minimal_sufficient_factor_sets"]):
+        next_targets.append("retain all required branches as separate localization tracks")
+    return {"physical_block": primary_block, "python_reference_results": results,
+        "cross_python_reference_agreement": cross_python,
+        "cross_rmsnorm_agreement": cross_rmsnorm,
+        "cross_router_matmul_agreement": cross_matmul,
+        "cross_router_softmax_agreement": cross_softmax,
+        "all_applicable_results_decisive": all_decisive,
+        "physical_block_12_remains_aligned_control": aligned_control(),
+        "restrained_next_localization_targets": next_targets,
+        "native_residual_add_reconstruction_results": {target: report["native_residual_add_reconstruction"]
+            for target, report in analysis.get("python_targets", {}).items()},
+        "full_three_factor_decomposition": analysis,
+        "diagnostic_is_not_cpu_torch_ggml_cuda_or_kernel_identity": True}
 
 
 def primary_router_cutoff_summary(router_cutoffs, component_rows, even_analysis):
@@ -2904,7 +3203,7 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
             first_both = name
     routers = []; first_real_default = first_real_math = None; even_analysis = []
     router_cutoffs = []; probability_bias_reports = []; logit_softmax_reports = []; linear_reports = []; norm_reports = []
-    side_specific_norm_reports = []
+    side_specific_norm_reports = []; residual_three_factor_reports = []
     for block in range(start, start + count, 2):
         p = f"physical_block_{block:02d}__"
         semantic = semantic_router_report(sides["cpp"][p + "router_topk_indices"],
@@ -2933,6 +3232,13 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
                 router_weights[f"physical_block_{block:02d}__gguf_weight"])})
             side_specific_norm_reports.append({"physical_block": block,
                 "analysis": ffn_rmsnorm_side_specific_contract_decomposition(
+                    sides, p, attended_tokens,
+                    norm_arrays[f"physical_block_{block:02d}__python_ffn_norm_weight"],
+                    norm_arrays[f"physical_block_{block:02d}__gguf_ffn_norm_weight"],
+                    norm_metadata["python_epsilon"], norm_metadata["gguf_epsilon"],
+                    router_weights[f"physical_block_{block:02d}__gguf_weight"])})
+            residual_three_factor_reports.append({"physical_block": block,
+                "analysis": post_attention_residual_three_factor_decomposition(
                     sides, p, attended_tokens,
                     norm_arrays[f"physical_block_{block:02d}__python_ffn_norm_weight"],
                     norm_arrays[f"physical_block_{block:02d}__gguf_ffn_norm_weight"],
@@ -2977,6 +3283,8 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
     primary_norm = primary_ffn_rmsnorm_summary(norm_reports, first_real_default)
     primary_side_specific_norm = primary_side_specific_rmsnorm_summary(
         side_specific_norm_reports, first_real_default)
+    primary_residual_three_factor = primary_post_attention_residual_three_factor_summary(
+        residual_three_factor_reports, first_real_default)
     return {"accepted": False, "array_count": len(expected), "physical_block_start": start,
         "physical_block_count": count, "primary_oracle": "python_default",
         "sensitivity_control": "python_math",
@@ -2997,6 +3305,7 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
         "primary_oracle_router_linear_decomposition": primary_linear,
         "primary_oracle_ffn_rmsnorm_decomposition": primary_norm,
         "primary_oracle_ffn_rmsnorm_side_specific_contract_decomposition": primary_side_specific_norm,
+        "primary_oracle_post_attention_residual_three_factor_decomposition": primary_residual_three_factor,
         **{f"block_{block}_dominant_branch_vs_{label}": attribution[f"block_{block}_vs_{label}"]["dominant_branch"]
            for block in range(start + 1, start + count, 2) for label in ("default", "math")},
         "components": results, "router_semantics": routers,
@@ -3006,6 +3315,7 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
         "router_linear_decomposition": linear_reports,
         "ffn_rmsnorm_decomposition": norm_reports,
         "ffn_rmsnorm_side_specific_contract_decomposition": side_specific_norm_reports,
+        "post_attention_residual_three_factor_decomposition": residual_three_factor_reports,
         "even_block_shortcut_analysis": even_analysis, "odd_block_cross_substitution": attribution}
 def reconstruction_metrics(target, alternatives):
     reports = {}
