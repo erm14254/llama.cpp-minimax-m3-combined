@@ -12,8 +12,83 @@ SPEC = importlib.util.spec_from_file_location("longcat_next_parity", SCRIPT)
 PARITY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PARITY)
 
+EXTRACTOR_PATH = Path(__file__).parents[1] / "scripts/longcat-next/extract-router-linear-diagnostic.py"
+EXTRACTOR_SPEC = importlib.util.spec_from_file_location("longcat_router_extractor", EXTRACTOR_PATH)
+EXTRACTOR = importlib.util.module_from_spec(EXTRACTOR_SPEC)
+EXTRACTOR_SPEC.loader.exec_module(EXTRACTOR)
+
 
 class ParityHarnessTests(unittest.TestCase):
+    def test_router_linear_orientation_and_weight_equivalence(self):
+        python = np.linspace(-1, 1, 384 * 512, dtype=np.float32).reshape(384, 512)
+        gguf = PARITY.bf16_round_to_float32(python)
+        canonical, transposed = EXTRACTOR.canonical_router_weight(python.T)
+        self.assertTrue(transposed)
+        np.testing.assert_array_equal(canonical, python)
+        audit = PARITY.router_weight_equivalence_audit(python, gguf)
+        self.assertTrue(audit["orientation_validated"])
+        self.assertTrue(audit["gguf_equals_bf16_rounded_python_exactly"])
+        mismatch = gguf.copy(); mismatch[0, 0] += 1
+        self.assertFalse(PARITY.router_weight_equivalence_audit(
+            python, mismatch)["weights_equivalent_for_shared_weight_analysis"])
+        with self.assertRaisesRegex(ValueError, "canonical"):
+            PARITY.router_weight_equivalence_audit(python, python.T)
+
+    def test_router_input_lineage_uses_ffn_norm_not_block_input(self):
+        prefix = "physical_block_10__"; attended = [1, 3]
+        sides = {}
+        for name in ("cpp", "default", "math"):
+            norm = np.arange(16, dtype=np.float32).reshape(1, 2, 8) / 8
+            weight = np.array([[[0.5], [0.25]]], np.float32)
+            sides[name] = {prefix + "ffn_norm": norm,
+                prefix + "block_input": norm + 2,
+                prefix + "identity_weight_sum": weight,
+                prefix + "identity_residual": norm * weight}
+        report = PARITY.router_input_lineage_audit(sides, prefix, attended)
+        self.assertEqual(report["status"], "established")
+        self.assertEqual(report["router_input_canonical_surface"], "ffn_norm")
+        self.assertFalse(report["proposed_block_input_alias_is_exact"])
+        sides["cpp"][prefix + "identity_residual"] += 0.1
+        self.assertEqual(PARITY.router_input_lineage_audit(sides, prefix, attended)["status"],
+                         "not established")
+
+    def test_diagnostic_router_linear_variants_and_projection(self):
+        rng = np.random.default_rng(7)
+        x = rng.normal(size=(2, 512)).astype(np.float32)
+        weight = rng.normal(size=(384, 512)).astype(np.float32)
+        for variant in PARITY.DIAGNOSTIC_LINEAR_VARIANTS:
+            logits = PARITY.diagnostic_router_linear(x, weight, variant)
+            self.assertEqual(logits.shape, (2, 384)); self.assertTrue(np.isfinite(logits).all())
+        delta = PARITY.diagnostic_router_linear(x[:1] - x[1:], weight, "float32_matmul")[0]
+        captured = PARITY.diagnostic_router_linear(x[:1], weight, "float32_matmul")[0] - \
+                   PARITY.diagnostic_router_linear(x[1:], weight, "float32_matmul")[0]
+        exact = PARITY._linear_projection_metrics(captured, delta)
+        self.assertLess(exact["residual_rms"], 1e-5)
+        inexact = PARITY._linear_projection_metrics(captured + 1, delta)
+        self.assertGreater(inexact["residual_rms"], 0.9)
+
+    def test_router_linear_membership_classifications(self):
+        classify = PARITY.classify_router_linear_membership
+        self.assertEqual(classify(False, True, True, False), "router-input component sufficient")
+        self.assertEqual(classify(False, True, False, True), "diagnostic-linear residual sufficient")
+        self.assertEqual(classify(False, True, False, False), "requires both components")
+        self.assertEqual(classify(False, False, True, False), "analysis not decisive")
+        self.assertEqual(classify(True, True, False, False), "native outcomes already equal")
+
+    def test_router_linear_artifact_cli_is_replay_only(self):
+        required = ["--reference-dir", "r", "--precision", "bf16", "--output-dir", "o",
+                    "--block-components-window-diagnostic", "1", "--component-window-replay-only", "1",
+                    "--block-components-window-default-npz", "d", "--block-components-window-math-npz", "m",
+                    "--router-linear-diagnostic-npz", "w.npz", "--router-linear-diagnostic-json", "w.json",
+                    "--case", "eos_window_position_2"]
+        PARITY.validate_all_blocks_options(PARITY.build_parser().parse_args(required))
+        for extra in (["--model", "model"], ["--capture-exe", "capture"]):
+            with self.assertRaisesRegex(ValueError, "must not receive"):
+                PARITY.validate_all_blocks_options(PARITY.build_parser().parse_args(required + extra))
+        incomplete = required[:-4] + ["--router-linear-diagnostic-npz", "w.npz", "--case", "eos_window_position_2"]
+        with self.assertRaises(ValueError):
+            PARITY.validate_all_blocks_options(PARITY.build_parser().parse_args(incomplete))
+
     def test_component_window_inventory_validation_and_comparison(self):
         names = PARITY.component_window_names(10, 4)
         self.assertEqual(len(names), 44)

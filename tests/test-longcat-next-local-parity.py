@@ -1397,6 +1397,233 @@ def router_logit_softmax_decomposition(sides, prefix, attended_tokens):
     return result
 
 
+DIAGNOSTIC_LINEAR_VARIANTS = ("float64_matmul_then_float32", "float32_matmul",
+                              "bf16_grid_inputs_and_weights_then_float32_matmul")
+
+
+def diagnostic_router_linear(router_input, weight, variant):
+    x = np.asarray(router_input, np.float32); w = np.asarray(weight, np.float32)
+    if w.ndim != 2 or w.shape[0] != ROUTED_EXPERT_COUNT or x.shape[-1] != w.shape[1]:
+        raise ValueError(f"canonical router linear orientation must be [384, hidden], got {w.shape}")
+    if variant == "float64_matmul_then_float32":
+        result = np.asarray(x.astype(np.float64) @ w.astype(np.float64).T, np.float32)
+    elif variant == "float32_matmul":
+        result = np.asarray(x @ w.T, np.float32)
+    elif variant == "bf16_grid_inputs_and_weights_then_float32_matmul":
+        result = np.asarray(bf16_round_to_float32(x) @ bf16_round_to_float32(w).T, np.float32)
+    else:
+        raise ValueError(f"unknown diagnostic linear variant: {variant}")
+    if not np.isfinite(result).all(): raise ValueError("diagnostic router linear produced non-finite logits")
+    return result
+
+
+def router_input_lineage_audit(sides, prefix, attended_tokens):
+    """Establish the norm-output router input; block_input is deliberately audited as a rejected alias."""
+    reports = {}
+    established = True; block_alias_exact = True
+    for side in ("cpp", "default", "math"):
+        identity = np.asarray(sides[side][prefix + "identity_residual"], np.float32).reshape(
+            -1, sides[side][prefix + "identity_residual"].shape[-1])
+        weights = np.asarray(sides[side][prefix + "identity_weight_sum"], np.float32).reshape(-1)
+        ffn_norm = np.asarray(sides[side][prefix + "ffn_norm"], np.float32).reshape(identity.shape)
+        block_input = np.asarray(sides[side][prefix + "block_input"], np.float32).reshape(identity.shape)
+        valid = np.flatnonzero(weights != 0)
+        if valid.size:
+            reconstructed = identity[valid] / weights[valid, None]
+            norm_metrics = _vector_metrics(reconstructed, ffn_norm[valid])
+            block_metrics = _vector_metrics(reconstructed, block_input[valid])
+            side_established = bool(norm_metrics["maximum_absolute_difference"] <= 2e-6)
+            block_alias_exact &= bool(block_metrics["exact_equality"])
+        else:
+            norm_metrics = block_metrics = None; side_established = False; block_alias_exact = False
+        established &= side_established
+        reports[side] = {"tokens_with_nonzero_identity_weight_sum": [int(attended_tokens[i]) for i in valid],
+            "identity_residual_divided_by_weight_vs_ffn_norm": norm_metrics,
+            "identity_residual_divided_by_weight_vs_block_input": block_metrics,
+            "numerical_lineage_consistent_with_ffn_norm": side_established}
+    return {"status": "established" if established else "not established",
+        "router_input_canonical_surface": "ffn_norm" if established else None,
+        "proposed_block_input_alias_is_exact": block_alias_exact,
+        "python_source_lineage": "post_attention_layernorm output -> router F.linear input",
+        "cpp_source_lineage": "build_norm(ffn_inp, ffn_norm) output cur -> ggml_mul_mat(ffn_gate_inp, cur)",
+        "numerical_consistency_audit": reports,
+        "linear_decomposition_permitted": established}
+
+
+def router_weight_equivalence_audit(python_weight, gguf_weight):
+    py = np.asarray(python_weight, np.float32); gg = np.asarray(gguf_weight, np.float32)
+    if py.ndim != 2 or gg.ndim != 2 or py.shape != gg.shape or py.shape[0] != ROUTED_EXPERT_COUNT:
+        raise ValueError(f"router weights must share canonical [384, hidden] orientation: {py.shape}, {gg.shape}")
+    def compare(a, b):
+        metrics = _vector_metrics(a, b)
+        return {"exact_element_count": int(a.size), "exact_byte_equality": bool(a.tobytes() == b.tobytes()),
+            "exact_match_count": int(np.count_nonzero(a == b)), **metrics}
+    rounded = bf16_round_to_float32(py)
+    raw = compare(py, gg); bf16 = compare(rounded, gg)
+    return {"orientation_validated": True, "canonical_shape": list(py.shape),
+        "python_raw_tensor_vs_gguf_decoded_float32": raw,
+        "python_bf16_rounded_to_float32_vs_gguf_decoded_float32": bf16,
+        "gguf_equals_bf16_rounded_python_exactly": bool(np.array_equal(rounded, gg)),
+        "weights_equivalent_for_shared_weight_analysis": bool(np.array_equal(rounded, gg))}
+
+
+def _linear_projection_metrics(captured_delta, projected_delta):
+    captured = np.asarray(captured_delta, np.float32); projected = np.asarray(projected_delta, np.float32)
+    residual = np.asarray(captured - projected, np.float32)
+    captured_rms = float(np.sqrt(np.mean(np.square(captured, dtype=np.float64))))
+    residual_rms = float(np.sqrt(np.mean(np.square(residual, dtype=np.float64))))
+    report = _vector_metrics(captured, projected)
+    report.update({"captured_delta_rms": captured_rms, "projected_delta_rms":
+        float(np.sqrt(np.mean(np.square(projected, dtype=np.float64)))), "residual_rms": residual_rms,
+        "explained_rms_fraction": (1.0 - residual_rms / captured_rms) if captured_rms else None})
+    return report
+
+
+def classify_router_linear_membership(native_equal, decisive, input_restores, residual_restores,
+                                      both_restores=True):
+    if native_equal: return "native outcomes already equal"
+    if not decisive: return "analysis not decisive"
+    if input_restores and residual_restores: return "both components independently sufficient"
+    if input_restores: return "router-input component sufficient"
+    if residual_restores: return "diagnostic-linear residual sufficient"
+    if both_restores: return "requires both components"
+    return "neither hybrid reproduces Python outcome"
+
+
+def router_linear_decomposition(sides, prefix, attended_tokens, python_weight, gguf_weight):
+    lineage = router_input_lineage_audit(sides, prefix, attended_tokens)
+    weight_audit = router_weight_equivalence_audit(python_weight, gguf_weight)
+    result = {"router_input_lineage": lineage, "weight_equivalence": weight_audit,
+        "diagnostic_matmul_is_not_cpu_cuda_blas_or_ggml_kernel_identity": True,
+        "variants": {}, "weight_sensitive_fallback": None}
+    if not lineage["linear_decomposition_permitted"]:
+        result["status"] = "analysis not decisive"; return result
+    inputs = {name: np.asarray(sides[name][prefix + "ffn_norm"], np.float32).reshape(
+        -1, sides[name][prefix + "ffn_norm"].shape[-1]) for name in ("cpp", "default", "math")}
+    logits = {name: np.asarray(sides[name][prefix + "router_logits"], np.float32).reshape(
+        -1, ROUTED_EXPERT_COUNT) for name in ("cpp", "default", "math")}
+    if not weight_audit["weights_equivalent_for_shared_weight_analysis"]:
+        result["status"] = "weight representation differs"
+        result["weight_sensitive_fallback"] = {variant: {
+            label: {"finite": bool(np.isfinite(diagnostic_router_linear(inp, weight, variant)).all()),
+                    "shape": list(diagnostic_router_linear(inp, weight, variant).shape)}
+            for label, inp, weight in (("cpp_input_gguf_weight", inputs["cpp"], gguf_weight),
+                ("python_input_gguf_weight", inputs["default"], gguf_weight),
+                ("cpp_input_python_weight", inputs["cpp"], python_weight),
+                ("python_input_python_weight", inputs["default"], python_weight))}
+            for variant in DIAGNOSTIC_LINEAR_VARIANTS}
+        return result
+    result["status"] = "complete"
+    shared = np.asarray(gguf_weight, np.float32)
+    probabilities = {name: np.asarray(sides[name][prefix + "router_probabilities"], np.float32).reshape(
+        -1, ROUTED_EXPERT_COUNT) for name in ("cpp", "default")}
+    captured_indices = {name: np.asarray(sides[name][prefix + "router_topk_indices"]).reshape(-1, 12)
+                        for name in ("cpp", "default")}
+    cpp_bias, _, _ = constant_bias_reconstruction(sides["cpp"][prefix + "router_probabilities"],
+        sides["cpp"][prefix + "router_selection_scores"], sides["cpp"][prefix + "router_topk_indices"], attended_tokens)
+    for variant in DIAGNOSTIC_LINEAR_VARIANTS:
+        diagnostic = {name: diagnostic_router_linear(inputs[name], shared, variant)
+                      for name in ("cpp", "default", "math")}
+        residual = {name: np.asarray(logits[name] - diagnostic[name], np.float32)
+                    for name in ("cpp", "default", "math")}
+        implementation_metrics = {name: {**_vector_metrics(logits[name], diagnostic[name]),
+            "finite": bool(np.isfinite(diagnostic[name]).all()),
+            "residual_maximum_absolute": float(np.abs(residual[name]).max(initial=0)),
+            "residual_rms": float(np.sqrt(np.mean(np.square(residual[name], dtype=np.float64))))}
+            for name in ("cpp", "default", "math")}
+        token_rows = []
+        for token, attended in enumerate(attended_tokens):
+            intended = {name: set(captured_indices[name][token]) for name in ("cpp", "default")}
+            native_outcomes = {name: set(_score_topk_indices(np.asarray(probabilities[name][token] + cpp_bias,
+                np.float32))) for name in ("cpp", "default")}
+            by_softmax = {}
+            for softmax_name, softmax in DIAGNOSTIC_SOFTMAX_REFERENCES.items():
+                specs = {"native_cpp": ("cpp", "cpp"), "python_input_only": ("default", "cpp"),
+                    "python_linear_residual_only": ("cpp", "default"), "native_python": ("default", "default")}
+                coalitions = {}
+                for label, (input_side, residual_side) in specs.items():
+                    candidate_logits = np.asarray(diagnostic[input_side][token] + residual[residual_side][token], np.float32)
+                    candidate_probability = softmax(candidate_logits)
+                    cutoff = _public_cutoff(np.asarray(candidate_probability + cpp_bias, np.float32), int(attended))
+                    selected = set(cutoff["selected_expert_set"])
+                    coalitions[label] = {**cutoff, "finite": bool(np.isfinite(candidate_probability).all()),
+                        "equals_native_cpp_probability_outcome": selected == native_outcomes["cpp"],
+                        "equals_native_python_probability_outcome": selected == native_outcomes["default"]}
+                input_restores = coalitions["python_input_only"]["equals_native_python_probability_outcome"]
+                residual_restores = coalitions["python_linear_residual_only"]["equals_native_python_probability_outcome"]
+                native_valid = (native_outcomes["cpp"] == intended["cpp"] and
+                                native_outcomes["default"] == intended["default"] and
+                                coalitions["native_cpp"]["equals_native_cpp_probability_outcome"] and
+                                coalitions["native_python"]["equals_native_python_probability_outcome"] and
+                                all(row["finite"] for row in coalitions.values()))
+                classification = classify_router_linear_membership(
+                    native_outcomes["cpp"] == native_outcomes["default"], native_valid,
+                    input_restores, residual_restores,
+                    coalitions["native_python"]["equals_native_python_probability_outcome"])
+                by_softmax[softmax_name] = {"coalitions": coalitions, "classification": classification,
+                    "classification_decisive": native_valid}
+            classifications = [row["classification"] for row in by_softmax.values()]
+            disputed = sorted(native_outcomes["cpp"] ^ native_outcomes["default"])
+            captured_delta = logits["cpp"][token] - logits["default"][token]
+            projected = diagnostic_router_linear(
+                inputs["cpp"][token:token+1] - inputs["default"][token:token+1], shared, variant)[0]
+            direct = {"raw": _linear_projection_metrics(captured_delta, projected),
+                "maximum_centered": _linear_projection_metrics(
+                    captured_delta - captured_delta.max(), projected - projected.max()),
+                "mean_centered": _linear_projection_metrics(
+                    captured_delta - captured_delta.mean(), projected - projected.mean()),
+                "disputed_experts": [{"expert_id": int(expert),
+                    "captured_logit_delta": float(captured_delta[expert]),
+                    "projected_input_delta_contribution": float(projected[expert]),
+                    "remaining_linear_residual": float(captured_delta[expert] - projected[expert])}
+                    for expert in disputed]}
+            token_rows.append({"attended_token": int(attended), "softmax_references": by_softmax,
+                "cross_softmax_classification_agreement": len(set(classifications)) == 1,
+                "direct_delta_projection": direct})
+        result["variants"][variant] = {"implementation_metrics": implementation_metrics, "tokens": token_rows}
+    return result
+
+
+def primary_router_linear_summary(linear_reports, first_affected_block):
+    selected = next((row for row in linear_reports if row["physical_block"] == first_affected_block), None)
+    if selected is None: return None
+    analysis = selected["analysis"]
+    summary = {"physical_block": selected["physical_block"],
+        "router_input_lineage_status": analysis["router_input_lineage"]["status"],
+        "router_input_canonical_surface": analysis["router_input_lineage"]["router_input_canonical_surface"],
+        "weight_equivalence_status": analysis["weight_equivalence"][
+            "weights_equivalent_for_shared_weight_analysis"],
+        "diagnostic_matmul_is_not_cpu_cuda_blas_or_ggml_kernel_identity": True,
+        "status": analysis["status"]}
+    if analysis["status"] != "complete": return summary
+    per_variant = {}; affected = set(); input_tokens = set(); residual_tokens = set(); both_tokens = set()
+    token_classifications = {}
+    for variant, report in analysis["variants"].items():
+        per_variant[variant] = []
+        for row in report["tokens"]:
+            classifications = {name: value["classification"] for name, value in row["softmax_references"].items()}
+            per_variant[variant].append({"attended_token": row["attended_token"],
+                "classifications": classifications,
+                "cross_softmax_classification_agreement": row["cross_softmax_classification_agreement"]})
+            token_classifications.setdefault(row["attended_token"], set()).update(classifications.values())
+            for classification in classifications.values():
+                if classification != "native outcomes already equal": affected.add(row["attended_token"])
+                if classification == "router-input component sufficient": input_tokens.add(row["attended_token"])
+                if classification == "diagnostic-linear residual sufficient": residual_tokens.add(row["attended_token"])
+                if classification == "requires both components": both_tokens.add(row["attended_token"])
+    summary.update({"affected_attended_tokens": sorted(affected), "per_variant_classifications": per_variant,
+        "cross_matmul_and_cross_softmax_agreement": all(len(values) == 1 for values in token_classifications.values()),
+        "tokens_explained_by_router_input": sorted(input_tokens),
+        "tokens_explained_by_linear_residual": sorted(residual_tokens),
+        "tokens_requiring_both": sorted(both_tokens),
+        "direct_delta_projection_metrics": {variant: [row["direct_delta_projection"]
+            for row in report["tokens"] if row["attended_token"] in affected]
+            for variant, report in analysis["variants"].items()},
+        "block_12_remains_available_as_aligned_comparison": any(
+            row["physical_block"] == 12 for row in linear_reports)})
+    return summary
+
+
 def primary_router_cutoff_summary(router_cutoffs, component_rows, even_analysis):
     primary = next((row for row in router_cutoffs
         if row["pairwise_disputed_experts"]["cpp_vs_python_default"]), None)
@@ -1682,7 +1909,7 @@ def odd_cross_substitution(cpp, python, odd_block, criterion):
 
 
 def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
-                             criterion, start=10, count=4):
+                             criterion, start=10, count=4, router_weights=None):
     expected = set(component_window_names(start, count))
     if set(default_npz.files) != expected or set(math_npz.files) != expected:
         raise ValueError("default/math component-window inventory mismatch")
@@ -1711,7 +1938,7 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
         if hidden and not d["within_diagnostic_criterion"] and not m["within_diagnostic_criterion"] and first_both is None:
             first_both = name
     routers = []; first_real_default = first_real_math = None; even_analysis = []
-    router_cutoffs = []; probability_bias_reports = []; logit_softmax_reports = []
+    router_cutoffs = []; probability_bias_reports = []; logit_softmax_reports = []; linear_reports = []
     for block in range(start, start + count, 2):
         p = f"physical_block_{block:02d}__"
         semantic = semantic_router_report(sides["cpp"][p + "router_topk_indices"],
@@ -1726,6 +1953,10 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
             "pairwise": router_probability_bias_decomposition(sides, p, attended_tokens)})
         logit_softmax_reports.append({"physical_block": block,
             "pairwise": router_logit_softmax_decomposition(sides, p, attended_tokens)})
+        if router_weights is not None:
+            linear_reports.append({"physical_block": block, "analysis": router_linear_decomposition(
+                sides, p, attended_tokens, router_weights[f"physical_block_{block:02d}__python_weight"],
+                router_weights[f"physical_block_{block:02d}__gguf_weight"])})
         if semantic["has_cpp_vs_python_default_real_expert_set_difference"] and first_real_default is None:
             first_real_default = block
         if semantic["has_cpp_vs_python_math_real_expert_set_difference"] and first_real_math is None:
@@ -1761,6 +1992,7 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
     primary_summary = primary_router_cutoff_summary(router_cutoffs, results, even_analysis)
     primary_probability_bias = primary_probability_bias_summary(probability_bias_reports)
     primary_logit_softmax = primary_logit_softmax_summary(logit_softmax_reports)
+    primary_linear = primary_router_linear_summary(linear_reports, first_real_default)
     return {"accepted": False, "array_count": len(expected), "physical_block_start": start,
         "physical_block_count": count, "primary_oracle": "python_default",
         "sensitivity_control": "python_math",
@@ -1778,12 +2010,14 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
         "primary_oracle_router_cutoff_summary": primary_summary,
         "primary_oracle_router_probability_bias_decomposition": primary_probability_bias,
         "primary_oracle_router_logit_softmax_decomposition": primary_logit_softmax,
+        "primary_oracle_router_linear_decomposition": primary_linear,
         **{f"block_{block}_dominant_branch_vs_{label}": attribution[f"block_{block}_vs_{label}"]["dominant_branch"]
            for block in range(start + 1, start + count, 2) for label in ("default", "math")},
         "components": results, "router_semantics": routers,
         "router_cutoff_analysis": router_cutoffs,
         "router_probability_bias_decomposition": probability_bias_reports,
         "router_logit_softmax_decomposition": logit_softmax_reports,
+        "router_linear_decomposition": linear_reports,
         "even_block_shortcut_analysis": even_analysis, "odd_block_cross_substitution": attribution}
 def reconstruction_metrics(target, alternatives):
     reports = {}
@@ -2114,6 +2348,8 @@ def build_parser():
     p.add_argument("--block-components-window-default-npz", type=Path)
     p.add_argument("--block-components-window-math-npz", type=Path)
     p.add_argument("--component-window-replay-only", type=int, choices=(0, 1), default=0)
+    p.add_argument("--router-linear-diagnostic-npz", type=Path)
+    p.add_argument("--router-linear-diagnostic-json", type=Path)
     p.add_argument("--longcat-bf16-boundary-rounding", type=int, choices=(0, 1), default=0)
     p.add_argument("--longcat-bf16-hidden-surface-rounding", type=int, choices=(0, 1), default=0)
     p.add_argument("--block-components-default-npz", type=Path)
@@ -2182,6 +2418,10 @@ def validate_all_blocks_options(args):
         if any(path is None for path in window_paths): raise ValueError("component-window diagnostic requires both window NPZs")
     elif any(path is not None for path in window_paths):
         raise ValueError("component-window NPZs require window diagnostic mode")
+    linear_paths = (args.router_linear_diagnostic_npz, args.router_linear_diagnostic_json)
+    if any(path is not None for path in linear_paths):
+        if not args.component_window_replay_only or any(path is None for path in linear_paths):
+            raise ValueError("router-linear diagnostics require both artifacts in component-window replay-only mode")
 
 
 def validate_component_window_capture_metadata(root, start, count):
@@ -2241,9 +2481,20 @@ def main():
             if not capture_dir.is_dir(): capture_dir = args.output_dir
             with np.load(args.block_components_window_default_npz, allow_pickle=False) as default_window, \
                  np.load(args.block_components_window_math_npz, allow_pickle=False) as math_window:
-                report = compare_component_window(default_window, math_window, capture_dir,
-                    cases[0]["attention_mask"], criterion, args.block_components_window_start,
-                    args.block_components_window_count)
+                router_weights = None
+                if args.router_linear_diagnostic_npz is not None:
+                    linear_metadata = json.loads(args.router_linear_diagnostic_json.read_text(encoding="ascii"))
+                    if (linear_metadata.get("bounded_physical_blocks") != [10, 12] or
+                            linear_metadata.get("model_instantiated") is not False or
+                            linear_metadata.get("inference_executed") is not False):
+                        raise ValueError("invalid bounded router-linear diagnostic metadata")
+                    router_weights = np.load(args.router_linear_diagnostic_npz, allow_pickle=False)
+                try:
+                    report = compare_component_window(default_window, math_window, capture_dir,
+                        cases[0]["attention_mask"], criterion, args.block_components_window_start,
+                        args.block_components_window_count, router_weights)
+                finally:
+                    if router_weights is not None: router_weights.close()
             (args.output_dir / "block-components-window-three-way.json").write_text(
                 json.dumps(report, indent=2) + "\n", encoding="ascii")
             return
