@@ -491,6 +491,9 @@ class ParityHarnessTests(unittest.TestCase):
             self.assertEqual(classification, expected)
         _, failed = PARITY.minimal_sufficient_residual_coalitions({key: False for key in coalitions})
         self.assertEqual(failed, "full Python coalition does not reproduce Python membership")
+        _, invalid_equal = PARITY.minimal_sufficient_residual_coalitions(
+            {key: key == "111" for key in coalitions}, native_equal=True, decisive=False)
+        self.assertEqual(invalid_equal, "analysis not decisive")
 
     def _residual_three_factor_sides(self):
         hidden = 32; prefix = "physical_block_10__"; weight = np.ones(hidden, np.float32)
@@ -551,6 +554,125 @@ class ParityHarnessTests(unittest.TestCase):
                         self.assertEqual(len(softmax["coalitions"]), 8)
                         self.assertTrue(softmax["coalitions"]["000"]["equals_captured_cpp_membership"])
                         self.assertTrue(softmax["coalitions"]["111"]["equals_captured_python_membership"])
+                        for coalition in softmax["coalitions"].values():
+                            self.assertTrue(coalition["residual_surface_finite"])
+                            self.assertTrue(coalition["rmsnorm_output_finite"])
+                            self.assertTrue(coalition["router_logits_finite"])
+                            self.assertTrue(coalition["softmax_probabilities_finite"])
+                            self.assertTrue(coalition["all_evaluated_stages_finite"])
+
+    def test_residual_three_factor_prerequisite_and_invalid_equal_native_are_non_decisive(self):
+        sides, weight, router_weight = self._residual_three_factor_sides()
+        mismatch = PARITY.post_attention_residual_three_factor_decomposition(
+            sides, "physical_block_10__", [1], weight, weight.copy(), 1e-6, 2e-6, router_weight)
+        self.assertEqual(mismatch["status"], "analysis not decisive")
+        self.assertFalse(mismatch["shared_component_prerequisite"]["shared_components_valid"])
+        equal_but_invalid = copy.deepcopy(sides)
+        for target in ("cpp", "default", "math"):
+            equal_but_invalid[target]["physical_block_10__router_topk_indices"][0, 0, -1] = 383
+        report = PARITY.post_attention_residual_three_factor_decomposition(
+            equal_but_invalid, "physical_block_10__", [1], weight, weight.copy(), 1e-6, 1e-6, router_weight)
+        for target in report["python_targets"].values():
+            for reference in target["references"].values():
+                for rows in reference["router_matmul_references"].values():
+                    for softmax in rows[0]["softmax_references"].values():
+                        if softmax["reference_applicable_to_token"]:
+                            self.assertFalse(softmax["classification_decisive"])
+                            self.assertEqual(softmax["classification"], "analysis not decisive")
+
+    def test_residual_primary_summary_rejects_missing_and_cross_python_mismatch(self):
+        sides, weight, router_weight = self._residual_three_factor_sides()
+        analysis = PARITY.post_attention_residual_three_factor_decomposition(
+            sides, "physical_block_10__", [1], weight, weight.copy(), 1e-6, 1e-6, router_weight)
+        positive = PARITY.primary_post_attention_residual_three_factor_summary([
+            {"physical_block": 10, "analysis": analysis},
+            {"physical_block": 12, "analysis": analysis}], 10)
+        self.assertTrue(positive["physical_block_12_remains_aligned_control"])
+        missing = copy.deepcopy(analysis)
+        missing["python_targets"]["default"]["per_token_applicability"][0][
+            "applicable_cpp_rmsnorm_references"] = []
+        summary = PARITY.primary_post_attention_residual_three_factor_summary([
+            {"physical_block": 10, "analysis": missing}, {"physical_block": 12, "analysis": analysis}], 10)
+        self.assertFalse(summary["all_applicable_results_decisive"])
+        self.assertEqual(summary["tokens_without_applicable_cpp_rmsnorm_reference"],
+                         [{"target": "default", "attended_token": 1}])
+        self.assertEqual(summary["restrained_next_localization_targets"], [])
+        disagreement = copy.deepcopy(analysis)
+        applicable = disagreement["python_targets"]["math"]["per_token_applicability"][0][
+            "applicable_cpp_rmsnorm_references"]
+        for name in applicable:
+            for rows in disagreement["python_targets"]["math"]["references"][name][
+                    "router_matmul_references"].values():
+                for softmax in rows[0]["softmax_references"].values():
+                    softmax["minimal_sufficient_factor_sets"] = [["attention_output"]]
+        summary = PARITY.primary_post_attention_residual_three_factor_summary([
+            {"physical_block": 10, "analysis": disagreement},
+            {"physical_block": 12, "analysis": analysis}], 10)
+        self.assertFalse(summary["cross_python_minimal_factor_set_agreement"])
+        self.assertFalse(summary["cross_python_reference_agreement"])
+        self.assertEqual(summary["definitive_localization_factors"], [])
+
+        def control_flag(mutator):
+            control = copy.deepcopy(analysis); mutator(control)
+            return PARITY.primary_post_attention_residual_three_factor_summary([
+                {"physical_block": 10, "analysis": analysis},
+                {"physical_block": 12, "analysis": control}], 10)[
+                    "physical_block_12_remains_aligned_control"]
+        self.assertFalse(control_flag(lambda control: control["python_targets"]["default"][
+            "per_token_applicability"][0].update({"applicable_cpp_rmsnorm_references": []})))
+        def mutate_report(control, operation):
+            applicability = control["python_targets"]["default"]["per_token_applicability"][0]
+            name = applicability["applicable_cpp_rmsnorm_references"][0]
+            rows = next(iter(control["python_targets"]["default"]["references"][name][
+                "router_matmul_references"].values()))
+            operation(next(iter(rows[0]["softmax_references"].values())))
+        self.assertFalse(control_flag(lambda control: mutate_report(control,
+            lambda report: report["coalitions"]["111"].update({"equals_captured_python_membership": False}))))
+        self.assertFalse(control_flag(lambda control: mutate_report(control,
+            lambda report: report.update({"captured_topk_membership_reconstruction_valid": False}))))
+        self.assertFalse(control_flag(lambda control: control["python_targets"]["default"][
+            "native_residual_add_reconstruction"][0].update({"python_native_exact": False})))
+        self.assertFalse(control_flag(lambda control: control["python_targets"]["default"][
+            "per_token_applicability"][0].update({"applicable_reference_classification_agreement": False})))
+
+    def test_residual_three_factor_stage_finiteness_failures_are_non_decisive(self):
+        sides, weight, router_weight = self._residual_three_factor_sides()
+        cases = []
+        residual_bad = copy.deepcopy(sides)
+        residual_bad["default"]["physical_block_10__attention_output"][0, 0, 0] = np.nan
+        cases.append((residual_bad, "residual_surface_finite", None))
+        logits_bad = copy.deepcopy(sides)
+        logits_bad["cpp"]["physical_block_10__router_logits"][0, 0, 0] = np.nan
+        cases.append((logits_bad, "router_logits_finite", None))
+        original_norm = PARITY.diagnostic_rmsnorm_with_operational_weight
+        original_softmax = dict(PARITY.DIAGNOSTIC_SOFTMAX_REFERENCES)
+        def nan_norm(value, *args, **kwargs):
+            result, metadata = original_norm(value, *args, **kwargs)
+            result = result.copy(); result[..., 0] = np.nan
+            return result, metadata
+        def nan_softmax(value): return np.full_like(np.asarray(value, np.float32), np.nan)
+        try:
+            for source, field, patch_stage in cases + [
+                    (copy.deepcopy(sides), "rmsnorm_output_finite", "norm"),
+                    (copy.deepcopy(sides), "softmax_probabilities_finite", "softmax")]:
+                PARITY.diagnostic_rmsnorm_with_operational_weight = nan_norm if patch_stage == "norm" else original_norm
+                PARITY.DIAGNOSTIC_SOFTMAX_REFERENCES.clear()
+                PARITY.DIAGNOSTIC_SOFTMAX_REFERENCES.update(original_softmax)
+                if patch_stage == "softmax":
+                    PARITY.DIAGNOSTIC_SOFTMAX_REFERENCES["stable_float32"] = nan_softmax
+                report = PARITY.post_attention_residual_three_factor_decomposition(
+                    source, "physical_block_10__", [1], weight, weight.copy(), 1e-6, 1e-6, router_weight)
+                target = report["python_targets"]["default"]
+                evidence_rows = [softmax for reference in target["references"].values()
+                    for rows in reference["router_matmul_references"].values()
+                    for softmax in rows[0]["softmax_references"].values()]
+                self.assertTrue(any(not coalition[field] for evidence in evidence_rows
+                                    for coalition in evidence["coalitions"].values()))
+                self.assertTrue(any(not evidence["classification_decisive"] for evidence in evidence_rows))
+        finally:
+            PARITY.diagnostic_rmsnorm_with_operational_weight = original_norm
+            PARITY.DIAGNOSTIC_SOFTMAX_REFERENCES.clear()
+            PARITY.DIAGNOSTIC_SOFTMAX_REFERENCES.update(original_softmax)
 
     def test_router_tensor_names_resolve_logical_and_physical_coordinates(self):
         expected = {
