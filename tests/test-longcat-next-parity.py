@@ -843,7 +843,7 @@ class ParityHarnessTests(unittest.TestCase):
             lambda report: report.update({"captured_topk_membership_reconstruction_valid": False}))))
         self.assertFalse(control_flag(lambda control: control["python_targets"]["default"][
             "native_residual_add_reconstruction"][0].update({"python_native_exact": False})))
-        self.assertFalse(control_flag(lambda control: control["python_targets"]["default"][
+        self.assertTrue(control_flag(lambda control: control["python_targets"]["default"][
             "per_token_applicability"][0].update({"applicable_reference_classification_agreement": False})))
 
     def test_equal_contract_block12_uses_dynamic_native_keys(self):
@@ -893,6 +893,18 @@ class ParityHarnessTests(unittest.TestCase):
             self.assertFalse(negative["physical_block_12_remains_aligned_control"])
             self.assertTrue(any(expected_reason in reason for reason in
                                 negative["physical_block_12_control_failure_reasons"]))
+        stale = copy.deepcopy(analysis)
+        target = stale["python_targets"]["default"]
+        name = target["per_token_applicability"][0]["applicable_cpp_rmsnorm_references"][0]
+        rows = next(iter(target["references"][name]["router_matmul_references"].values()))
+        next(iter(rows[0]["softmax_references"].values()))["minimal_sufficient_factor_sets"] = [
+            ["block_input"]]
+        stale_summary = PARITY.primary_post_attention_residual_three_factor_summary([
+            {"physical_block": 10, "analysis": analysis},
+            {"physical_block": 12, "analysis": stale}], 10)
+        self.assertFalse(stale_summary["physical_block_12_remains_aligned_control"])
+        self.assertTrue(any("minimal sufficient factor sets disagree" in reason for reason in
+                            stale_summary["physical_block_12_control_failure_reasons"]))
 
     def test_primary_oracle_local_factors_survive_non_global_sensitivity_disagreement(self):
         control = self._equal_contract_residual_analysis()
@@ -988,6 +1000,19 @@ class ParityHarnessTests(unittest.TestCase):
         def unknown_rmsnorm(target):
             applicability, *_ = coordinates(target)
             applicability["applicable_cpp_rmsnorm_references"].append("unknown_rmsnorm")
+        def populated_unknown_rmsnorm(target):
+            applicability, rmsnorm, *_ = coordinates(target)
+            target["references"]["unknown_rmsnorm"] = copy.deepcopy(target["references"][rmsnorm])
+            applicability["applicable_cpp_rmsnorm_references"].append("unknown_rmsnorm")
+        def replace_with_unknown_rmsnorm(target):
+            applicability, rmsnorm, *_ = coordinates(target)
+            target["references"]["unknown_rmsnorm"] = target["references"].pop(rmsnorm)
+            applicability["applicable_cpp_rmsnorm_references"] = [
+                "unknown_rmsnorm" if name == rmsnorm else name
+                for name in applicability["applicable_cpp_rmsnorm_references"]]
+        def duplicate_rmsnorm(target):
+            applicability, rmsnorm, *_ = coordinates(target)
+            applicability["applicable_cpp_rmsnorm_references"].append(rmsnorm)
         def extra_matmul(target):
             _, _, matmuls, matmul, *_ = coordinates(target)
             matmuls["unexpected_matmul"] = copy.deepcopy(matmuls[matmul])
@@ -1003,7 +1028,10 @@ class ParityHarnessTests(unittest.TestCase):
                  (duplicate_row, "duplicate_token_rows"),
                  (replace_matmul, "unexpected_coordinates"),
                  (replace_softmax, "unexpected_coordinates"),
-                 (unknown_rmsnorm, "missing_rmsnorm_references"),
+                 (unknown_rmsnorm, "unknown_applicable_rmsnorm_references"),
+                 (populated_unknown_rmsnorm, "unknown_applicable_rmsnorm_references"),
+                 (replace_with_unknown_rmsnorm, "unknown_applicable_rmsnorm_references"),
+                 (duplicate_rmsnorm, "duplicate_applicable_rmsnorm_references"),
                  (extra_matmul, "unexpected_coordinates"),
                  (extra_softmax, "unexpected_coordinates"))
         for mutate, expected_field in cases:
@@ -1013,6 +1041,8 @@ class ParityHarnessTests(unittest.TestCase):
                 inventory = PARITY.collect_applicable_residual_reference_reports(target, 1)
                 self.assertFalse(inventory["inventory_complete"], mutate.__name__)
                 self.assertTrue(inventory[expected_field], mutate.__name__)
+                if mutate in (populated_unknown_rmsnorm, replace_with_unknown_rmsnorm):
+                    self.assertIn("unknown_rmsnorm", inventory["unexpected_rmsnorm_reference_keys"])
             summary = PARITY.primary_post_attention_residual_three_factor_summary([
                 {"physical_block": 10, "analysis": malformed},
                 {"physical_block": 12, "analysis": malformed}], 10)
@@ -1097,6 +1127,110 @@ class ParityHarnessTests(unittest.TestCase):
         self.assertFalse(summary["sensitivity_control_locally_decisive"])
         self.assertEqual(summary["sensitivity_control_localization_factors"], [])
         self.assertEqual(summary["sensitivity_control_next_localization_targets"], [])
+
+    def test_attended_token_inventory_cannot_hide_missing_duplicate_or_unexpected_tokens(self):
+        pristine = self._equal_contract_residual_analysis()
+
+        def remove_applicability(target): target["per_token_applicability"] = []
+        def duplicate_applicability(target):
+            target["per_token_applicability"].append(copy.deepcopy(target["per_token_applicability"][0]))
+        def unexpected_applicability(target):
+            row = copy.deepcopy(target["per_token_applicability"][0]); row["attended_token"] = 99
+            target["per_token_applicability"].append(row)
+        def remove_native(target): target["native_residual_add_reconstruction"] = []
+        def duplicate_native(target):
+            target["native_residual_add_reconstruction"].append(
+                copy.deepcopy(target["native_residual_add_reconstruction"][0]))
+
+        # Removing either oracle's whole row is visible and cannot disappear globally.
+        for target_name in ("default", "math"):
+            malformed = copy.deepcopy(pristine); remove_applicability(malformed["python_targets"][target_name])
+            summary = PARITY.primary_post_attention_residual_three_factor_summary([
+                {"physical_block": 10, "analysis": malformed},
+                {"physical_block": 12, "analysis": pristine}], 10)
+            self.assertIn(1, summary["python_reference_results"][target_name])
+            row = summary["python_reference_results"][target_name][1]
+            self.assertFalse(row["attended_token_inventory_complete"])
+            self.assertEqual(row["missing_applicability_attended_tokens"], [1])
+            self.assertFalse(row["target_token_causally_decisive"])
+            self.assertIsNone(summary["global_definitive_result"])
+
+    def test_malformed_reference_containers_are_non_throwing_inventory_failures(self):
+        pristine = self._equal_contract_residual_analysis()
+        def remove_applicability(target): target["per_token_applicability"] = []
+        def duplicate_applicability(target):
+            target["per_token_applicability"].append(copy.deepcopy(target["per_token_applicability"][0]))
+        def unexpected_applicability(target):
+            row = copy.deepcopy(target["per_token_applicability"][0]); row["attended_token"] = 99
+            target["per_token_applicability"].append(row)
+        def remove_native(target): target["native_residual_add_reconstruction"] = []
+        def duplicate_native(target):
+            target["native_residual_add_reconstruction"].append(
+                copy.deepcopy(target["native_residual_add_reconstruction"][0]))
+        def parts(target):
+            applicability = target["per_token_applicability"][0]
+            rmsnorm = applicability["applicable_cpp_rmsnorm_references"][0]
+            reference = target["references"][rmsnorm]
+            matmul = next(iter(reference["router_matmul_references"]))
+            rows = reference["router_matmul_references"][matmul]
+            row = rows[0]; softmax = next(iter(row["softmax_references"]))
+            return applicability, rmsnorm, reference, matmul, rows, row, softmax
+        def applicability_container(target): target["per_token_applicability"] = "malformed"
+        def applicability_row(target): target["per_token_applicability"] = ["malformed"]
+        def applicable_rmsnorm_value(target): parts(target)[0]["applicable_cpp_rmsnorm_references"] = "malformed"
+        def references_container(target): target["references"] = "malformed"
+        def matmul_map(target): parts(target)[2]["router_matmul_references"] = "malformed"
+        def row_container(target):
+            _, _, reference, matmul, *_ = parts(target)
+            reference["router_matmul_references"][matmul] = "malformed"
+        def softmax_map(target): parts(target)[5]["softmax_references"] = "malformed"
+        def report_value(target):
+            *_, row, softmax = parts(target); row["softmax_references"][softmax] = "malformed"
+        for mutate in (applicability_container, applicability_row, applicable_rmsnorm_value,
+                       references_container, matmul_map, row_container, softmax_map, report_value):
+            malformed = copy.deepcopy(pristine)
+            for target in malformed["python_targets"].values(): mutate(target)
+            summary = PARITY.primary_post_attention_residual_three_factor_summary([
+                {"physical_block": 10, "analysis": malformed},
+                {"physical_block": 12, "analysis": malformed}], 10)
+            self.assertIsNone(summary["global_definitive_result"], mutate.__name__)
+            self.assertFalse(summary["physical_block_12_remains_aligned_control"], mutate.__name__)
+            self.assertTrue(summary["physical_block_12_control_failure_reasons"])
+
+        malformed = copy.deepcopy(pristine)
+        for target in malformed["python_targets"].values(): remove_applicability(target)
+        summary = PARITY.primary_post_attention_residual_three_factor_summary([
+            {"physical_block": 10, "analysis": malformed},
+            {"physical_block": 12, "analysis": malformed}], 10)
+        self.assertIn(1, summary["python_reference_results"]["default"])
+        self.assertIn(1, summary["python_reference_results"]["math"])
+        self.assertFalse(summary["primary_oracle_locally_decisive"])
+        self.assertFalse(summary["sensitivity_control_locally_decisive"])
+        self.assertEqual(summary["primary_oracle_localization_factors"], [])
+        self.assertEqual(summary["sensitivity_control_localization_factors"], [])
+        self.assertFalse(summary["physical_block_12_remains_aligned_control"])
+        statuses = summary["physical_block_12_per_target_token_control_status"]
+        self.assertEqual({status["attended_token"] for status in statuses}, {1})
+        self.assertTrue(all("applicable token inventory is incomplete" in status["failure_reasons"]
+                            and "applicable reference evidence is incomplete" in status["failure_reasons"]
+                            for status in statuses))
+
+        for mutate, field in ((duplicate_applicability, "duplicate_applicability_attended_tokens"),
+                              (unexpected_applicability, "unexpected_applicability_attended_tokens"),
+                              (remove_native, "missing_native_residual_attended_tokens"),
+                              (duplicate_native, "duplicate_native_residual_attended_tokens")):
+            malformed = copy.deepcopy(pristine)
+            for target in malformed["python_targets"].values(): mutate(target)
+            summary = PARITY.primary_post_attention_residual_three_factor_summary([
+                {"physical_block": 10, "analysis": malformed},
+                {"physical_block": 12, "analysis": malformed}], 10)
+            for target_name in ("default", "math"):
+                inventory = summary["target_attended_token_inventories"][target_name]
+                self.assertFalse(inventory["attended_token_inventory_complete"], mutate.__name__)
+                self.assertTrue(inventory[field], mutate.__name__)
+            self.assertFalse(summary["primary_oracle_locally_decisive"])
+            self.assertFalse(summary["sensitivity_control_locally_decisive"])
+            self.assertIsNone(summary["global_definitive_result"])
 
     def test_residual_three_factor_stage_finiteness_failures_are_non_decisive(self):
         sides, weight, router_weight = self._residual_three_factor_sides()
