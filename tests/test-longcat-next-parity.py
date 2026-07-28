@@ -536,6 +536,55 @@ class ParityHarnessTests(unittest.TestCase):
         return {"longcat_bf16_boundary_rounding": boundary,
                 "longcat_bf16_hidden_surface_rounding": hidden}
 
+    def _equal_contract_residual_analysis(self, endpoint_failure=False):
+        sides, weight, router_weight = self._residual_three_factor_sides()
+        prefix = "physical_block_10__"
+        old_cpp_ffn = sides["cpp"][prefix + "ffn_norm"].reshape(1, -1)
+        linear_residual = sides["cpp"][prefix + "router_logits"].reshape(1, 384) - \
+            PARITY.diagnostic_router_linear(old_cpp_ffn, router_weight, "float32_matmul")
+        rounded_post = PARITY.residual_add_contract(
+            sides["cpp"][prefix + "block_input"].reshape(1, -1),
+            sides["cpp"][prefix + "attention_output"].reshape(1, -1),
+            "python_final_bf16_rne_add")
+        rounded_ffn, _ = PARITY.diagnostic_rmsnorm_with_operational_weight(
+            rounded_post, weight, 1e-6, PARITY.SIDE_SPECIFIC_CPP_ARITHMETIC_REFERENCES[0],
+            "gguf_float32_runtime_weight")
+        rounded_logits = PARITY.diagnostic_router_linear(
+            rounded_ffn, router_weight, "float32_matmul") + linear_residual
+        rounded_probabilities = PARITY.diagnostic_softmax_stable_float32(rounded_logits)
+        sides["cpp"][prefix + "post_attention_residual"] = rounded_post.reshape(1, 1, -1)
+        sides["cpp"][prefix + "ffn_norm"] = rounded_ffn.reshape(1, 1, -1)
+        sides["cpp"][prefix + "router_logits"] = rounded_logits.reshape(1, 1, 384)
+        sides["cpp"][prefix + "router_probabilities"] = rounded_probabilities.reshape(1, 1, 384)
+        sides["cpp"][prefix + "router_selection_scores"] = rounded_probabilities.reshape(1, 1, 384)
+        sides["cpp"][prefix + "router_topk_indices"] = PARITY._score_topk_indices(
+            rounded_probabilities[0]).reshape(1, 1, 12)[..., ::-1]
+        if endpoint_failure:
+            for target in ("default", "math"):
+                replacement = np.zeros((1, 1, 384), np.float32)
+                replacement[0, 0, 100:112] = np.arange(1, 13, dtype=np.float32)
+                sides[target][prefix + "router_probabilities"] = replacement.copy()
+                sides[target][prefix + "router_selection_scores"] = replacement.copy()
+                sides[target][prefix + "router_topk_indices"] = PARITY._score_topk_indices(
+                    replacement[0, 0]).reshape(1, 1, 12)[..., ::-1]
+        return PARITY.post_attention_residual_three_factor_decomposition(
+            sides, prefix, [1], weight, weight.copy(), 1e-6, 1e-6, router_weight,
+            self._residual_profile(True, True))
+
+    def _differing_contract_endpoint_failure_analysis(self):
+        sides, weight, router_weight = self._residual_three_factor_sides()
+        prefix = "physical_block_10__"
+        for target in ("default", "math"):
+            replacement = np.zeros((1, 1, 384), np.float32)
+            replacement[0, 0, 100:112] = np.arange(1, 13, dtype=np.float32)
+            sides[target][prefix + "router_probabilities"] = replacement.copy()
+            sides[target][prefix + "router_selection_scores"] = replacement.copy()
+            sides[target][prefix + "router_topk_indices"] = PARITY._score_topk_indices(
+                replacement[0, 0]).reshape(1, 1, 12)[..., ::-1]
+        return PARITY.post_attention_residual_three_factor_decomposition(
+            sides, prefix, [1], weight, weight.copy(), 1e-6, 1e-6, router_weight,
+            self._residual_profile())
+
     def test_residual_three_factor_downstream_and_six_paths(self):
         sides, weight, router_weight = self._residual_three_factor_sides()
         report = PARITY.post_attention_residual_three_factor_decomposition(
@@ -551,6 +600,9 @@ class ParityHarnessTests(unittest.TestCase):
                     row = rows[0]
                     self.assertEqual(len(row["six_factor_order_paths"]), 6)
                     for path in row["six_factor_order_paths"]:
+                        self.assertTrue(path["residual_surface"]["closure_exact_equality"])
+                        self.assertTrue(path["fixed_cpp_rmsnorm_output"]["closure_exact_equality"])
+                        self.assertTrue(path["evaluated_router_logits"]["closure_exact_equality"])
                         self.assertLess(path["residual_surface"]["closure_rms"], 1e-6)
                         self.assertLess(path["fixed_cpp_rmsnorm_output"]["closure_rms"], 1e-6)
                         self.assertLess(path["evaluated_router_logits"]["closure_rms"], 1e-6)
@@ -574,32 +626,7 @@ class ParityHarnessTests(unittest.TestCase):
         self.assertEqual(enabled["metadata_native_cpp_residual_contract"], "python_final_bf16_rne_add")
         self.assertFalse(enabled["native_residual_contracts_differ"])
         with self.assertRaises(ValueError): PARITY.validate_capture_residual_profile(self._residual_profile(False, True))
-        sides, weight, router_weight = self._residual_three_factor_sides()
-        prefix = "physical_block_10__"; old_cpp_ffn = sides["cpp"][prefix + "ffn_norm"].reshape(1, -1)
-        old_cpp_logits = sides["cpp"][prefix + "router_logits"].reshape(1, 384)
-        linear_residual = old_cpp_logits - PARITY.diagnostic_router_linear(
-            old_cpp_ffn, router_weight, "float32_matmul")
-        cpp_block = sides["cpp"][prefix + "block_input"].reshape(1, -1)
-        cpp_attention = sides["cpp"][prefix + "attention_output"].reshape(1, -1)
-        rounded_post = PARITY.residual_add_contract(
-            cpp_block, cpp_attention, "python_final_bf16_rne_add")
-        self.assertFalse(np.array_equal(rounded_post,
-            PARITY.residual_add_contract(cpp_block, cpp_attention, "cpp_float32_add")))
-        rounded_ffn, _ = PARITY.diagnostic_rmsnorm_with_operational_weight(
-            rounded_post, weight, 1e-6, PARITY.SIDE_SPECIFIC_CPP_ARITHMETIC_REFERENCES[0],
-            "gguf_float32_runtime_weight")
-        rounded_logits = PARITY.diagnostic_router_linear(rounded_ffn, router_weight, "float32_matmul") + linear_residual
-        rounded_probabilities = PARITY.diagnostic_softmax_stable_float32(rounded_logits)
-        sides["cpp"][prefix + "post_attention_residual"] = rounded_post.reshape(1, 1, -1)
-        sides["cpp"][prefix + "ffn_norm"] = rounded_ffn.reshape(1, 1, -1)
-        sides["cpp"][prefix + "router_logits"] = rounded_logits.reshape(1, 1, 384)
-        sides["cpp"][prefix + "router_probabilities"] = rounded_probabilities.reshape(1, 1, 384)
-        sides["cpp"][prefix + "router_selection_scores"] = rounded_probabilities.reshape(1, 1, 384)
-        sides["cpp"][prefix + "router_topk_indices"] = PARITY._score_topk_indices(
-            rounded_probabilities[0]).reshape(1, 1, 12)[..., ::-1]
-        report = PARITY.post_attention_residual_three_factor_decomposition(
-            sides, prefix, [1], weight, weight.copy(), 1e-6, 1e-6, router_weight,
-            self._residual_profile(True, True))
+        report = self._equal_contract_residual_analysis()
         self.assertEqual(report["active_residual_factors"], ["block_input", "attention_output"])
         self.assertEqual((report["native_cpp_coalition_key"], report["native_python_coalition_key"]),
                          ("00", "11"))
@@ -609,6 +636,10 @@ class ParityHarnessTests(unittest.TestCase):
             for reference in target["references"].values():
                 for rows in reference["router_matmul_references"].values():
                     self.assertEqual(len(rows[0]["native_path_decompositions"]), 2)
+                    for path in rows[0]["native_path_decompositions"]:
+                        self.assertTrue(path["residual_surface"]["closure_exact_equality"])
+                        self.assertTrue(path["fixed_cpp_rmsnorm_output"]["closure_exact_equality"])
+                        self.assertTrue(path["evaluated_router_logits"]["closure_exact_equality"])
                     for softmax in rows[0]["softmax_references"].values():
                         self.assertEqual(set(softmax["native_factor_truth_table"]), {"00", "01", "10", "11"})
                         self.assertEqual(len(softmax["descriptive_alternate_contract_truth_table"]), 8)
@@ -633,6 +664,70 @@ class ParityHarnessTests(unittest.TestCase):
                         if softmax["reference_applicable_to_token"]:
                             self.assertFalse(softmax["classification_decisive"])
                             self.assertEqual(softmax["classification"], "analysis not decisive")
+
+    def test_native_python_endpoint_failure_is_preserved_and_non_causal(self):
+        expected = "full Python operand coalition does not reproduce Python membership"
+        for analysis, python_key in ((self._equal_contract_residual_analysis(True), "11"),
+                                     (self._differing_contract_endpoint_failure_analysis(), "111")):
+            self.assertEqual(analysis["native_python_coalition_key"], python_key)
+            self.assertTrue(analysis["native_factor_truth_tables"])
+            self.assertTrue(analysis["descriptive_alternate_contract_truth_tables"])
+            for target in analysis["python_targets"].values():
+                applicability = target["per_token_applicability"][0]
+                self.assertTrue(applicability["applicable_reference_diagnostic_outcome_agreement"])
+                self.assertFalse(applicability["applicable_reference_causal_classification_agreement"])
+                for name in applicability["applicable_cpp_rmsnorm_references"]:
+                    for rows in target["references"][name]["router_matmul_references"].values():
+                        for report in rows[0]["softmax_references"].values():
+                            self.assertTrue(report["structural_prerequisites_valid"])
+                            self.assertFalse(report["native_python_endpoint_membership_reconstruction_valid"])
+                            self.assertEqual(report["diagnostic_outcome"], expected)
+                            self.assertIsNone(report["definitive_causal_classification"])
+                            self.assertFalse(report["causal_classification_decisive"])
+                            self.assertEqual(report["classification"], expected)
+            summary = PARITY.primary_post_attention_residual_three_factor_summary([
+                {"physical_block": 10, "analysis": analysis},
+                {"physical_block": 12, "analysis": analysis}], 10)
+            self.assertIsNone(summary["global_definitive_result"])
+            self.assertEqual(summary["definitive_localization_factors"], [])
+            self.assertEqual(summary["restrained_next_localization_targets"], [])
+            for result_name in ("primary_oracle_result", "sensitivity_control_result"):
+                row = summary[result_name]["result"][1]
+                self.assertEqual(row["diagnostic_outcome"], expected)
+                self.assertIsNone(row["definitive_causal_classification"])
+                self.assertTrue(row["target_token_structurally_valid"])
+                self.assertFalse(row["native_python_endpoint_membership_reconstruction_valid"])
+                self.assertFalse(row["target_token_causally_decisive"])
+                self.assertEqual(row["non_decisive_reason"],
+                    "native Python operand endpoint does not reproduce captured Python routing membership")
+
+    def test_exact_native_path_closure_gates_primary_result(self):
+        for analysis, expected_paths in ((self._equal_contract_residual_analysis(), 2),
+                                         (self._differing_contract_endpoint_failure_analysis(), 6)):
+            for target in analysis["python_targets"].values():
+                for reference in target["references"].values():
+                    for rows in reference["router_matmul_references"].values():
+                        self.assertEqual(len(rows[0]["native_path_decompositions"]), expected_paths)
+                        for path in rows[0]["native_path_decompositions"]:
+                            for stage in ("residual_surface", "fixed_cpp_rmsnorm_output",
+                                          "evaluated_router_logits"):
+                                self.assertTrue(path[stage]["closure_exact_equality"])
+            self.assertTrue(analysis["all_native_paths_close_exactly"])
+        analysis = self._equal_contract_residual_analysis()
+        target = analysis["python_targets"]["default"]
+        applicable = target["per_token_applicability"][0]["applicable_cpp_rmsnorm_references"]
+        for name in applicable:
+            for rows in target["references"][name]["router_matmul_references"].values():
+                for report in rows[0]["softmax_references"].values():
+                    report["all_native_paths_close_exactly"] = False
+                    report["structural_prerequisites_valid"] = False
+                    report["causal_classification_decisive"] = False
+                    report["classification_decisive"] = False
+        summary = PARITY.primary_post_attention_residual_three_factor_summary([
+            {"physical_block": 10, "analysis": analysis},
+            {"physical_block": 12, "analysis": self._equal_contract_residual_analysis()}], 10)
+        self.assertIsNone(summary["global_definitive_result"])
+        self.assertEqual(summary["definitive_localization_factors"], [])
 
     def test_residual_primary_summary_rejects_missing_and_cross_python_mismatch(self):
         sides, weight, router_weight = self._residual_three_factor_sides()
@@ -689,6 +784,27 @@ class ParityHarnessTests(unittest.TestCase):
             "native_residual_add_reconstruction"][0].update({"python_native_exact": False})))
         self.assertFalse(control_flag(lambda control: control["python_targets"]["default"][
             "per_token_applicability"][0].update({"applicable_reference_classification_agreement": False})))
+
+    def test_equal_contract_block12_uses_dynamic_native_keys(self):
+        analysis = self._equal_contract_residual_analysis()
+        self.assertEqual((analysis["native_cpp_coalition_key"], analysis["native_python_coalition_key"]),
+                         ("00", "11"))
+        def control_flag(control):
+            return PARITY.primary_post_attention_residual_three_factor_summary([
+                {"physical_block": 10, "analysis": analysis},
+                {"physical_block": 12, "analysis": control}], 10)[
+                    "physical_block_12_remains_aligned_control"]
+        self.assertTrue(control_flag(copy.deepcopy(analysis)))
+        for key, field in (("00", "equals_captured_cpp_membership"),
+                           ("11", "equals_captured_python_membership")):
+            control = copy.deepcopy(analysis)
+            for target in control["python_targets"].values():
+                applicability = target["per_token_applicability"][0]
+                name = applicability["applicable_cpp_rmsnorm_references"][0]
+                rows = next(iter(target["references"][name]["router_matmul_references"].values()))
+                next(iter(rows[0]["softmax_references"].values()))["coalitions"][key][field] = False
+                break
+            self.assertFalse(control_flag(control))
 
     def test_residual_three_factor_stage_finiteness_failures_are_non_decisive(self):
         sides, weight, router_weight = self._residual_three_factor_sides()

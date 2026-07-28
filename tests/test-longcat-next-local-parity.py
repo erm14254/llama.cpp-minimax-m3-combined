@@ -2667,6 +2667,7 @@ def _telescoping_stage_report(values, path_keys, target_delta, disputed_experts=
     reconstructed = sum(terms, np.zeros_like(target_delta, dtype=np.float32))
     closure = np.asarray(target_delta - reconstructed, np.float32)
     report = {"coalition_path": path_keys,
+        "closure_exact_equality": bool(np.array_equal(np.asarray(target_delta, np.float32), reconstructed)),
         "component_rms": [float(np.sqrt(np.mean(np.square(term, dtype=np.float64)))) for term in terms],
         "closure_maximum_absolute": float(np.abs(closure).max(initial=0)),
         "closure_rms": float(np.sqrt(np.mean(np.square(closure, dtype=np.float64)))),
@@ -2825,11 +2826,11 @@ def post_attention_residual_three_factor_decomposition(sides, prefix, attended_t
                                 "router_matmul_reference": matmul, "softmax_reference": softmax_name}
                         native_membership_valid = (cpp_probability_sets[token] == cpp_sets[token] and
                                                    target_probability_sets[token] == target_sets[token])
-                        base_decisive = (native_rows[token]["cpp_native_exact"] and
+                        structural_pre_path = (native_rows[token]["cpp_native_exact"] and
                             native_rows[token]["python_native_exact"] and cpp_exact[token] and
                             native_membership_valid and evidence[cpp_key]["equals_captured_cpp_membership"] and
-                            evidence[python_key]["equals_captured_python_membership"] and
                             all(row["all_evaluated_stages_finite"] for row in evidence.values()))
+                        endpoint_valid = evidence[python_key]["equals_captured_python_membership"]
                         truth = {key: row["equals_captured_python_membership"] for key, row in evidence.items()}
                         descriptive_truth = {}
                         for key, value in descriptive_logits.items():
@@ -2841,12 +2842,16 @@ def post_attention_residual_three_factor_decomposition(sides, prefix, attended_t
                             except ValueError:
                                 descriptive_truth[key] = False
                         minimal, classification = minimal_sufficient_residual_coalitions(truth,
-                            cpp_sets[token] == target_sets[token], base_decisive, active_factors, python_key)
+                            cpp_sets[token] == target_sets[token], structural_pre_path and endpoint_valid,
+                            active_factors, python_key)
                         softmaxes[softmax_name] = {"coalitions": evidence, "truth_table": truth,
                             "native_factor_truth_table": truth,
                             "descriptive_alternate_contract_truth_table": descriptive_truth,
                             "minimal_sufficient_factor_sets": minimal, "classification": classification,
-                            "classification_decisive": base_decisive, "reference_applicable_to_token": cpp_exact[token],
+                            "structural_prerequisites_valid_before_path_closure": structural_pre_path,
+                            "native_python_endpoint_membership_reconstruction_valid": endpoint_valid,
+                            "classification_decisive": structural_pre_path and endpoint_valid,
+                            "reference_applicable_to_token": cpp_exact[token],
                             "captured_topk_membership_reconstruction_valid": native_membership_valid}
                     disputed = sorted(cpp_sets[token] ^ target_sets[token])
                     paths = []
@@ -2873,6 +2878,35 @@ def post_attention_residual_three_factor_decomposition(sides, prefix, attended_t
                             router_target - router_target.mean(), router_reconstructed - router_reconstructed.mean())
                         paths.append({"factor_order": list(order), "residual_surface": residual_path,
                             "fixed_cpp_rmsnorm_output": norm_path, "evaluated_router_logits": router_path})
+                    residual_paths_exact = all(path["residual_surface"]["closure_exact_equality"] for path in paths)
+                    norm_paths_exact = all(path["fixed_cpp_rmsnorm_output"]["closure_exact_equality"] for path in paths)
+                    router_paths_exact = all(path["evaluated_router_logits"]["closure_exact_equality"] for path in paths)
+                    all_paths_exact = residual_paths_exact and norm_paths_exact and router_paths_exact
+                    for report in softmaxes.values():
+                        structural = report["structural_prerequisites_valid_before_path_closure"] and all_paths_exact
+                        endpoint_valid = report["native_python_endpoint_membership_reconstruction_valid"]
+                        native_equal = cpp_sets[token] == target_sets[token]
+                        if not structural:
+                            outcome = "analysis not decisive"; causal = None
+                            reason = "structural prerequisites or exact native path closure failed"
+                        elif not endpoint_valid:
+                            outcome = "full Python operand coalition does not reproduce Python membership"
+                            causal = None
+                            reason = "native Python operand endpoint does not reproduce captured Python routing membership"
+                        elif native_equal:
+                            outcome = "native outcomes already equal"; causal = outcome; reason = None
+                        else:
+                            outcome = report["classification"]; causal = outcome; reason = None
+                        report.update({"structural_prerequisites_valid": structural,
+                            "diagnostic_outcome": outcome,
+                            "definitive_causal_classification": causal,
+                            "causal_classification_decisive": bool(structural and endpoint_valid),
+                            "classification_decisive": bool(structural and endpoint_valid),
+                            "classification": outcome, "non_decisive_reason": reason,
+                            "all_native_residual_paths_close_exactly": residual_paths_exact,
+                            "all_native_rmsnorm_paths_close_exactly": norm_paths_exact,
+                            "all_native_router_logit_paths_close_exactly": router_paths_exact,
+                            "all_native_paths_close_exactly": all_paths_exact})
                     token_rows.append({"attended_token": int(attended),
                         "native_cpp_ffn_norm_exact_for_token": cpp_exact[token],
                         "softmax_references": softmaxes, "six_factor_order_paths": paths,
@@ -2887,20 +2921,30 @@ def post_attention_residual_three_factor_decomposition(sides, prefix, attended_t
                     "native_cpp_ffn_norm_exact_for_token"]]
             reports = [report for name in applicable for rows in references[name]["router_matmul_references"].values()
                 for report in rows[token]["softmax_references"].values()]
-            agreement = bool(reports) and len({report["classification"] for report in reports}) == 1
+            diagnostic_agreement = bool(reports) and len({report["diagnostic_outcome"] for report in reports}) == 1
+            causal_agreement = (bool(reports) and all(report["causal_classification_decisive"] for report in reports)
+                and len({report["definitive_causal_classification"] for report in reports}) == 1)
             for name, reference in references.items():
                 for rows in reference["router_matmul_references"].values():
                     for report in rows[token]["softmax_references"].values():
                         if name not in applicable:
-                            report["classification"] = "analysis not decisive — native C++ RMSNorm surface not reconstructed"
-                            report["classification_decisive"] = False
-                        elif not agreement:
-                            report["classification"] = "analysis not decisive"; report["classification_decisive"] = False
+                            outcome = "analysis not decisive — native C++ RMSNorm surface not reconstructed"
+                            report.update({"classification": outcome, "diagnostic_outcome": outcome,
+                                "definitive_causal_classification": None,
+                                "classification_decisive": False, "causal_classification_decisive": False})
+                        elif not diagnostic_agreement:
+                            report.update({"classification": "analysis not decisive",
+                                "diagnostic_outcome": "analysis not decisive",
+                                "definitive_causal_classification": None,
+                                "classification_decisive": False, "causal_classification_decisive": False,
+                                "non_decisive_reason": "applicable diagnostic outcomes disagree"})
             applicability.append({"attended_token": int(attended),
                 "applicable_cpp_rmsnorm_references": applicable,
                 "non_applicable_cpp_rmsnorm_references": [name for name in SIDE_SPECIFIC_CPP_ARITHMETIC_REFERENCES
                                                             if name not in applicable],
-                "applicable_reference_classification_agreement": agreement})
+                "applicable_reference_classification_agreement": causal_agreement,
+                "applicable_reference_diagnostic_outcome_agreement": diagnostic_agreement,
+                "applicable_reference_causal_classification_agreement": causal_agreement})
         result["python_targets"][target_name] = {
             "native_cpp_residual_reconstruction": native_rows,
             "native_residual_add_reconstruction": native_rows,
@@ -2920,6 +2964,20 @@ def post_attention_residual_three_factor_decomposition(sides, prefix, attended_t
         for row in rows] for matmul, rows in reference["router_matmul_references"].items()}
         for arithmetic, reference in target_report["references"].items()}
         for target, target_report in result["python_targets"].items()}
+    applicable_reports = [report for target_report in result["python_targets"].values()
+        for applicability in target_report["per_token_applicability"]
+        for name in applicability["applicable_cpp_rmsnorm_references"]
+        for rows in target_report["references"][name]["router_matmul_references"].values()
+        for row in rows if row["attended_token"] == applicability["attended_token"]
+        for report in row["softmax_references"].values()]
+    result["all_native_residual_paths_close_exactly"] = bool(applicable_reports) and all(
+        report["all_native_residual_paths_close_exactly"] for report in applicable_reports)
+    result["all_native_rmsnorm_paths_close_exactly"] = bool(applicable_reports) and all(
+        report["all_native_rmsnorm_paths_close_exactly"] for report in applicable_reports)
+    result["all_native_router_logit_paths_close_exactly"] = bool(applicable_reports) and all(
+        report["all_native_router_logit_paths_close_exactly"] for report in applicable_reports)
+    result["all_native_paths_close_exactly"] = bool(applicable_reports) and all(
+        report["all_native_paths_close_exactly"] for report in applicable_reports)
     result["status"] = "complete"
     return result
 
@@ -2933,45 +2991,62 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
     for target, target_report in analysis.get("python_targets", {}).items():
         results[target] = {}
         for applicability in target_report["per_token_applicability"]:
-            token = applicability["attended_token"]; classifications = []; minimal = []; reports = []
+            token = applicability["attended_token"]; minimal = []; reports = []
             for name in applicability["applicable_cpp_rmsnorm_references"]:
                 for rows in target_report["references"][name]["router_matmul_references"].values():
                     row = next(item for item in rows if item["attended_token"] == token)
                     for report in row["softmax_references"].values():
                         reports.append(report)
-                        classifications.append(report["classification"])
                         minimal.extend(report["minimal_sufficient_factor_sets"])
             has_applicable = bool(applicability["applicable_cpp_rmsnorm_references"])
-            agreement = (applicability["applicable_reference_classification_agreement"] and
-                         bool(reports) and len(set(classifications)) == 1)
-            every_decisive = bool(reports) and all(report["classification_decisive"] for report in reports)
-            decisive = has_applicable and agreement and every_decisive
+            diagnostic_agreement = (applicability.get("applicable_reference_diagnostic_outcome_agreement", False)
+                                    and bool(reports))
+            causal_agreement = (applicability.get("applicable_reference_causal_classification_agreement", False)
+                                and bool(reports))
+            structurally_valid = bool(reports) and all(report["structural_prerequisites_valid"] for report in reports)
+            endpoint_valid = bool(reports) and all(
+                report["native_python_endpoint_membership_reconstruction_valid"] for report in reports)
+            causal_decisive = has_applicable and causal_agreement and all(
+                report["causal_classification_decisive"] for report in reports)
             if not has_applicable: missing.append({"target": target, "attended_token": token})
-            if has_applicable and not agreement: disagreements.append({"target": target, "attended_token": token})
-            if has_applicable and not every_decisive: non_decisive.append({"target": target, "attended_token": token})
-            classification = classifications[0] if decisive else "analysis not decisive"
+            if has_applicable and not diagnostic_agreement: disagreements.append({"target": target, "attended_token": token})
+            if has_applicable and not causal_decisive: non_decisive.append({"target": target, "attended_token": token})
+            outcome = reports[0]["diagnostic_outcome"] if diagnostic_agreement else "analysis not decisive"
+            causal_classification = (reports[0]["definitive_causal_classification"]
+                                     if causal_decisive else None)
+            if not structurally_valid: reason = "structural prerequisites or exact native path closure failed"
+            elif not endpoint_valid: reason = "native Python operand endpoint does not reproduce captured Python routing membership"
+            elif not causal_agreement: reason = "applicable causal classifications disagree"
+            else: reason = None
             unique_minimal = []
             for item in minimal:
                 if item not in unique_minimal: unique_minimal.append(item)
-            results[target][token] = {"classification": classification,
-                "minimal_sufficient_factor_sets": unique_minimal if decisive else [],
+            results[target][token] = {"diagnostic_outcome": outcome,
+                "definitive_causal_classification": causal_classification,
+                "classification": outcome,
+                "minimal_sufficient_factor_sets": unique_minimal if causal_decisive else [],
                 "applicable_cpp_rmsnorm_references": applicability["applicable_cpp_rmsnorm_references"],
-                "applicable_reference_classification_agreement": agreement,
-                "all_applicable_reports_decisive": every_decisive,
-                "target_token_decisive": decisive}
+                "applicable_reference_diagnostic_outcome_agreement": diagnostic_agreement,
+                "applicable_reference_causal_classification_agreement": causal_agreement,
+                "target_token_structurally_valid": structurally_valid,
+                "native_python_endpoint_membership_reconstruction_valid": endpoint_valid,
+                "target_token_causally_decisive": causal_decisive,
+                "target_token_decisive": causal_decisive,
+                "non_decisive_reason": reason}
     tokens = set(results.get("default", {})) | set(results.get("math", {}))
     cross_python_classification = bool(tokens) and all(
-        results.get("default", {}).get(token, {}).get("target_token_decisive") and
-        results.get("math", {}).get(token, {}).get("target_token_decisive") and
-        results["default"][token]["classification"] == results["math"][token]["classification"]
+        results.get("default", {}).get(token, {}).get("target_token_causally_decisive") and
+        results.get("math", {}).get(token, {}).get("target_token_causally_decisive") and
+        results["default"][token]["definitive_causal_classification"] ==
+        results["math"][token]["definitive_causal_classification"]
         for token in tokens)
     cross_python_minimal = bool(tokens) and all(
-        results.get("default", {}).get(token, {}).get("target_token_decisive") and
-        results.get("math", {}).get(token, {}).get("target_token_decisive") and
+        results.get("default", {}).get(token, {}).get("target_token_causally_decisive") and
+        results.get("math", {}).get(token, {}).get("target_token_causally_decisive") and
         results["default"][token]["minimal_sufficient_factor_sets"] ==
         results["math"][token]["minimal_sufficient_factor_sets"] for token in tokens)
     all_target_tokens_decisive = bool(tokens) and not missing and not disagreements and not non_decisive and all(
-        row["target_token_decisive"] for target in results.values() for row in target.values())
+        row["target_token_causally_decisive"] for target in results.values() for row in target.values())
     cross_python = cross_python_classification and cross_python_minimal and all_target_tokens_decisive
     def reference_dimension_agreement(dimension):
         if not all_target_tokens_decisive: return False
