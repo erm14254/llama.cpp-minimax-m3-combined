@@ -21,6 +21,36 @@ EXTRACTOR_SPEC.loader.exec_module(EXTRACTOR)
 
 
 class ParityHarnessTests(unittest.TestCase):
+    def test_router_tensor_names_resolve_logical_and_physical_coordinates(self):
+        expected = {
+            (5, 10): ("model.layers.5.mlp.router.classifier.weight",
+                      "blk.10.ffn_gate_inp.weight"),
+            (6, 12): ("model.layers.6.mlp.router.classifier.weight",
+                      "blk.12.ffn_gate_inp.weight"),
+        }
+        for logical, physical in EXTRACTOR.LAYERS:
+            python_name = EXTRACTOR.resolve_tensor_name(
+                EXTRACTOR.DEFAULT_PYTHON_NAME_TEMPLATE, logical, physical)
+            gguf_name = EXTRACTOR.resolve_tensor_name(
+                EXTRACTOR.DEFAULT_GGUF_NAME_TEMPLATE, logical, physical)
+            self.assertEqual((python_name, gguf_name), expected[(logical, physical)])
+            self.assertEqual(EXTRACTOR.resolve_tensor_name(
+                "L{logical}-P{physical}-A{layer}", logical, physical),
+                f"L{logical}-P{physical}-A{logical}")
+        physical_source = np.zeros((3072, 384), np.float32)
+        canonical, transposed = EXTRACTOR.canonical_router_weight(physical_source)
+        self.assertEqual(canonical.shape, (384, 3072)); self.assertTrue(transposed)
+        for logical, physical in EXTRACTOR.LAYERS:
+            record = EXTRACTOR.make_weight_record(
+                logical, physical, "gguf",
+                EXTRACTOR.resolve_tensor_name(EXTRACTOR.DEFAULT_GGUF_NAME_TEMPLATE, logical, physical),
+                canonical, "BF16", transposed, "test.gguf")
+            self.assertEqual((record["logical_layer"], record["physical_even_block"]),
+                             (logical, physical))
+            self.assertEqual(record["name_template_coordinates"],
+                             {"logical": logical, "physical": physical, "layer_alias": logical})
+            self.assertTrue(record["source_was_transposed"])
+
     def test_enum_safe_gguf_router_tensor_types_and_metadata_label(self):
         gguf_path = Path(__file__).parents[1] / "gguf-py"
         sys.path.insert(0, str(gguf_path))

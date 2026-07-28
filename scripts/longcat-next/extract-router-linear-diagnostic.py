@@ -12,6 +12,13 @@ from pathlib import Path
 import numpy as np
 
 LAYERS = ((5, 10), (6, 12))
+DEFAULT_PYTHON_NAME_TEMPLATE = "model.layers.{logical}.mlp.router.classifier.weight"
+DEFAULT_GGUF_NAME_TEMPLATE = "blk.{physical}.ffn_gate_inp.weight"
+
+
+def resolve_tensor_name(template, logical, physical):
+    """Resolve documented logical/physical coordinates; ``layer`` aliases logical."""
+    return template.format(layer=logical, logical=logical, physical=physical)
 
 
 def canonical_router_weight(value, expert_count=384):
@@ -118,6 +125,8 @@ def deterministic_npz(path, arrays):
 def make_weight_record(logical, physical, source, name, value, source_dtype, transposed, location):
     return {"logical_layer": logical, "physical_even_block": physical, "source": source,
         "source_tensor_name": name, "source_location": location,
+        "name_template_coordinates": {"logical": logical, "physical": physical,
+                                      "layer_alias": logical},
         "canonical_tensor_orientation": "experts_by_hidden", "shape": list(value.shape),
         "source_dtype": source_dtype, "serialized_dtype": "float32",
         "source_was_transposed": transposed,
@@ -132,16 +141,16 @@ def main():
     parser.add_argument("--checkpoint-index", default="model.safetensors.index.json")
     parser.add_argument("--gguf", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--python-name-template", default="model.layers.{layer}.mlp.router.classifier.weight")
-    parser.add_argument("--gguf-name-template", default="blk.{layer}.ffn_gate_inp.weight")
+    parser.add_argument("--python-name-template", default=DEFAULT_PYTHON_NAME_TEMPLATE)
+    parser.add_argument("--gguf-name-template", default=DEFAULT_GGUF_NAME_TEMPLATE)
     args = parser.parse_args()
     index_path = args.checkpoint_dir / args.checkpoint_index
     index = json.loads(index_path.read_text(encoding="utf-8"))
     args.output_dir.mkdir(parents=True, exist_ok=True)
     arrays = {}; records = []; equivalence_records = []
     for logical, physical in LAYERS:
-        python_name = args.python_name_template.format(layer=logical)
-        gguf_name = args.gguf_name_template.format(layer=logical)
+        python_name = resolve_tensor_name(args.python_name_template, logical, physical)
+        gguf_name = resolve_tensor_name(args.gguf_name_template, logical, physical)
         py_raw, py_dtype, shard = safetensor_weight(args.checkpoint_dir, index, python_name)
         gg_raw, gg_type = gguf_weight(args.gguf, gguf_name)
         py, py_t = canonical_router_weight(py_raw); gg, gg_t = canonical_router_weight(gg_raw)
