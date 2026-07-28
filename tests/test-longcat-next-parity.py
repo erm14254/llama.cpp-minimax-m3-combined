@@ -952,6 +952,88 @@ class ParityHarnessTests(unittest.TestCase):
         self.assertFalse(summary["primary_oracle_locally_decisive"])
         self.assertEqual(summary["primary_oracle_localization_factors"], [])
 
+    def test_exact_reference_inventory_rejects_missing_unexpected_and_duplicate_coordinates(self):
+        pristine = self._equal_contract_residual_analysis()
+        for target in pristine["python_targets"].values():
+            inventory = PARITY.collect_applicable_residual_reference_reports(target, 1)
+            self.assertTrue(inventory["inventory_complete"])
+            self.assertEqual(inventory["missing_coordinates"], [])
+            self.assertEqual(inventory["unexpected_coordinates"], [])
+            self.assertEqual(inventory["duplicate_coordinates"], [])
+
+        def coordinates(target):
+            applicability = target["per_token_applicability"][0]
+            rmsnorm = applicability["applicable_cpp_rmsnorm_references"][0]
+            matmuls = target["references"][rmsnorm]["router_matmul_references"]
+            matmul = next(iter(matmuls)); rows = matmuls[matmul]
+            row = next(item for item in rows if item["attended_token"] == 1)
+            softmax = next(iter(row["softmax_references"]))
+            return applicability, rmsnorm, matmuls, matmul, rows, row, softmax
+
+        def missing_rmsnorm(target):
+            _, rmsnorm, *_ = coordinates(target); target["references"].pop(rmsnorm)
+        def missing_matmul(target):
+            _, _, matmuls, matmul, *_ = coordinates(target); matmuls.pop(matmul)
+        def missing_softmax(target):
+            *_, row, softmax = coordinates(target); row["softmax_references"].pop(softmax)
+        def missing_row(target):
+            _, _, _, _, rows, _, _ = coordinates(target); rows[:] = []
+        def duplicate_row(target):
+            _, _, _, _, rows, row, _ = coordinates(target); rows.append(copy.deepcopy(row))
+        def replace_matmul(target):
+            _, _, matmuls, matmul, *_ = coordinates(target); matmuls["unexpected_matmul"] = matmuls.pop(matmul)
+        def replace_softmax(target):
+            *_, row, softmax = coordinates(target)
+            row["softmax_references"]["unexpected_softmax"] = row["softmax_references"].pop(softmax)
+        def unknown_rmsnorm(target):
+            applicability, *_ = coordinates(target)
+            applicability["applicable_cpp_rmsnorm_references"].append("unknown_rmsnorm")
+        def extra_matmul(target):
+            _, _, matmuls, matmul, *_ = coordinates(target)
+            matmuls["unexpected_matmul"] = copy.deepcopy(matmuls[matmul])
+        def extra_softmax(target):
+            *_, row, softmax = coordinates(target)
+            row["softmax_references"]["unexpected_softmax"] = copy.deepcopy(
+                row["softmax_references"][softmax])
+
+        cases = ((missing_rmsnorm, "missing_rmsnorm_references"),
+                 (missing_matmul, "missing_coordinates"),
+                 (missing_softmax, "missing_coordinates"),
+                 (missing_row, "missing_token_rows"),
+                 (duplicate_row, "duplicate_token_rows"),
+                 (replace_matmul, "unexpected_coordinates"),
+                 (replace_softmax, "unexpected_coordinates"),
+                 (unknown_rmsnorm, "missing_rmsnorm_references"),
+                 (extra_matmul, "unexpected_coordinates"),
+                 (extra_softmax, "unexpected_coordinates"))
+        for mutate, expected_field in cases:
+            malformed = copy.deepcopy(pristine)
+            for target in malformed["python_targets"].values(): mutate(target)
+            for target in malformed["python_targets"].values():
+                inventory = PARITY.collect_applicable_residual_reference_reports(target, 1)
+                self.assertFalse(inventory["inventory_complete"], mutate.__name__)
+                self.assertTrue(inventory[expected_field], mutate.__name__)
+            summary = PARITY.primary_post_attention_residual_three_factor_summary([
+                {"physical_block": 10, "analysis": malformed},
+                {"physical_block": 12, "analysis": malformed}], 10)
+            for target_name in ("default", "math"):
+                row = summary["python_reference_results"][target_name][1]
+                self.assertFalse(row["applicable_reference_inventory_complete"], mutate.__name__)
+                self.assertFalse(row["target_token_causally_decisive"], mutate.__name__)
+                self.assertIsNone(row["definitive_causal_classification"])
+                self.assertEqual(row["minimal_sufficient_factor_sets"], [])
+                self.assertEqual(row["non_decisive_reason"],
+                                 "applicable reference evidence is incomplete")
+            self.assertFalse(summary["primary_oracle_locally_decisive"])
+            self.assertFalse(summary["sensitivity_control_locally_decisive"])
+            self.assertEqual(summary["primary_oracle_localization_factors"], [])
+            self.assertEqual(summary["sensitivity_control_localization_factors"], [])
+            self.assertIsNone(summary["global_definitive_result"])
+            self.assertFalse(summary["physical_block_12_remains_aligned_control"])
+            self.assertTrue(summary["physical_block_12_control_failure_reasons"])
+            self.assertTrue(any(not status["applicable_reference_inventory_complete"] for status in
+                                summary["physical_block_12_per_target_token_control_status"]))
+
     def test_same_broad_classification_with_different_minimal_sets_is_not_locally_decisive(self):
         control = self._equal_contract_residual_analysis()
         analysis = copy.deepcopy(control)

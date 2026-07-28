@@ -2666,6 +2666,64 @@ def canonical_minimal_factor_sets(factor_sets):
     return tuple(sorted(tuple(sorted(factor_set)) for factor_set in factor_sets))
 
 
+def collect_applicable_residual_reference_reports(target_report, attended_token):
+    """Collect an exact, non-throwing RMSNorm/matmul/softmax coordinate inventory."""
+    applicability_rows = [row for row in target_report.get("per_token_applicability", [])
+                          if row.get("attended_token") == attended_token]
+    applicable = list(applicability_rows[0].get("applicable_cpp_rmsnorm_references", [])) \
+        if len(applicability_rows) == 1 else []
+    expected_matmuls = set(DIAGNOSTIC_LINEAR_VARIANTS)
+    expected_softmaxes = set(DIAGNOSTIC_SOFTMAX_REFERENCES)
+    coordinate = lambda rmsnorm, matmul, softmax: (
+        f"rmsnorm={rmsnorm}|matmul={matmul}|softmax={softmax}|token={int(attended_token)}")
+    expected = {coordinate(rmsnorm, matmul, softmax)
+        for rmsnorm in applicable for matmul in expected_matmuls for softmax in expected_softmaxes}
+    observed_counts = {}; reports = []; missing_rmsnorm = []; missing_rows = []; duplicate_rows = []
+    unexpected_key_coordinates = set()
+    references = target_report.get("references", {})
+    for rmsnorm in applicable:
+        reference = references.get(rmsnorm)
+        if not isinstance(reference, dict):
+            missing_rmsnorm.append(rmsnorm); continue
+        matmuls = reference.get("router_matmul_references", {})
+        if not isinstance(matmuls, dict): matmuls = {}
+        for matmul, rows in matmuls.items():
+            if matmul not in expected_matmuls:
+                unexpected_key_coordinates.add(
+                    f"rmsnorm={rmsnorm}|matmul={matmul}|softmax=*|token={int(attended_token)}")
+            if not isinstance(rows, list): rows = []
+            token_rows = [row for row in rows if isinstance(row, dict) and
+                          row.get("attended_token") == attended_token]
+            row_id = f"rmsnorm={rmsnorm}|matmul={matmul}|token={int(attended_token)}"
+            if matmul in expected_matmuls:
+                if not token_rows: missing_rows.append(row_id)
+                if len(token_rows) > 1: duplicate_rows.append(row_id)
+            for row in token_rows:
+                softmaxes = row.get("softmax_references", {})
+                if not isinstance(softmaxes, dict): softmaxes = {}
+                for softmax, report in softmaxes.items():
+                    key = coordinate(rmsnorm, matmul, softmax)
+                    observed_counts[key] = observed_counts.get(key, 0) + 1
+                    if softmax not in expected_softmaxes: unexpected_key_coordinates.add(key)
+                    if matmul in expected_matmuls and softmax in expected_softmaxes:
+                        reports.append(report)
+    observed = set(observed_counts)
+    duplicate_coordinates = sorted(key for key, count in observed_counts.items() if count > 1)
+    missing_coordinates = sorted(expected - observed)
+    unexpected_coordinates = sorted((observed - expected) | unexpected_key_coordinates)
+    inventory_complete = bool(applicability_rows) and len(applicability_rows) == 1 and bool(applicable) and not any((
+        missing_coordinates, unexpected_coordinates, duplicate_coordinates, missing_rmsnorm,
+        missing_rows, duplicate_rows))
+    return {"reports": reports,
+        "expected_coordinates": sorted(expected), "observed_coordinates": sorted(observed),
+        "missing_coordinates": missing_coordinates, "unexpected_coordinates": unexpected_coordinates,
+        "duplicate_coordinates": duplicate_coordinates,
+        "missing_rmsnorm_references": sorted(set(missing_rmsnorm)),
+        "missing_token_rows": sorted(set(missing_rows)),
+        "duplicate_token_rows": sorted(set(duplicate_rows)),
+        "inventory_complete": inventory_complete}
+
+
 def _telescoping_stage_report(values, path_keys, target_delta, disputed_experts=None):
     terms = [np.asarray(values[right] - values[left], np.float32)
              for left, right in zip(path_keys, path_keys[1:])]
@@ -2945,12 +3003,13 @@ def post_attention_residual_three_factor_decomposition(sides, prefix, attended_t
             applicable = [name for name in SIDE_SPECIFIC_CPP_ARITHMETIC_REFERENCES
                 if next(iter(references[name]["router_matmul_references"].values()))[token][
                     "native_cpp_ffn_norm_exact_for_token"]]
-            reports = [report for name in applicable for rows in references[name]["router_matmul_references"].values()
-                for report in rows[token]["softmax_references"].values()]
+            applicability_seed = {"attended_token": int(attended),
+                "applicable_cpp_rmsnorm_references": applicable}
+            inventory = collect_applicable_residual_reference_reports(
+                {"references": references, "per_token_applicability": [applicability_seed]}, int(attended))
+            reports = inventory["reports"]
             diagnostic_agreement = bool(reports) and len({report["diagnostic_outcome"] for report in reports}) == 1
-            expected_report_count = (len(applicable) * len(DIAGNOSTIC_LINEAR_VARIANTS) *
-                                     len(DIAGNOSTIC_SOFTMAX_REFERENCES))
-            complete_reference_inventory = bool(reports) and len(reports) == expected_report_count
+            complete_reference_inventory = inventory["inventory_complete"]
             every_report_causal = complete_reference_inventory and all(
                 report["causal_classification_decisive"] for report in reports)
             classification_agreement = (every_report_causal and
@@ -2983,6 +3042,14 @@ def post_attention_residual_three_factor_decomposition(sides, prefix, attended_t
                 "applicable_reference_definitive_classification_agreement": classification_agreement,
                 "applicable_reference_minimal_factor_set_agreement": minimal_factor_set_agreement,
                 "applicable_reference_definitive_causal_evidence_agreement": causal_evidence_agreement,
+                "expected_applicable_reference_coordinates": inventory["expected_coordinates"],
+                "observed_applicable_reference_coordinates": inventory["observed_coordinates"],
+                "missing_applicable_reference_coordinates": inventory["missing_coordinates"],
+                "unexpected_applicable_reference_coordinates": inventory["unexpected_coordinates"],
+                "duplicate_applicable_reference_coordinates": inventory["duplicate_coordinates"],
+                "missing_applicable_rmsnorm_references": inventory["missing_rmsnorm_references"],
+                "missing_applicable_token_rows": inventory["missing_token_rows"],
+                "duplicate_applicable_token_rows": inventory["duplicate_token_rows"],
                 "applicable_reference_inventory_complete": complete_reference_inventory})
         result["python_targets"][target_name] = {
             "native_cpp_residual_reconstruction": native_rows,
@@ -3040,13 +3107,11 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
     for target, target_report in analysis.get("python_targets", {}).items():
         results[target] = {}
         for applicability in target_report["per_token_applicability"]:
-            token = applicability["attended_token"]; descriptive_minimal = []; reports = []
-            for name in applicability["applicable_cpp_rmsnorm_references"]:
-                for rows in target_report["references"][name]["router_matmul_references"].values():
-                    row = next(item for item in rows if item["attended_token"] == token)
-                    for report in row["softmax_references"].values():
-                        reports.append(report)
-                        descriptive_minimal.extend(report["minimal_sufficient_factor_sets"])
+            token = applicability["attended_token"]
+            inventory = collect_applicable_residual_reference_reports(target_report, token)
+            reports = inventory["reports"]
+            descriptive_minimal = [item for report in reports
+                                   for item in report.get("minimal_sufficient_factor_sets", [])]
             has_applicable = bool(applicability["applicable_cpp_rmsnorm_references"])
             diagnostic_agreement = (applicability.get("applicable_reference_diagnostic_outcome_agreement", False)
                                     and bool(reports))
@@ -3061,10 +3126,7 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
             causal_evidence_agreement = (applicability.get(
                 "applicable_reference_definitive_causal_evidence_agreement", False) and
                 classification_agreement and minimal_agreement)
-            expected_report_count = (len(applicability["applicable_cpp_rmsnorm_references"]) *
-                len(DIAGNOSTIC_LINEAR_VARIANTS) * len(DIAGNOSTIC_SOFTMAX_REFERENCES))
-            inventory_complete = (applicability.get("applicable_reference_inventory_complete", False) and
-                                  bool(reports) and len(reports) == expected_report_count)
+            inventory_complete = inventory["inventory_complete"]
             structurally_valid = bool(reports) and all(report["structural_prerequisites_valid"] for report in reports)
             endpoint_valid = bool(reports) and all(
                 report["native_python_endpoint_membership_reconstruction_valid"] for report in reports)
@@ -3102,6 +3164,14 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
                 "applicable_reference_definitive_classification_agreement": classification_agreement,
                 "applicable_reference_minimal_factor_set_agreement": minimal_agreement,
                 "applicable_reference_definitive_causal_evidence_agreement": causal_evidence_agreement,
+                "expected_applicable_reference_coordinates": inventory["expected_coordinates"],
+                "observed_applicable_reference_coordinates": inventory["observed_coordinates"],
+                "missing_applicable_reference_coordinates": inventory["missing_coordinates"],
+                "unexpected_applicable_reference_coordinates": inventory["unexpected_coordinates"],
+                "duplicate_applicable_reference_coordinates": inventory["duplicate_coordinates"],
+                "missing_applicable_rmsnorm_references": inventory["missing_rmsnorm_references"],
+                "missing_applicable_token_rows": inventory["missing_token_rows"],
+                "duplicate_applicable_token_rows": inventory["duplicate_token_rows"],
                 "applicable_reference_inventory_complete": inventory_complete,
                 "target_token_structurally_valid": structurally_valid,
                 "native_python_endpoint_membership_reconstruction_valid": endpoint_valid,
@@ -3133,7 +3203,7 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
             for arithmetic, reference in target_report["references"].items():
                 for matmul, rows in reference["router_matmul_references"].items():
                     for row in rows:
-                        if arithmetic not in applicable_by_token[row["attended_token"]]: continue
+                        if arithmetic not in applicable_by_token.get(row.get("attended_token"), set()): continue
                         for softmax, report in row["softmax_references"].items():
                             coordinates = {"rmsnorm": arithmetic, "matmul": matmul, "softmax": softmax}
                             key = (target, row["attended_token"], *(
@@ -3165,32 +3235,30 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
             for applicability in target_report["per_token_applicability"]:
                 token = applicability["attended_token"]
                 reasons = []
-                if not native[token]["cpp_native_exact"] or not native[token]["python_native_exact"]:
+                native_row = native.get(token, {})
+                if not native_row.get("cpp_native_exact", False) or not native_row.get("python_native_exact", False):
                     reasons.append("native residual reconstruction failed")
                 if not applicability["applicable_cpp_rmsnorm_references"]:
                     reasons.append("no applicable C++ RMSNorm reference")
-                reports = []
-                for name in applicability["applicable_cpp_rmsnorm_references"]:
-                    for rows in target_report["references"][name]["router_matmul_references"].values():
-                        row = next(item for item in rows if item["attended_token"] == token)
-                        for report in row["softmax_references"].values():
-                            reports.append(report)
-                            if not report["native_cpp_capture_membership_reconstruction_valid"]:
-                                reasons.append("native C++ capture membership reconstruction failed")
-                            if not report["native_python_capture_membership_reconstruction_valid"]:
-                                reasons.append("native Python capture membership reconstruction failed")
-                            if not report["coalitions"][cpp_key]["equals_captured_cpp_membership"]:
-                                reasons.append("native C++ coalition membership reconstruction failed")
-                            if not report["captured_topk_membership_reconstruction_valid"]:
-                                reasons.append("native captured top-k membership reconstruction failed")
-                            if not report["coalitions"][python_key]["equals_captured_python_membership"]:
-                                reasons.append("native Python coalition membership reconstruction failed")
-                            if not report["fixed_cpp_downstream_python_operand_endpoint_matches_python_membership"]:
-                                reasons.append("fixed-C++ Python operand endpoint reconstruction failed")
-                            if not report["all_native_paths_close_exactly"]:
-                                reasons.append("native path closure is not exact")
-                            if not report["classification_decisive"] or report["classification"] != "native outcomes already equal":
-                                reasons.append("applicable result is not decisively native-equal")
+                inventory = collect_applicable_residual_reference_reports(target_report, token)
+                reports = inventory["reports"]
+                for report in reports:
+                    if not report["native_cpp_capture_membership_reconstruction_valid"]:
+                        reasons.append("native C++ capture membership reconstruction failed")
+                    if not report["native_python_capture_membership_reconstruction_valid"]:
+                        reasons.append("native Python capture membership reconstruction failed")
+                    if not report["coalitions"][cpp_key]["equals_captured_cpp_membership"]:
+                        reasons.append("native C++ coalition membership reconstruction failed")
+                    if not report["captured_topk_membership_reconstruction_valid"]:
+                        reasons.append("native captured top-k membership reconstruction failed")
+                    if not report["coalitions"][python_key]["equals_captured_python_membership"]:
+                        reasons.append("native Python coalition membership reconstruction failed")
+                    if not report["fixed_cpp_downstream_python_operand_endpoint_matches_python_membership"]:
+                        reasons.append("fixed-C++ Python operand endpoint reconstruction failed")
+                    if not report["all_native_paths_close_exactly"]:
+                        reasons.append("native path closure is not exact")
+                    if not report["classification_decisive"] or report["classification"] != "native outcomes already equal":
+                        reasons.append("applicable result is not decisively native-equal")
                 if not applicability.get("applicable_reference_diagnostic_outcome_agreement", False):
                     reasons.append("applicable diagnostic outcomes disagree")
                 if not applicability.get("applicable_reference_causal_classification_agreement", False):
@@ -3199,15 +3267,15 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
                     reasons.append("applicable minimal sufficient factor sets disagree")
                 if not applicability.get("applicable_reference_definitive_causal_evidence_agreement", False):
                     reasons.append("applicable definitive causal evidence disagrees")
-                if not applicability.get("applicable_reference_inventory_complete", False):
+                if not inventory["inventory_complete"]:
                     reasons.append("applicable reference evidence is incomplete")
                 if not applicability.get("applicable_reference_classification_agreement", False):
                     reasons.append("legacy applicable classification agreement failed")
                 if not reports: reasons.append("no applicable downstream report")
                 reasons = list(dict.fromkeys(reasons))
                 status = {"python_target": target_name, "attended_token": token,
-                    "native_residual_reconstruction_valid": bool(native[token]["cpp_native_exact"] and
-                        native[token]["python_native_exact"]),
+                    "native_residual_reconstruction_valid": bool(native_row.get("cpp_native_exact", False) and
+                        native_row.get("python_native_exact", False)),
                     "applicable_cpp_rmsnorm_references": applicability["applicable_cpp_rmsnorm_references"],
                     "native_cpp_capture_membership_reconstruction_valid": bool(reports) and all(
                         report["native_cpp_capture_membership_reconstruction_valid"] for report in reports),
@@ -3224,6 +3292,15 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
                         "applicable_reference_minimal_factor_set_agreement", False),
                     "applicable_definitive_causal_evidence_agreement": applicability.get(
                         "applicable_reference_definitive_causal_evidence_agreement", False),
+                    "expected_applicable_reference_coordinates": inventory["expected_coordinates"],
+                    "observed_applicable_reference_coordinates": inventory["observed_coordinates"],
+                    "missing_applicable_reference_coordinates": inventory["missing_coordinates"],
+                    "unexpected_applicable_reference_coordinates": inventory["unexpected_coordinates"],
+                    "duplicate_applicable_reference_coordinates": inventory["duplicate_coordinates"],
+                    "missing_applicable_rmsnorm_references": inventory["missing_rmsnorm_references"],
+                    "missing_applicable_token_rows": inventory["missing_token_rows"],
+                    "duplicate_applicable_token_rows": inventory["duplicate_token_rows"],
+                    "applicable_reference_inventory_complete": inventory["inventory_complete"],
                     "all_native_paths_close_exactly": bool(reports) and all(
                         report["all_native_paths_close_exactly"] for report in reports),
                     "failure_reasons": reasons, "final_control_status": not reasons}
