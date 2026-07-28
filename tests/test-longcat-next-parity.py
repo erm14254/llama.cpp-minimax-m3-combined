@@ -249,8 +249,15 @@ class ParityHarnessTests(unittest.TestCase):
                     self.assertEqual(softmax["classification"], "analysis not decisive")
 
     def test_rmsnorm_distinct_weight_fallback_retains_four_combinations(self):
-        sides, weight, router_weight = self._rmsnorm_sides(1.0, 0.0, .1)
-        gguf = weight.copy(); gguf[0] += .25
+        sides, _, router_weight = self._rmsnorm_sides(1.0, 0.0, .1)
+        varied_input = np.linspace(.123, 2.789, 32, dtype=np.float32).reshape(1, 1, 32)
+        sides["cpp"]["physical_block_10__post_attention_residual"] = varied_input
+        sides["default"]["physical_block_10__post_attention_residual"] = varied_input.copy()
+        weight = np.linspace(.5001, 1.4999, 32, dtype=np.float32)
+        gguf = weight.copy()
+        audit = PARITY.norm_weight_epsilon_equivalence(weight, gguf, 1e-6, 1e-6)
+        self.assertTrue(audit["raw"]["exact_byte_equality"])
+        self.assertFalse(audit["operational_python_runtime_weight_equals_gguf"])
         report = PARITY.ffn_rmsnorm_block_decomposition(
             sides, "physical_block_10__", [0], weight, gguf, 1e-6, 1e-6, router_weight)
         fallback = report["distinct_weight_fallback"]
@@ -264,6 +271,37 @@ class ParityHarnessTests(unittest.TestCase):
                 for softmaxes in evidence["downstream_router_membership"].values():
                     self.assertEqual(set(softmaxes), set(PARITY.DIAGNOSTIC_SOFTMAX_REFERENCES))
                     self.assertEqual(len(softmaxes["stable_float32"][0]["selected_expert_set"]), 12)
+            gguf_case = combinations["cpp_input_gguf_weight"]
+            python_case = combinations["cpp_input_python_bf16_runtime_weight"]
+            self.assertEqual(gguf_case["operational_weight_dtype"], "float32")
+            self.assertFalse(gguf_case["weight_was_bf16_rounded_before_multiplication"])
+            self.assertEqual(gguf_case["epsilon_source"], "gguf")
+            self.assertEqual(python_case["operational_weight_dtype"],
+                             "bfloat16 represented as float32 values")
+            self.assertTrue(python_case["weight_was_bf16_rounded_before_multiplication"])
+            self.assertEqual(python_case["epsilon_source"], "python")
+            self.assertNotEqual(gguf_case["diagnostic_ffn_norm_sha256"],
+                                python_case["diagnostic_ffn_norm_sha256"])
+
+    def test_rmsnorm_operational_weight_contract_preserves_off_bf16_grid_values(self):
+        value = np.linspace(.123, 2.789, 32, dtype=np.float32).reshape(1, 32)
+        raw_weight = np.linspace(.5001, 1.4999, 32, dtype=np.float32)
+        rounded_weight = PARITY.bf16_round_to_float32(raw_weight)
+        self.assertFalse(np.array_equal(raw_weight, rounded_weight))
+        gguf, gguf_metadata = PARITY.diagnostic_rmsnorm_with_operational_weight(
+            value, raw_weight, 1e-6, "float32_rmsnorm_then_final_bf16",
+            "gguf_float32_runtime_weight")
+        python, python_metadata = PARITY.diagnostic_rmsnorm_with_operational_weight(
+            value, raw_weight, 1e-6, "float32_rmsnorm_then_final_bf16",
+            "python_bf16_runtime_weight")
+        self.assertFalse(np.array_equal(gguf, python))
+        self.assertEqual(gguf_metadata["operational_weight_dtype"], "float32")
+        self.assertFalse(gguf_metadata["weight_was_bf16_rounded_before_multiplication"])
+        self.assertEqual(gguf_metadata["operational_weight_sha256"],
+                         hashlib.sha256(raw_weight.tobytes()).hexdigest())
+        self.assertTrue(python_metadata["weight_was_bf16_rounded_before_multiplication"])
+        self.assertEqual(python_metadata["operational_weight_sha256"],
+                         hashlib.sha256(rounded_weight.tobytes()).hexdigest())
 
     def test_router_tensor_names_resolve_logical_and_physical_coordinates(self):
         expected = {

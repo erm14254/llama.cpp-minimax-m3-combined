@@ -1613,6 +1613,10 @@ def load_ffn_rmsnorm_artifacts(npz_path, metadata_path):
 
 RMSNORM_VARIANTS = ("python_bf16_input_bf16_weight_contract", "float32_rmsnorm_then_final_bf16",
                     "float64_reference_then_final_bf16")
+RMSNORM_OPERATIONAL_WEIGHT_CONTRACTS = (
+    "python_bf16_runtime_weight",
+    "gguf_float32_runtime_weight",
+)
 
 
 def is_exact_bf16_grid(value):
@@ -1657,6 +1661,49 @@ def diagnostic_rmsnorm(value, weight, epsilon, variant):
         "inverse_rms": np.asarray(inv_rms).reshape(-1).tolist(),
         "minimum_absolute_input": float(np.abs(x32).min(initial=np.inf)),
         "maximum_absolute_input": float(np.abs(x32).max(initial=0))}
+
+
+def diagnostic_rmsnorm_with_operational_weight(value, weight, epsilon, arithmetic_reference,
+                                                operational_weight_contract):
+    """Keep reduction arithmetic independent from the operational weight/multiply contract."""
+    x32 = np.asarray(value, np.float32); supplied_weight = np.asarray(weight, np.float32)
+    if x32.shape[-1] != supplied_weight.size:
+        raise ValueError("RMSNorm input/weight shape mismatch")
+    if arithmetic_reference == "float64_reference_then_final_bf16":
+        mean_square = np.mean(np.square(x32.astype(np.float64)), axis=-1, keepdims=True)
+        inv_rms = 1.0 / np.sqrt(mean_square + float(epsilon))
+        normalized32 = np.asarray(x32.astype(np.float64) * inv_rms, np.float32)
+    elif arithmetic_reference in (
+            "python_bf16_input_bf16_weight_contract", "float32_rmsnorm_then_final_bf16"):
+        square = np.asarray(x32 * x32, np.float32)
+        mean_square = np.mean(square, axis=-1, keepdims=True, dtype=np.float32)
+        inv_rms = np.asarray(1.0 / np.sqrt(
+            np.asarray(mean_square + np.float32(epsilon), np.float32)), np.float32)
+        normalized32 = np.asarray(x32 * inv_rms, np.float32)
+    else:
+        raise ValueError(f"unknown RMSNorm arithmetic reference {arithmetic_reference}")
+    if operational_weight_contract == "python_bf16_runtime_weight":
+        operational_weight = bf16_round_to_float32(supplied_weight)
+        normalized = bf16_round_to_float32(normalized32)
+        output = bf16_round_to_float32(np.asarray(normalized * operational_weight, np.float32))
+        dtype = "bfloat16 represented as float32 values"; rounded = True; epsilon_source = "python"
+    elif operational_weight_contract == "gguf_float32_runtime_weight":
+        operational_weight = supplied_weight
+        output = bf16_round_to_float32(np.asarray(normalized32 * operational_weight, np.float32))
+        dtype = "float32"; rounded = False; epsilon_source = "gguf"
+    else:
+        raise ValueError(f"unknown RMSNorm operational weight contract {operational_weight_contract}")
+    if not np.isfinite(output).all(): raise ValueError("non-finite diagnostic RMSNorm")
+    return output, {"mean_square": np.asarray(mean_square).reshape(-1).tolist(),
+        "inverse_rms": np.asarray(inv_rms).reshape(-1).tolist(),
+        "minimum_absolute_input": float(np.abs(x32).min(initial=np.inf)),
+        "maximum_absolute_input": float(np.abs(x32).max(initial=0)),
+        "normalization_arithmetic_reference": arithmetic_reference,
+        "operational_weight_contract": operational_weight_contract,
+        "operational_weight_dtype": dtype, "epsilon_source": epsilon_source,
+        "weight_was_bf16_rounded_before_multiplication": rounded,
+        "operational_weight_sha256": hashlib.sha256(
+            np.ascontiguousarray(operational_weight).tobytes()).hexdigest()}
 
 
 def norm_weight_epsilon_equivalence(python_weight, gguf_weight, python_epsilon, gguf_epsilon):
@@ -1912,15 +1959,20 @@ def ffn_rmsnorm_distinct_weight_fallback(sides, prefix, attended_tokens, python_
     cpp_bias, _, _ = constant_bias_reconstruction(sides["cpp"][prefix + "router_probabilities"],
         sides["cpp"][prefix + "router_selection_scores"], sides["cpp"][prefix + "router_topk_indices"], attended_tokens)
     py_runtime = bf16_round_to_float32(python_weight)
-    combinations = (("cpp_input_gguf_weight", "cpp", gguf_weight, np.float32(gguf_epsilon)),
-        ("python_input_gguf_weight", "default", gguf_weight, np.float32(gguf_epsilon)),
-        ("cpp_input_python_bf16_runtime_weight", "cpp", py_runtime, np.float32(python_epsilon)),
-        ("python_input_python_bf16_runtime_weight", "default", py_runtime, np.float32(python_epsilon)))
+    combinations = (("cpp_input_gguf_weight", "cpp", gguf_weight, np.float32(gguf_epsilon),
+                     "gguf_float32_runtime_weight"),
+        ("python_input_gguf_weight", "default", gguf_weight, np.float32(gguf_epsilon),
+         "gguf_float32_runtime_weight"),
+        ("cpp_input_python_bf16_runtime_weight", "cpp", py_runtime, np.float32(python_epsilon),
+         "python_bf16_runtime_weight"),
+        ("python_input_python_bf16_runtime_weight", "default", py_runtime, np.float32(python_epsilon),
+         "python_bf16_runtime_weight"))
     references = {}
     for norm_variant in RMSNORM_VARIANTS:
         combos = {}
-        for label, input_side, weight, epsilon in combinations:
-            candidate, scalar = diagnostic_rmsnorm(inputs[input_side], weight, epsilon, norm_variant)
+        for label, input_side, weight, epsilon, weight_contract in combinations:
+            candidate, scalar = diagnostic_rmsnorm_with_operational_weight(
+                inputs[input_side], weight, epsilon, norm_variant, weight_contract)
             comparisons = {name: {**_vector_metrics(candidate, outputs[name]),
                 "finite": bool(np.isfinite(candidate).all())} for name in ("cpp", "default")}
             downstream = {}
@@ -1941,6 +1993,14 @@ def ffn_rmsnorm_distinct_weight_fallback(sides, prefix, attended_tokens, python_
                     softmax_rows[softmax_name] = rows
                 downstream[matmul] = softmax_rows
             combos[label] = {"captured_ffn_norm_comparisons": comparisons, "norm_scalars": scalar,
+                "normalization_arithmetic_reference": norm_variant,
+                "operational_weight_contract": scalar["operational_weight_contract"],
+                "operational_weight_dtype": scalar["operational_weight_dtype"],
+                "epsilon_source": scalar["epsilon_source"],
+                "weight_was_bf16_rounded_before_multiplication": scalar[
+                    "weight_was_bf16_rounded_before_multiplication"],
+                "diagnostic_ffn_norm_sha256": hashlib.sha256(
+                    np.ascontiguousarray(candidate).tobytes()).hexdigest(),
                 "downstream_router_membership": downstream, "finite": bool(np.isfinite(candidate).all())}
         references[norm_variant] = combos
     return {"status": "weight-sensitive analysis required", "classification_is_causal": False,
