@@ -78,6 +78,20 @@ def safetensor_weight(checkpoint_dir, index, tensor_name):
     return np.ascontiguousarray(value, dtype=np.float32), source_dtype, path.name
 
 
+def validate_gguf_router_tensor_type(tensor_type):
+    """Return the stable enum name for a supported bounded router tensor type."""
+    from gguf.constants import GGMLQuantizationType
+    supported_types = {
+        GGMLQuantizationType.F32,
+        GGMLQuantizationType.F16,
+        GGMLQuantizationType.BF16,
+    }
+    if tensor_type not in supported_types:
+        name = getattr(tensor_type, "name", repr(tensor_type))
+        raise ValueError(f"bounded diagnostic extractor supports only F32/F16/BF16, got {name}")
+    return tensor_type.name
+
+
 def gguf_weight(path, tensor_name):
     repo = Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(repo / "gguf-py"))
@@ -87,10 +101,9 @@ def gguf_weight(path, tensor_name):
     tensor = next((item for item in reader.tensors if item.name == tensor_name), None)
     if tensor is None:
         raise KeyError(f"GGUF does not contain {tensor_name}")
-    kind = str(tensor.tensor_type).upper()
-    if not any(label in kind for label in ("F32", "F16", "BF16")):
-        raise ValueError(f"bounded diagnostic extractor supports only F32/F16/BF16, got {kind}")
-    value = np.asarray(dequantize(tensor.data, tensor.tensor_type), np.float32)
+    tensor_type = tensor.tensor_type
+    kind = validate_gguf_router_tensor_type(tensor_type)
+    value = np.asarray(dequantize(tensor.data, tensor_type), dtype=np.float32)
     return value, kind
 
 
@@ -100,6 +113,17 @@ def deterministic_npz(path, arrays):
             payload = io.BytesIO(); np.lib.format.write_array(payload, arrays[name], allow_pickle=False)
             info = zipfile.ZipInfo(name + ".npy", (1980, 1, 1, 0, 0, 0)); info.compress_type = zipfile.ZIP_DEFLATED
             archive.writestr(info, payload.getvalue())
+
+
+def make_weight_record(logical, physical, source, name, value, source_dtype, transposed, location):
+    return {"logical_layer": logical, "physical_even_block": physical, "source": source,
+        "source_tensor_name": name, "source_location": location,
+        "canonical_tensor_orientation": "experts_by_hidden", "shape": list(value.shape),
+        "source_dtype": source_dtype, "serialized_dtype": "float32",
+        "source_was_transposed": transposed,
+        "sha256": hashlib.sha256(value.tobytes()).hexdigest(),
+        "finite_audit": {"finite": bool(np.isfinite(value).all()),
+                         "element_count": int(value.size)}}
 
 
 def main():
@@ -124,17 +148,10 @@ def main():
         py = np.asarray(py, np.float32); gg = np.asarray(gg, np.float32)
         arrays[f"physical_block_{physical:02d}__python_weight"] = py
         arrays[f"physical_block_{physical:02d}__gguf_weight"] = gg
-        def record(source, name, value, source_dtype, transposed, location):
-            return {"logical_layer": logical, "physical_even_block": physical, "source": source,
-                "source_tensor_name": name, "source_location": location,
-                "canonical_tensor_orientation": "experts_by_hidden", "shape": list(value.shape),
-                "source_dtype": source_dtype, "serialized_dtype": "float32",
-                "source_was_transposed": transposed,
-                "sha256": hashlib.sha256(value.tobytes()).hexdigest(),
-                "finite_audit": {"finite": bool(np.isfinite(value).all()),
-                                 "element_count": int(value.size)}}
-        records += [record("python_checkpoint", python_name, py, py_dtype, py_t, shard),
-                    record("gguf", gguf_name, gg, gg_type, gg_t, args.gguf.name)]
+        records += [make_weight_record(logical, physical, "python_checkpoint", python_name,
+                                       py, py_dtype, py_t, shard),
+                    make_weight_record(logical, physical, "gguf", gguf_name,
+                                       gg, gg_type, gg_t, args.gguf.name)]
         equivalence_records.append({"logical_layer": logical, "physical_even_block": physical,
             "python_array_key": f"physical_block_{physical:02d}__python_weight",
             "gguf_array_key": f"physical_block_{physical:02d}__gguf_weight",

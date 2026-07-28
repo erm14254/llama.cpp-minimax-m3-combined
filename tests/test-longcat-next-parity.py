@@ -2,6 +2,7 @@
 import importlib.util
 import hashlib
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,6 +21,26 @@ EXTRACTOR_SPEC.loader.exec_module(EXTRACTOR)
 
 
 class ParityHarnessTests(unittest.TestCase):
+    def test_enum_safe_gguf_router_tensor_types_and_metadata_label(self):
+        gguf_path = Path(__file__).parents[1] / "gguf-py"
+        sys.path.insert(0, str(gguf_path))
+        try:
+            from gguf.constants import GGMLQuantizationType
+            for tensor_type, label in ((GGMLQuantizationType.F32, "F32"),
+                                       (GGMLQuantizationType.F16, "F16"),
+                                       (GGMLQuantizationType.BF16, "BF16")):
+                self.assertEqual(EXTRACTOR.validate_gguf_router_tensor_type(tensor_type), label)
+            with self.assertRaisesRegex(ValueError, "Q4_0"):
+                EXTRACTOR.validate_gguf_router_tensor_type(GGMLQuantizationType.Q4_0)
+            kind = EXTRACTOR.validate_gguf_router_tensor_type(GGMLQuantizationType.BF16)
+            record = EXTRACTOR.make_weight_record(
+                5, 10, "gguf", "blk.5.ffn_gate_inp.weight",
+                np.zeros((384, 512), np.float32), kind, False, "test.gguf")
+            self.assertEqual(record["source_dtype"], "BF16")
+            self.assertNotEqual(record["source_dtype"], str(GGMLQuantizationType.BF16))
+        finally:
+            sys.path.remove(str(gguf_path))
+
     def test_bounded_safetensor_reader_supports_bf16_and_f16(self):
         try:
             import torch
