@@ -57,6 +57,10 @@ class MiniMaxM2Model(TextModel):
 @ModelBase.register("MiniMaxM3SparseForCausalLM", "MiniMaxM3SparseForConditionalGeneration")
 class MiniMaxM3Model(MiniMaxM2Model):
     model_arch = gguf.MODEL_ARCH.MINIMAXM3
+    def tensor_force_quant(self, name, new_name, bid, n_dims):
+        if ".indexer." in new_name:
+            return gguf.GGMLQuantizationType.F32
+        return super().tensor_force_quant(name, new_name, bid, n_dims)
     def set_gguf_parameters(self):
         super().set_gguf_parameters()
 
@@ -135,15 +139,20 @@ class MiniMaxM3VisionModel(MmprojModel):
             yield new_name, tensor
 
     def _permute_vit_qk(self, t: "Tensor", new_name: str) -> "Tensor":
+        assert self.hparams_vision is not None
         n_head = self.hparams_vision["num_attention_heads"]
         d_head = t.shape[0] // n_head
         axis_dim = 2 * ((2 * (d_head // 2) // 3) // 2)
-        ah   = axis_dim // 2
+        ah = axis_dim // 2
         half = 3 * ah
-        perm = (list(range(0, ah))            + list(range(half,        half + ah)) +
-                list(range(ah, 2 * ah))       + list(range(half + ah,   half + 2*ah)) +
-                list(range(2 * ah, 3 * ah))   + list(range(half + 2*ah, half + 3*ah)) +
-                list(range(2 * half, d_head)))
+        perm = []
+        perm += list(range(0, ah))
+        perm += list(range(half, half + ah))
+        perm += list(range(ah, 2 * ah))
+        perm += list(range(half + ah, half + 2 * ah))
+        perm += list(range(2 * ah, 3 * ah))
+        perm += list(range(half + 2 * ah, half + 3 * ah))
+        perm += list(range(2 * half, d_head))
 
         assert axis_dim % 2 == 0
         assert 3 * axis_dim <= d_head
