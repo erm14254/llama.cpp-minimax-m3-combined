@@ -2666,6 +2666,25 @@ def canonical_minimal_factor_sets(factor_sets):
     return tuple(sorted(tuple(sorted(factor_set)) for factor_set in factor_sets))
 
 
+def validate_residual_reference_report(report, path):
+    malformed = []
+    if not isinstance(report, dict): return None, [path]
+    validators = {
+        "diagnostic_outcome": lambda value: isinstance(value, str),
+        "causal_classification_decisive": lambda value: isinstance(value, bool),
+        "definitive_causal_classification": lambda value: value is None or isinstance(value, str),
+        "structural_prerequisites_valid": lambda value: isinstance(value, bool),
+        "native_python_endpoint_membership_reconstruction_valid": lambda value: isinstance(value, bool),
+    }
+    for field, valid in validators.items():
+        if field not in report or not valid(report.get(field)): malformed.append(f"{path}.{field}")
+    factors = report.get("minimal_sufficient_factor_sets")
+    factors_valid = isinstance(factors, list) and all(isinstance(item, (list, tuple)) and
+        all(isinstance(factor, str) for factor in item) for item in factors)
+    if not factors_valid: malformed.append(f"{path}.minimal_sufficient_factor_sets")
+    return (report if not malformed else None), malformed
+
+
 def collect_applicable_residual_reference_reports(target_report, attended_token):
     """Collect an exact, non-throwing RMSNorm/matmul/softmax coordinate inventory."""
     malformed = []
@@ -2732,13 +2751,14 @@ def collect_applicable_residual_reference_reports(target_report, attended_token)
                     observed_counts[key] = observed_counts.get(key, 0) + 1
                     if softmax not in expected_softmaxes: unexpected_key_coordinates.add(key)
                     if matmul in expected_matmuls and softmax in expected_softmaxes:
-                        if isinstance(report, dict):
-                            reports.append(report)
+                        report_path = f"references.{rmsnorm}.{matmul}.{softmax}.report"
+                        safe_report, report_malformed = validate_residual_reference_report(report, report_path)
+                        malformed.extend(report_malformed)
+                        if safe_report is not None:
+                            reports.append(safe_report)
                             collected_reports.append({"coordinate": {"rmsnorm": rmsnorm,
                                 "matmul": matmul, "softmax": softmax,
-                                "attended_token": int(attended_token)}, "report": report})
-                        else: malformed.append(
-                            f"references.{rmsnorm}.{matmul}.{softmax}.report")
+                                "attended_token": int(attended_token)}, "report": safe_report})
     observed = set(observed_counts)
     duplicate_coordinates = sorted(key for key, count in observed_counts.items() if count > 1)
     missing_coordinates = sorted(expected - observed)
@@ -3361,6 +3381,8 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
     cross_matmul = reference_dimension_agreement("matmul", True)
     cross_softmax = reference_dimension_agreement("softmax", True)
     control_statuses = []; control_failure_reasons = []
+    control_target_inventory = {"expected": ["default", "math"], "observed": [],
+        "missing": ["default", "math"], "unexpected": [], "complete": False}
     def aligned_control():
         if control is None:
             control_failure_reasons.append("block-12 analysis is missing or incomplete"); return False
@@ -3378,7 +3400,31 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
                 "applicable_reference_inventory_complete": False, "final_control_status": False,
                 "failure_reasons": reasons})
             control_failure_reasons.extend(reasons); return False
+        expected_control_targets = {"default", "math"}
+        observed_control_targets = set(control_targets)
+        missing_control_targets = sorted(expected_control_targets - observed_control_targets)
+        unexpected_control_targets = sorted(str(name) for name in observed_control_targets - expected_control_targets)
+        control_target_inventory.update({"observed": sorted(str(name) for name in observed_control_targets),
+            "missing": missing_control_targets, "unexpected": unexpected_control_targets,
+            "complete": not missing_control_targets and not unexpected_control_targets})
+        for missing_target in missing_control_targets:
+            reasons = ["required block-12 Python target is missing", "applicable token inventory is incomplete",
+                       "applicable reference evidence is incomplete"]
+            control_statuses.append({"python_target": missing_target, "attended_token": None,
+                "attended_token_inventory_complete": False,
+                "applicable_reference_inventory_complete": False, "final_control_status": False,
+                "failure_reasons": reasons})
+            control_failure_reasons.extend(f"{missing_target}: {reason}" for reason in reasons)
+        for unexpected_target in unexpected_control_targets:
+            reasons = ["unexpected block-12 Python target", "applicable token inventory is incomplete",
+                       "applicable reference evidence is incomplete"]
+            control_statuses.append({"python_target": unexpected_target, "attended_token": None,
+                "attended_token_inventory_complete": False,
+                "applicable_reference_inventory_complete": False, "final_control_status": False,
+                "failure_reasons": reasons})
+            control_failure_reasons.extend(f"{unexpected_target}: {reason}" for reason in reasons)
         for target_name, raw_target_report in control_targets.items():
+            if target_name not in expected_control_targets: continue
             if not isinstance(raw_target_report, dict):
                 reasons = ["block-12 target report is malformed", "applicable token inventory is incomplete",
                            "applicable reference evidence is incomplete"]
@@ -3391,8 +3437,21 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
             python_key = target_report.get("native_python_coalition_key")
             native_rows = target_report.get("native_residual_add_reconstruction", [])
             if not isinstance(native_rows, list): native_rows = []
-            native = {row.get("attended_token"): row for row in native_rows if isinstance(row, dict)}
             token_inventory = collect_attended_token_inventory(target_report)
+            if not token_inventory["expected_attended_tokens"]:
+                reasons = ["block-12 target expected-token inventory is empty or malformed",
+                           "applicable token inventory is incomplete",
+                           "applicable reference evidence is incomplete"]
+                control_statuses.append({"python_target": target_name, "attended_token": None,
+                    **token_inventory, "applicable_reference_inventory_complete": False,
+                    "final_control_status": False, "failure_reasons": reasons})
+                control_failure_reasons.extend(f"{target_name}: {reason}" for reason in reasons); continue
+            expected_tokens = set(token_inventory["expected_attended_tokens"])
+            native = {}
+            for row in native_rows:
+                token_value = row.get("attended_token") if isinstance(row, dict) else None
+                if isinstance(token_value, int) and token_value in expected_tokens and token_value not in native:
+                    native[token_value] = row
             applicability_container = target_report.get("per_token_applicability", [])
             if not isinstance(applicability_container, list): applicability_container = []
             for token in token_inventory["expected_attended_tokens"]:
@@ -3493,7 +3552,10 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
                     "failure_reasons": reasons, "final_control_status": not reasons}
                 control_statuses.append(status)
                 control_failure_reasons.extend(f"{target_name} token {token}: {reason}" for reason in reasons)
-        return bool(control_statuses) and all(row["final_control_status"] for row in control_statuses)
+        emitted_required = all(any(row.get("python_target") == target and row.get("attended_token") is not None
+            for row in control_statuses) for target in expected_control_targets)
+        return bool(control_target_inventory["complete"] and emitted_required and control_statuses and
+                    all(row["final_control_status"] for row in control_statuses))
     control_ok = aligned_control()
     primary_shared = analysis.get("shared_component_prerequisite", {})
     if not isinstance(primary_shared, dict): primary_shared = {}
@@ -3574,6 +3636,11 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
         "physical_block_12_remains_aligned_control": control_ok,
         "physical_block_12_control_failure_reasons": control_failure_reasons,
         "physical_block_12_per_target_token_control_status": control_statuses,
+        "expected_block_12_python_targets": control_target_inventory["expected"],
+        "observed_block_12_python_targets": control_target_inventory["observed"],
+        "missing_block_12_python_targets": control_target_inventory["missing"],
+        "unexpected_block_12_python_targets": control_target_inventory["unexpected"],
+        "block_12_python_target_inventory_complete": control_target_inventory["complete"],
         "restrained_next_localization_targets": next_targets,
         "descriptive_candidate_next_localization_targets": candidate_targets,
         "native_residual_add_reconstruction_results": {target: report.get(

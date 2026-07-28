@@ -940,6 +940,45 @@ class ParityHarnessTests(unittest.TestCase):
         self.assertEqual(summary["definitive_localization_factors"], [])
         self.assertEqual(summary["restrained_next_localization_targets"], [])
 
+    def test_block12_requires_exact_nonempty_default_and_math_targets(self):
+        pristine = self._equal_contract_residual_analysis()
+        for missing_target in ("default", "math"):
+            control = copy.deepcopy(pristine); control["python_targets"].pop(missing_target)
+            summary = PARITY.primary_post_attention_residual_three_factor_summary([
+                {"physical_block": 10, "analysis": pristine},
+                {"physical_block": 12, "analysis": control}], 10)
+            self.assertFalse(summary["physical_block_12_remains_aligned_control"])
+            self.assertFalse(summary["block_12_python_target_inventory_complete"])
+            self.assertEqual(summary["missing_block_12_python_targets"], [missing_target])
+            status = next(row for row in summary["physical_block_12_per_target_token_control_status"]
+                          if row["python_target"] == missing_target)
+            self.assertIsNone(status["attended_token"])
+            self.assertIn("required block-12 Python target is missing", status["failure_reasons"])
+            self.assertIsNone(summary["global_definitive_result"])
+        for empty_target in ("default", "math"):
+            control = copy.deepcopy(pristine); control["python_targets"][empty_target] = {}
+            summary = PARITY.primary_post_attention_residual_three_factor_summary([
+                {"physical_block": 10, "analysis": pristine},
+                {"physical_block": 12, "analysis": control}], 10)
+            self.assertFalse(summary["physical_block_12_remains_aligned_control"])
+            status = next(row for row in summary["physical_block_12_per_target_token_control_status"]
+                          if row["python_target"] == empty_target)
+            self.assertIsNone(status["attended_token"])
+            self.assertFalse(status["attended_token_inventory_complete"])
+        control = copy.deepcopy(pristine)
+        control["python_targets"]["unexpected"] = control["python_targets"].pop("math")
+        summary = PARITY.primary_post_attention_residual_three_factor_summary([
+            {"physical_block": 10, "analysis": pristine}, {"physical_block": 12, "analysis": control}], 10)
+        self.assertEqual(summary["missing_block_12_python_targets"], ["math"])
+        self.assertEqual(summary["unexpected_block_12_python_targets"], ["unexpected"])
+        self.assertFalse(summary["physical_block_12_remains_aligned_control"])
+        control = copy.deepcopy(pristine)
+        control["python_targets"]["unexpected"] = copy.deepcopy(control["python_targets"]["default"])
+        summary = PARITY.primary_post_attention_residual_three_factor_summary([
+            {"physical_block": 10, "analysis": pristine}, {"physical_block": 12, "analysis": control}], 10)
+        self.assertFalse(summary["block_12_python_target_inventory_complete"])
+        self.assertFalse(summary["physical_block_12_remains_aligned_control"])
+
     def test_canonical_minimal_factor_sets_ignore_order_but_preserve_coalitions(self):
         left = [["block_input"], ["attention_output", "residual_add_contract"]]
         reordered = [["residual_add_contract", "attention_output"], ["block_input"]]
@@ -1158,6 +1197,63 @@ class ParityHarnessTests(unittest.TestCase):
             self.assertFalse(row["target_token_structurally_valid"])
             self.assertEqual(row["non_decisive_reason"], "applicable reference evidence is incomplete")
             self.assertIsNone(summary["global_definitive_result"])
+
+    def test_report_schema_validation_excludes_malformed_safe_reports(self):
+        pristine = self._equal_contract_residual_analysis()
+        def mutate_reports(analysis, operation):
+            for target in analysis["python_targets"].values():
+                name = target["per_token_applicability"][0]["applicable_cpp_rmsnorm_references"][0]
+                rows = next(iter(target["references"][name]["router_matmul_references"].values()))
+                operation(next(iter(rows[0]["softmax_references"].values())))
+        cases = []
+        for field in ("diagnostic_outcome", "causal_classification_decisive",
+                      "definitive_causal_classification", "minimal_sufficient_factor_sets",
+                      "structural_prerequisites_valid",
+                      "native_python_endpoint_membership_reconstruction_valid"):
+            cases.append((f"missing_{field}", lambda report, field=field: report.pop(field)))
+        cases.extend((("unhashable_classification", lambda report: report.update(
+                          {"definitive_causal_classification": ["malformed"]})),
+                      ("malformed_factor_container", lambda report: report.update(
+                          {"minimal_sufficient_factor_sets": {"block_input"}})),
+                      ("malformed_factor_entry", lambda report: report.update(
+                          {"minimal_sufficient_factor_sets": [["block_input", 7]]}))))
+        for label, operation in cases:
+            malformed = copy.deepcopy(pristine); mutate_reports(malformed, operation)
+            summary = PARITY.primary_post_attention_residual_three_factor_summary([
+                {"physical_block": 10, "analysis": malformed},
+                {"physical_block": 12, "analysis": malformed}], 10)
+            for target_name in ("default", "math"):
+                row = summary["python_reference_results"][target_name][1]
+                self.assertFalse(row["applicable_reference_inventory_complete"], label)
+                self.assertEqual(row["non_decisive_reason"],
+                                 "applicable reference evidence is incomplete")
+                self.assertTrue(row["malformed_inventory_paths"])
+            self.assertFalse(summary["cross_rmsnorm_diagnostic_outcome_agreement"])
+            self.assertFalse(summary["cross_router_matmul_diagnostic_outcome_agreement"])
+            self.assertFalse(summary["cross_router_softmax_diagnostic_outcome_agreement"])
+            self.assertFalse(summary["physical_block_12_remains_aligned_control"])
+            self.assertIsNone(summary["global_definitive_result"])
+
+    def test_native_residual_token_identities_are_safely_normalized(self):
+        pristine = self._equal_contract_residual_analysis()
+        mutations = (
+            lambda row: row.update({"attended_token": [1]}),
+            lambda row: row.update({"attended_token": "1"}),
+            lambda row: row.update({"attended_token": None}),
+            lambda row: row.pop("attended_token"),
+            lambda row: row.update({"attended_token": 99}),
+        )
+        for mutate in mutations:
+            malformed = copy.deepcopy(pristine)
+            for target in malformed["python_targets"].values():
+                mutate(target["native_residual_add_reconstruction"][0])
+            summary = PARITY.primary_post_attention_residual_three_factor_summary([
+                {"physical_block": 10, "analysis": malformed},
+                {"physical_block": 12, "analysis": malformed}], 10)
+            self.assertFalse(summary["physical_block_12_remains_aligned_control"])
+            self.assertIsNone(summary["global_definitive_result"])
+            self.assertTrue(all(not inventory["attended_token_inventory_complete"] for inventory in
+                                summary["target_attended_token_inventories"].values()))
 
     def test_malformed_reference_containers_are_non_throwing_inventory_failures(self):
         pristine = self._equal_contract_residual_analysis()
