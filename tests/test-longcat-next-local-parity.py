@@ -1617,6 +1617,11 @@ RMSNORM_OPERATIONAL_WEIGHT_CONTRACTS = (
     "python_bf16_runtime_weight",
     "gguf_float32_runtime_weight",
 )
+SIDE_SPECIFIC_CPP_ARITHMETIC_REFERENCES = (
+    "float32_reduction_f32_normalized_f32_multiply_final_bf16",
+    "float64_reduction_f32_normalized_f32_multiply_final_bf16",
+    "float64_reduction_f64_normalized_f64_multiply_cast_f32_final_bf16",
+)
 
 
 def is_exact_bf16_grid(value):
@@ -1669,17 +1674,26 @@ def diagnostic_rmsnorm_with_operational_weight(value, weight, epsilon, arithmeti
     x32 = np.asarray(value, np.float32); supplied_weight = np.asarray(weight, np.float32)
     if x32.shape[-1] != supplied_weight.size:
         raise ValueError("RMSNorm input/weight shape mismatch")
-    if arithmetic_reference == "float64_reference_then_final_bf16":
+    if arithmetic_reference in ("float64_reference_then_final_bf16",
+            "float64_reduction_f32_normalized_f32_multiply_final_bf16"):
         mean_square = np.mean(np.square(x32.astype(np.float64)), axis=-1, keepdims=True)
         inv_rms = 1.0 / np.sqrt(mean_square + float(epsilon))
         normalized32 = np.asarray(x32.astype(np.float64) * inv_rms, np.float32)
+        normalized64 = None
+    elif arithmetic_reference == "float64_reduction_f64_normalized_f64_multiply_cast_f32_final_bf16":
+        mean_square = np.mean(np.square(x32.astype(np.float64)), axis=-1, keepdims=True)
+        inv_rms = 1.0 / np.sqrt(mean_square + float(epsilon))
+        normalized64 = x32.astype(np.float64) * inv_rms
+        normalized32 = np.asarray(normalized64, np.float32)
     elif arithmetic_reference in (
-            "python_bf16_input_bf16_weight_contract", "float32_rmsnorm_then_final_bf16"):
+            "python_bf16_input_bf16_weight_contract", "float32_rmsnorm_then_final_bf16",
+            "float32_reduction_f32_normalized_f32_multiply_final_bf16"):
         square = np.asarray(x32 * x32, np.float32)
         mean_square = np.mean(square, axis=-1, keepdims=True, dtype=np.float32)
         inv_rms = np.asarray(1.0 / np.sqrt(
             np.asarray(mean_square + np.float32(epsilon), np.float32)), np.float32)
         normalized32 = np.asarray(x32 * inv_rms, np.float32)
+        normalized64 = None
     else:
         raise ValueError(f"unknown RMSNorm arithmetic reference {arithmetic_reference}")
     if operational_weight_contract == "python_bf16_runtime_weight":
@@ -1689,7 +1703,11 @@ def diagnostic_rmsnorm_with_operational_weight(value, weight, epsilon, arithmeti
         dtype = "bfloat16 represented as float32 values"; rounded = True; epsilon_source = "python"
     elif operational_weight_contract == "gguf_float32_runtime_weight":
         operational_weight = supplied_weight
-        output = bf16_round_to_float32(np.asarray(normalized32 * operational_weight, np.float32))
+        if arithmetic_reference == "float64_reduction_f64_normalized_f64_multiply_cast_f32_final_bf16":
+            output = bf16_round_to_float32(np.asarray(
+                normalized64 * operational_weight.astype(np.float64), np.float32))
+        else:
+            output = bf16_round_to_float32(np.asarray(normalized32 * operational_weight, np.float32))
         dtype = "float32"; rounded = False; epsilon_source = "gguf"
     else:
         raise ValueError(f"unknown RMSNorm operational weight contract {operational_weight_contract}")
@@ -2302,13 +2320,30 @@ def ffn_rmsnorm_side_specific_contract_decomposition(sides, prefix, attended_tok
     f_python = {side: diagnostic_rmsnorm_with_operational_weight(inputs[side], py_weight,
         np.float32(python_epsilon), "python_bf16_input_bf16_weight_contract",
         "python_bf16_runtime_weight")[0] for side in ("cpp", "default")}
-    cpp_variants = ("float32_rmsnorm_then_final_bf16", "float64_reference_then_final_bf16")
+    cpp_variants = SIDE_SPECIFIC_CPP_ARITHMETIC_REFERENCES
     for cpp_arithmetic in cpp_variants:
         f_cpp = {side: diagnostic_rmsnorm_with_operational_weight(inputs[side], gguf_weight,
             np.float32(gguf_epsilon), cpp_arithmetic, "gguf_float32_runtime_weight")[0]
             for side in ("cpp", "default")}
-        native_cpp_exact = bool(np.array_equal(f_cpp["cpp"], outputs["cpp"]))
-        native_python_exact = bool(np.array_equal(f_python["default"], outputs["default"]))
+        cpp_native_by_token = []
+        python_native_by_token = []
+        for token, attended in enumerate(attended_tokens):
+            cpp_difference = np.asarray(f_cpp["cpp"][token] - outputs["cpp"][token], np.float32)
+            python_difference = np.asarray(f_python["default"][token] - outputs["default"][token], np.float32)
+            cpp_native_by_token.append({"attended_token": int(attended),
+                "native_cpp_ffn_norm_exact_for_token": bool(np.array_equal(
+                    f_cpp["cpp"][token], outputs["cpp"][token])),
+                "native_cpp_ffn_norm_maximum_absolute_error_for_token": float(
+                    np.abs(cpp_difference).max(initial=0)),
+                "native_cpp_ffn_norm_rms_error_for_token": float(np.sqrt(np.mean(
+                    np.square(cpp_difference, dtype=np.float64))))})
+            python_native_by_token.append({"attended_token": int(attended),
+                "native_python_ffn_norm_exact_for_token": bool(np.array_equal(
+                    f_python["default"][token], outputs["default"][token])),
+                "native_python_ffn_norm_maximum_absolute_error_for_token": float(
+                    np.abs(python_difference).max(initial=0)),
+                "native_python_ffn_norm_rms_error_for_token": float(np.sqrt(np.mean(
+                    np.square(python_difference, dtype=np.float64))))})
         captured_delta = np.asarray(outputs["cpp"] - outputs["default"], np.float32)
         paths = {"input_first": {
                 "input_effect_under_cpp_contract": np.asarray(f_cpp["cpp"] - f_cpp["default"], np.float32),
@@ -2334,6 +2369,8 @@ def ffn_rmsnorm_side_specific_contract_decomposition(sides, prefix, attended_tok
                 captured_delta, router_weight, matmul), np.float32)
             rows = []
             for token, attended in enumerate(attended_tokens):
+                cpp_token_exact = cpp_native_by_token[token]["native_cpp_ffn_norm_exact_for_token"]
+                python_token_exact = python_native_by_token[token]["native_python_ffn_norm_exact_for_token"]
                 candidates = {"native_cpp": f_cpp["cpp"][token],
                     "python_input_only": f_cpp["default"][token],
                     "python_contract_only": f_python["cpp"][token],
@@ -2352,20 +2389,23 @@ def ffn_rmsnorm_side_specific_contract_decomposition(sides, prefix, attended_tok
                             "finite": bool(np.isfinite(candidate_logits).all())}
                     captured_membership_valid = (native_probability_sets["cpp"][token] == captured_sets["cpp"][token]
                         and native_probability_sets["default"][token] == captured_sets["default"][token])
-                    decisive = (native_cpp_exact and native_python_exact and captured_membership_valid and
+                    decisive = (cpp_token_exact and python_token_exact and captured_membership_valid and
                         coalitions["native_cpp"]["equals_captured_native_cpp"] and
                         coalitions["native_python"]["equals_captured_native_python"] and
                         all(row["finite"] for row in coalitions.values()))
                     softmaxes[softmax_name] = {"coalitions": coalitions,
-                        "native_cpp_ffn_norm_reconstruction_valid": native_cpp_exact,
-                        "native_python_ffn_norm_reconstruction_valid": native_python_exact,
+                        "reference_applicable_to_token": cpp_token_exact,
+                        "native_cpp_ffn_norm_reconstruction_valid": cpp_token_exact,
+                        "native_python_ffn_norm_reconstruction_valid": python_token_exact,
                         "captured_topk_membership_reconstruction_valid": captured_membership_valid,
                         "classification_decisive": decisive,
-                        "classification": classify_side_specific_rmsnorm(
+                        "classification": (classify_side_specific_rmsnorm(
                             captured_sets["cpp"][token] == captured_sets["default"][token], decisive,
                             coalitions["python_input_only"]["equals_captured_native_python"],
                             coalitions["python_contract_only"]["equals_captured_native_python"],
-                            coalitions["native_python"]["equals_captured_native_python"])}
+                            coalitions["native_python"]["equals_captured_native_python"])
+                            if cpp_token_exact else
+                            "analysis not decisive — native C++ surface not reconstructed")}
                 projected_terms = {path: {name: diagnostic_router_linear(value[token:token+1],
                     router_weight, matmul)[0] for name, value in terms.items()} for path, terms in paths.items()}
                 closure_if = captured_logit_delta[token] - sum(projected_terms["input_first"].values()) - remaining_linear[token]
@@ -2404,22 +2444,31 @@ def ffn_rmsnorm_side_specific_contract_decomposition(sides, prefix, attended_tok
                     "router_projected_path_decomposition": projected_report})
             matmuls[matmul] = rows
         result["cpp_arithmetic_references"][cpp_arithmetic] = {
-            "native_cpp_ffn_norm_reconstruction_valid": native_cpp_exact,
-            "native_python_ffn_norm_reconstruction_valid": native_python_exact,
+            "native_cpp_ffn_norm_reconstruction_by_token": cpp_native_by_token,
+            "native_python_ffn_norm_reconstruction_by_token": python_native_by_token,
             "exact_path_decompositions": path_reports, "router_matmul_references": matmuls}
     # A side-specific classification is decisive only if every required arithmetic,
     # matmul, and softmax diagnostic reaches the same categorical result.
     for token_index, _ in enumerate(attended_tokens):
-        reports = [softmax_report
-            for reference in result["cpp_arithmetic_references"].values()
+        named_reports = [(name, softmax_report)
+            for name, reference in result["cpp_arithmetic_references"].items()
             for rows in reference["router_matmul_references"].values()
             for softmax_report in rows[token_index]["softmax_references"].values()]
-        original = [report["classification"] for report in reports]
-        agreement = len(set(original)) == 1
-        for report in reports:
+        applicable_names = sorted({name for name, report in named_reports
+            if report["reference_applicable_to_token"]})
+        non_applicable_names = sorted(set(result["cpp_arithmetic_references"]) - set(applicable_names))
+        applicable_reports = [report for _, report in named_reports if report["reference_applicable_to_token"]]
+        original = [report["classification"] for report in applicable_reports]
+        agreement = bool(applicable_reports) and len(set(original)) == 1
+        result.setdefault("per_token_applicability", []).append({
+            "attended_token": int(attended_tokens[token_index]),
+            "applicable_cpp_arithmetic_references": applicable_names,
+            "non_applicable_cpp_arithmetic_references": non_applicable_names,
+            "applicable_reference_classification_agreement": agreement})
+        for _, report in named_reports:
             report["classification_before_required_reference_agreement"] = report["classification"]
-            report["required_reference_classification_agreement"] = agreement
-            if not agreement:
+            report["applicable_reference_classification_agreement"] = agreement
+            if report["reference_applicable_to_token"] and not agreement:
                 report["classification_decisive"] = False
                 report["classification"] = "analysis not decisive"
     result["status"] = "complete"
@@ -2431,7 +2480,7 @@ def primary_side_specific_rmsnorm_summary(block_reports, primary_block):
     control = next((row for row in block_reports if row["physical_block"] == 12), None)
     if selected is None: return None
     analysis = selected["analysis"]
-    classifications = {}; input_tokens = set(); contract_tokens = set(); both_tokens = set()
+    descriptive = {}; applicable_results = {}; input_tokens = set(); contract_tokens = set(); both_tokens = set()
     all_decisive = True
     if analysis.get("status") == "complete":
         for arithmetic, reference in analysis["cpp_arithmetic_references"].items():
@@ -2439,16 +2488,22 @@ def primary_side_specific_rmsnorm_summary(block_reports, primary_block):
                 for row in rows:
                     for softmax, report in row["softmax_references"].items():
                         token = row["attended_token"]
-                        classification = report.get(
+                        descriptive_classification = report.get(
                             "classification_before_required_reference_agreement", report["classification"])
-                        classifications.setdefault(token, {}).setdefault(arithmetic, {}).setdefault(matmul, {})[
+                        if not report["reference_applicable_to_token"]:
+                            descriptive.setdefault(token, {}).setdefault(arithmetic, {}).setdefault(matmul, {})[
+                                softmax] = descriptive_classification
+                            continue
+                        classification = report["classification"]
+                        applicable_results.setdefault(token, {}).setdefault(arithmetic, {}).setdefault(matmul, {})[
                             softmax] = classification
                         all_decisive &= report["classification_decisive"]
-                        if classification == "pre-norm input component sufficient": input_tokens.add(token)
-                        if classification == "RMSNorm operational-contract component sufficient": contract_tokens.add(token)
-                        if classification == "requires both components": both_tokens.add(token)
+                        if report["classification_decisive"]:
+                            if classification == "pre-norm input component sufficient": input_tokens.add(token)
+                            if classification == "RMSNorm operational-contract component sufficient": contract_tokens.add(token)
+                            if classification == "requires both components": both_tokens.add(token)
     def cross_cpp_agrees():
-        for token, arithmetic in classifications.items():
+        for token, arithmetic in applicable_results.items():
             matmuls = {name for refs in arithmetic.values() for name in refs}
             softmaxes = {name for refs in arithmetic.values() for values in refs.values() for name in values}
             for matmul in matmuls:
@@ -2459,38 +2514,55 @@ def primary_side_specific_rmsnorm_summary(block_reports, primary_block):
         return True
     def cross_matmul_agrees():
         return all(len({softmaxes[softmax] for softmaxes in matmuls.values() if softmax in softmaxes}) == 1
-            for arithmetic in classifications.values() for matmuls in arithmetic.values()
+            for arithmetic in applicable_results.values() for matmuls in arithmetic.values()
             for softmax in {name for values in matmuls.values() for name in values})
     def cross_softmax_agrees():
-        return all(len(set(softmaxes.values())) == 1 for arithmetic in classifications.values()
+        return all(len(set(softmaxes.values())) == 1 for arithmetic in applicable_results.values()
             for matmuls in arithmetic.values() for softmaxes in matmuls.values())
     cross_cpp = cross_cpp_agrees(); cross_matmul = cross_matmul_agrees()
     cross_softmax = cross_softmax_agrees()
     def control_aligned():
         if control is None or control["analysis"].get("status") != "complete": return False
+        for applicability in control["analysis"].get("per_token_applicability", []):
+            if not applicability["applicable_cpp_arithmetic_references"]: return False
+            if not applicability["applicable_reference_classification_agreement"]: return False
         for reference in control["analysis"]["cpp_arithmetic_references"].values():
             for rows in reference["router_matmul_references"].values():
                 for row in rows:
                     for report in row["softmax_references"].values():
-                        if not report["classification_decisive"] or report["classification"] != "native outcomes already equal":
+                        if not report["reference_applicable_to_token"]: continue
+                        if (not report["captured_topk_membership_reconstruction_valid"] or
+                                not report["native_python_ffn_norm_reconstruction_valid"] or
+                                not report["classification_decisive"] or
+                                report["classification"] != "native outcomes already equal"):
                             return False
         return True
     control_ok = control_aligned()
     conclusion = None
+    affected = sorted(token for token, arithmetic in applicable_results.items()
+        if any(value != "native outcomes already equal" for matmuls in arithmetic.values()
+               for softmaxes in matmuls.values() for value in softmaxes.values()))
     if (all_decisive and cross_cpp and cross_matmul and cross_softmax and control_ok and
-            input_tokens == {1} and both_tokens == {3} and not contract_tokens):
+            set(affected) == {1, 3} and input_tokens == {1, 3} and not both_tokens and not contract_tokens):
+        conclusion = ("Block-10 tokens 1 and 3 are caused by inherited pre-norm input drift. "
+            "The side-specific RMSNorm operational-contract substitution is not required to restore either "
+            "affected routing membership. A router change is not justified. An RMSNorm-contract change is not "
+            "justified by this capture. The next strict-parity localization target is "
+            "physical_block_10__post_attention_residual = block_input + attention_output. "
+            "The earlier token-3 ‘requires both’ result came from treating the nonlinear RMSNorm contract "
+            "difference as an additive residual transferable between inputs. The side-specific non-additive "
+            "coalition supersedes that result.")
+    elif (all_decisive and cross_cpp and cross_matmul and cross_softmax and control_ok and
+            set(affected) == {1, 3} and input_tokens == {1} and both_tokens == {3} and not contract_tokens):
         conclusion = ("Block-10 token 1 is caused by inherited pre-norm input drift. "
             "Block-10 token 3 is jointly caused by inherited pre-norm input drift and the Python-versus-C++ "
             "RMSNorm intermediate-rounding contract. A router change is not justified. An RMSNorm-only change "
             "would not by itself restore complete block-10 parity.")
-    affected = sorted(token for token, arithmetic in classifications.items()
-        if any(value != "native outcomes already equal" for matmuls in arithmetic.values()
-               for softmaxes in matmuls.values() for value in softmaxes.values()))
     native_reconstructions = {arithmetic: {
-        "native_cpp_ffn_norm_reconstruction_valid": reference[
-            "native_cpp_ffn_norm_reconstruction_valid"],
-        "native_python_ffn_norm_reconstruction_valid": reference[
-            "native_python_ffn_norm_reconstruction_valid"]}
+        "native_cpp_ffn_norm_reconstruction_by_token": reference[
+            "native_cpp_ffn_norm_reconstruction_by_token"],
+        "native_python_ffn_norm_reconstruction_by_token": reference[
+            "native_python_ffn_norm_reconstruction_by_token"]}
         for arithmetic, reference in analysis.get("cpp_arithmetic_references", {}).items()}
     exact_paths = {arithmetic: reference["exact_path_decompositions"]
         for arithmetic, reference in analysis.get("cpp_arithmetic_references", {}).items()}
@@ -2499,13 +2571,15 @@ def primary_side_specific_rmsnorm_summary(block_reports, primary_block):
         for matmul, rows in reference["router_matmul_references"].items()}
         for arithmetic, reference in analysis.get("cpp_arithmetic_references", {}).items()}
     return {"physical_block": primary_block, "affected_attended_tokens": affected,
-        "native_side_matched_reconstructions_required": True, "per_reference_classifications": classifications,
+        "native_side_matched_reconstructions_required": True,
+        "applicable_reference_results": applicable_results,
+        "descriptive_non_applicable_reference_results": descriptive,
         "native_side_matched_reconstruction_results": native_reconstructions,
         "cross_cpp_arithmetic_agreement": cross_cpp, "cross_router_matmul_agreement": cross_matmul,
         "cross_router_softmax_agreement": cross_softmax,
-        "tokens_explained_by_pre_norm_input": sorted(input_tokens),
-        "tokens_explained_by_operational_contract": sorted(contract_tokens),
-        "tokens_requiring_both": sorted(both_tokens),
+        "decisive_tokens_explained_by_pre_norm_input": sorted(input_tokens),
+        "decisive_tokens_explained_by_operational_contract": sorted(contract_tokens),
+        "decisive_tokens_requiring_both": sorted(both_tokens),
         "physical_block_12_remains_aligned_control": control_ok,
         "exact_path_decompositions": exact_paths,
         "router_projected_path_decompositions": router_paths,

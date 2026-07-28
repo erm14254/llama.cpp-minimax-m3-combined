@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import importlib.util
+import copy
 import hashlib
 import json
 import sys
@@ -337,9 +338,10 @@ class ParityHarnessTests(unittest.TestCase):
         report = PARITY.ffn_rmsnorm_side_specific_contract_decomposition(
             sides, "physical_block_10__", [1], weight, weight.copy(), 1e-6, 1e-6, router_weight)
         self.assertEqual(report["status"], "complete")
+        self.assertTrue(report["per_token_applicability"][0]["applicable_cpp_arithmetic_references"])
         for reference in report["cpp_arithmetic_references"].values():
-            self.assertTrue(reference["native_cpp_ffn_norm_reconstruction_valid"])
-            self.assertTrue(reference["native_python_ffn_norm_reconstruction_valid"])
+            self.assertTrue(reference["native_python_ffn_norm_reconstruction_by_token"][0][
+                "native_python_ffn_norm_exact_for_token"])
             paths = reference["exact_path_decompositions"][0]
             self.assertLess(paths["input_first"]["exact_closure_rms"], 1e-6)
             self.assertLess(paths["contract_first"]["exact_closure_rms"], 1e-6)
@@ -351,7 +353,11 @@ class ParityHarnessTests(unittest.TestCase):
                     self.assertLess(abs(expert["input_first_closure_residual"]), 1e-6)
                     self.assertLess(abs(expert["contract_first_closure_residual"]), 1e-6)
                 for softmax in rows[0]["softmax_references"].values():
-                    self.assertTrue(softmax["classification_decisive"])
+                    if softmax["reference_applicable_to_token"]:
+                        self.assertTrue(softmax["classification_decisive"])
+                    else:
+                        self.assertEqual(softmax["classification"],
+                            "analysis not decisive — native C++ surface not reconstructed")
                     self.assertEqual(len(softmax["coalitions"]["native_cpp"]["selected_expert_set"]), 12)
         broken = {side: dict(values) for side, values in sides.items()}
         broken["default"] = dict(broken["default"])
@@ -363,7 +369,18 @@ class ParityHarnessTests(unittest.TestCase):
             for rows in reference["router_matmul_references"].values():
                 for softmax in rows[0]["softmax_references"].values():
                     self.assertFalse(softmax["classification_decisive"])
-                    self.assertEqual(softmax["classification"], "analysis not decisive")
+                    self.assertTrue(softmax["classification"].startswith("analysis not decisive"))
+
+    def test_side_specific_float64_references_are_distinct(self):
+        names = PARITY.SIDE_SPECIFIC_CPP_ARITHMETIC_REFERENCES
+        self.assertEqual(len(names), 3); self.assertEqual(len(set(names)), 3)
+        value = np.linspace(.123, 2.789, 3072, dtype=np.float32).reshape(1, 3072)
+        weight = np.linspace(.5001, 1.4999, 3072, dtype=np.float32)
+        before_multiply, _ = PARITY.diagnostic_rmsnorm_with_operational_weight(
+            value, weight, 1e-6, names[1], "gguf_float32_runtime_weight")
+        through_multiply, _ = PARITY.diagnostic_rmsnorm_with_operational_weight(
+            value, weight, 1e-6, names[2], "gguf_float32_runtime_weight")
+        self.assertFalse(np.array_equal(before_multiply, through_multiply))
 
     def test_side_specific_rmsnorm_classification_categories(self):
         classify = PARITY.classify_side_specific_rmsnorm
@@ -374,6 +391,69 @@ class ParityHarnessTests(unittest.TestCase):
         self.assertEqual(classify(False, True, False, False), "requires both components")
         self.assertEqual(classify(True, True, False, False), "native outcomes already equal")
         self.assertEqual(classify(False, False, True, True), "analysis not decisive")
+
+    def _side_specific_summary_analysis(self, classifications, include_non_applicable=True,
+                                        no_applicable=False):
+        references = {}
+        names = PARITY.SIDE_SPECIFIC_CPP_ARITHMETIC_REFERENCES
+        for index, name in enumerate(names):
+            applicable = not no_applicable and (index == 0 or not include_non_applicable)
+            rows = []
+            cpp_native = []; python_native = []
+            for token, classification in classifications.items():
+                report = {"reference_applicable_to_token": applicable,
+                    "classification_decisive": applicable,
+                    "classification": (classification if applicable else
+                        "analysis not decisive — native C++ surface not reconstructed"),
+                    "classification_before_required_reference_agreement": (classification if applicable else
+                        "analysis not decisive — native C++ surface not reconstructed"),
+                    "captured_topk_membership_reconstruction_valid": True,
+                    "native_python_ffn_norm_reconstruction_valid": True}
+                rows.append({"attended_token": token, "softmax_references": {
+                    "stable_float32": dict(report), "stable_float64_then_float32": dict(report)},
+                    "router_projected_path_decomposition": {}})
+                cpp_native.append({"attended_token": token,
+                    "native_cpp_ffn_norm_exact_for_token": applicable})
+                python_native.append({"attended_token": token,
+                    "native_python_ffn_norm_exact_for_token": True})
+            references[name] = {"native_cpp_ffn_norm_reconstruction_by_token": cpp_native,
+                "native_python_ffn_norm_reconstruction_by_token": python_native,
+                "exact_path_decompositions": [], "router_matmul_references": {
+                    "float32_matmul": rows, "float64_matmul_then_float32": copy.deepcopy(rows)}}
+        applicability = [{"attended_token": token,
+            "applicable_cpp_arithmetic_references": ([] if no_applicable else [names[0]]),
+            "non_applicable_cpp_arithmetic_references": (list(names) if no_applicable else list(names[1:])),
+            "applicable_reference_classification_agreement": not no_applicable}
+            for token in classifications]
+        return {"status": "complete", "cpp_arithmetic_references": references,
+                "per_token_applicability": applicability}
+
+    def test_side_specific_summary_uses_only_applicable_decisive_results(self):
+        aligned = self._side_specific_summary_analysis({1: "native outcomes already equal",
+                                                        3: "native outcomes already equal"})
+        all_input = self._side_specific_summary_analysis({
+            1: "pre-norm input component sufficient", 3: "pre-norm input component sufficient"})
+        summary = PARITY.primary_side_specific_rmsnorm_summary([
+            {"physical_block": 10, "analysis": all_input},
+            {"physical_block": 12, "analysis": aligned}], 10)
+        self.assertTrue(summary["physical_block_12_remains_aligned_control"])
+        self.assertEqual(summary["decisive_tokens_explained_by_pre_norm_input"], [1, 3])
+        self.assertEqual(summary["decisive_tokens_explained_by_operational_contract"], [])
+        self.assertIn("supersedes that result", summary["restrained_final_conclusion"])
+        joint = self._side_specific_summary_analysis({
+            1: "pre-norm input component sufficient", 3: "requires both components"})
+        joint_summary = PARITY.primary_side_specific_rmsnorm_summary([
+            {"physical_block": 10, "analysis": joint},
+            {"physical_block": 12, "analysis": aligned}], 10)
+        self.assertEqual(joint_summary["decisive_tokens_explained_by_pre_norm_input"], [1])
+        self.assertEqual(joint_summary["decisive_tokens_requiring_both"], [3])
+        self.assertIn("jointly caused", joint_summary["restrained_final_conclusion"])
+        bad_control = self._side_specific_summary_analysis(
+            {1: "native outcomes already equal", 3: "native outcomes already equal"}, no_applicable=True)
+        self.assertFalse(PARITY.primary_side_specific_rmsnorm_summary([
+            {"physical_block": 10, "analysis": all_input},
+            {"physical_block": 12, "analysis": bad_control}], 10)[
+                "physical_block_12_remains_aligned_control"])
 
     def test_router_tensor_names_resolve_logical_and_physical_coordinates(self):
         expected = {
