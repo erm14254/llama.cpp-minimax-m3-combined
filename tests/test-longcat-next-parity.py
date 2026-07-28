@@ -490,7 +490,7 @@ class ParityHarnessTests(unittest.TestCase):
             _, classification = PARITY.minimal_sufficient_residual_coalitions(truth)
             self.assertEqual(classification, expected)
         _, failed = PARITY.minimal_sufficient_residual_coalitions({key: False for key in coalitions})
-        self.assertEqual(failed, "full Python coalition does not reproduce Python membership")
+        self.assertEqual(failed, "full Python operand coalition does not reproduce Python membership")
         _, invalid_equal = PARITY.minimal_sufficient_residual_coalitions(
             {key: key == "111" for key in coalitions}, native_equal=True, decisive=False)
         self.assertEqual(invalid_equal, "analysis not decisive")
@@ -531,10 +531,16 @@ class ParityHarnessTests(unittest.TestCase):
                 prefix + "router_topk_indices": indices}
         return sides, weight, router_weight
 
+    @staticmethod
+    def _residual_profile(boundary=False, hidden=False):
+        return {"longcat_bf16_boundary_rounding": boundary,
+                "longcat_bf16_hidden_surface_rounding": hidden}
+
     def test_residual_three_factor_downstream_and_six_paths(self):
         sides, weight, router_weight = self._residual_three_factor_sides()
         report = PARITY.post_attention_residual_three_factor_decomposition(
-            sides, "physical_block_10__", [1], weight, weight.copy(), 1e-6, 1e-6, router_weight)
+            sides, "physical_block_10__", [1], weight, weight.copy(), 1e-6, 1e-6, router_weight,
+            self._residual_profile())
         self.assertEqual(report["status"], "complete")
         for target in report["python_targets"].values():
             self.assertTrue(target["native_residual_add_reconstruction"][0]["cpp_native_exact"])
@@ -559,19 +565,67 @@ class ParityHarnessTests(unittest.TestCase):
                             self.assertTrue(coalition["rmsnorm_output_finite"])
                             self.assertTrue(coalition["router_logits_finite"])
                             self.assertTrue(coalition["softmax_probabilities_finite"])
-                            self.assertTrue(coalition["all_evaluated_stages_finite"])
+                        self.assertTrue(coalition["all_evaluated_stages_finite"])
+
+    def test_metadata_native_boundary_contract_and_equal_contract_mode(self):
+        disabled = PARITY.validate_capture_residual_profile(self._residual_profile())
+        enabled = PARITY.validate_capture_residual_profile(self._residual_profile(True, True))
+        self.assertEqual(disabled["metadata_native_cpp_residual_contract"], "cpp_float32_add")
+        self.assertEqual(enabled["metadata_native_cpp_residual_contract"], "python_final_bf16_rne_add")
+        self.assertFalse(enabled["native_residual_contracts_differ"])
+        with self.assertRaises(ValueError): PARITY.validate_capture_residual_profile(self._residual_profile(False, True))
+        sides, weight, router_weight = self._residual_three_factor_sides()
+        prefix = "physical_block_10__"; old_cpp_ffn = sides["cpp"][prefix + "ffn_norm"].reshape(1, -1)
+        old_cpp_logits = sides["cpp"][prefix + "router_logits"].reshape(1, 384)
+        linear_residual = old_cpp_logits - PARITY.diagnostic_router_linear(
+            old_cpp_ffn, router_weight, "float32_matmul")
+        cpp_block = sides["cpp"][prefix + "block_input"].reshape(1, -1)
+        cpp_attention = sides["cpp"][prefix + "attention_output"].reshape(1, -1)
+        rounded_post = PARITY.residual_add_contract(
+            cpp_block, cpp_attention, "python_final_bf16_rne_add")
+        self.assertFalse(np.array_equal(rounded_post,
+            PARITY.residual_add_contract(cpp_block, cpp_attention, "cpp_float32_add")))
+        rounded_ffn, _ = PARITY.diagnostic_rmsnorm_with_operational_weight(
+            rounded_post, weight, 1e-6, PARITY.SIDE_SPECIFIC_CPP_ARITHMETIC_REFERENCES[0],
+            "gguf_float32_runtime_weight")
+        rounded_logits = PARITY.diagnostic_router_linear(rounded_ffn, router_weight, "float32_matmul") + linear_residual
+        rounded_probabilities = PARITY.diagnostic_softmax_stable_float32(rounded_logits)
+        sides["cpp"][prefix + "post_attention_residual"] = rounded_post.reshape(1, 1, -1)
+        sides["cpp"][prefix + "ffn_norm"] = rounded_ffn.reshape(1, 1, -1)
+        sides["cpp"][prefix + "router_logits"] = rounded_logits.reshape(1, 1, 384)
+        sides["cpp"][prefix + "router_probabilities"] = rounded_probabilities.reshape(1, 1, 384)
+        sides["cpp"][prefix + "router_selection_scores"] = rounded_probabilities.reshape(1, 1, 384)
+        sides["cpp"][prefix + "router_topk_indices"] = PARITY._score_topk_indices(
+            rounded_probabilities[0]).reshape(1, 1, 12)[..., ::-1]
+        report = PARITY.post_attention_residual_three_factor_decomposition(
+            sides, prefix, [1], weight, weight.copy(), 1e-6, 1e-6, router_weight,
+            self._residual_profile(True, True))
+        self.assertEqual(report["active_residual_factors"], ["block_input", "attention_output"])
+        self.assertEqual((report["native_cpp_coalition_key"], report["native_python_coalition_key"]),
+                         ("00", "11"))
+        for target in report["python_targets"].values():
+            self.assertTrue(target["native_cpp_residual_reconstruction"][0]["cpp_native_exact"])
+            self.assertTrue(target["per_token_applicability"][0]["applicable_cpp_rmsnorm_references"])
+            for reference in target["references"].values():
+                for rows in reference["router_matmul_references"].values():
+                    self.assertEqual(len(rows[0]["native_path_decompositions"]), 2)
+                    for softmax in rows[0]["softmax_references"].values():
+                        self.assertEqual(set(softmax["native_factor_truth_table"]), {"00", "01", "10", "11"})
+                        self.assertEqual(len(softmax["descriptive_alternate_contract_truth_table"]), 8)
 
     def test_residual_three_factor_prerequisite_and_invalid_equal_native_are_non_decisive(self):
         sides, weight, router_weight = self._residual_three_factor_sides()
         mismatch = PARITY.post_attention_residual_three_factor_decomposition(
-            sides, "physical_block_10__", [1], weight, weight.copy(), 1e-6, 2e-6, router_weight)
+            sides, "physical_block_10__", [1], weight, weight.copy(), 1e-6, 2e-6, router_weight,
+            self._residual_profile())
         self.assertEqual(mismatch["status"], "analysis not decisive")
         self.assertFalse(mismatch["shared_component_prerequisite"]["shared_components_valid"])
         equal_but_invalid = copy.deepcopy(sides)
         for target in ("cpp", "default", "math"):
             equal_but_invalid[target]["physical_block_10__router_topk_indices"][0, 0, -1] = 383
         report = PARITY.post_attention_residual_three_factor_decomposition(
-            equal_but_invalid, "physical_block_10__", [1], weight, weight.copy(), 1e-6, 1e-6, router_weight)
+            equal_but_invalid, "physical_block_10__", [1], weight, weight.copy(), 1e-6, 1e-6,
+            router_weight, self._residual_profile())
         for target in report["python_targets"].values():
             for reference in target["references"].values():
                 for rows in reference["router_matmul_references"].values():
@@ -583,7 +637,8 @@ class ParityHarnessTests(unittest.TestCase):
     def test_residual_primary_summary_rejects_missing_and_cross_python_mismatch(self):
         sides, weight, router_weight = self._residual_three_factor_sides()
         analysis = PARITY.post_attention_residual_three_factor_decomposition(
-            sides, "physical_block_10__", [1], weight, weight.copy(), 1e-6, 1e-6, router_weight)
+            sides, "physical_block_10__", [1], weight, weight.copy(), 1e-6, 1e-6, router_weight,
+            self._residual_profile())
         positive = PARITY.primary_post_attention_residual_three_factor_summary([
             {"physical_block": 10, "analysis": analysis},
             {"physical_block": 12, "analysis": analysis}], 10)
@@ -661,7 +716,8 @@ class ParityHarnessTests(unittest.TestCase):
                 if patch_stage == "softmax":
                     PARITY.DIAGNOSTIC_SOFTMAX_REFERENCES["stable_float32"] = nan_softmax
                 report = PARITY.post_attention_residual_three_factor_decomposition(
-                    source, "physical_block_10__", [1], weight, weight.copy(), 1e-6, 1e-6, router_weight)
+                    source, "physical_block_10__", [1], weight, weight.copy(), 1e-6, 1e-6,
+                    router_weight, self._residual_profile())
                 target = report["python_targets"]["default"]
                 evidence_rows = [softmax for reference in target["references"].values()
                     for rows in reference["router_matmul_references"].values()
@@ -1788,7 +1844,9 @@ class ParityHarnessTests(unittest.TestCase):
             payload = {"block_components_diagnostic": False,
                        "block_components_window_diagnostic": True,
                        "block_components_window_start": 10,
-                       "block_components_window_count": 4}
+                       "block_components_window_count": 4,
+                       "longcat_bf16_boundary_rounding": True,
+                       "longcat_bf16_hidden_surface_rounding": True}
             path.write_text(json.dumps(payload), encoding="ascii")
             self.assertEqual(PARITY.validate_component_window_capture_metadata(root, 10, 4), payload)
             for key, value in (("block_components_window_start", 12),
@@ -1798,6 +1856,15 @@ class ParityHarnessTests(unittest.TestCase):
                 invalid = dict(payload); invalid[key] = value
                 path.write_text(json.dumps(invalid), encoding="ascii")
                 with self.subTest(key=key), self.assertRaises(ValueError):
+                    PARITY.validate_component_window_capture_metadata(root, 10, 4)
+            for invalid_profile in ({}, {"longcat_bf16_boundary_rounding": "true",
+                                         "longcat_bf16_hidden_surface_rounding": True},
+                                    {"longcat_bf16_boundary_rounding": False,
+                                     "longcat_bf16_hidden_surface_rounding": True}):
+                invalid = dict(payload); invalid.update(invalid_profile)
+                if not invalid_profile: invalid.pop("longcat_bf16_boundary_rounding")
+                path.write_text(json.dumps(invalid), encoding="ascii")
+                with self.assertRaises(ValueError):
                     PARITY.validate_component_window_capture_metadata(root, 10, 4)
 
     def test_bf16_round_to_nearest_even_specials_and_subnormals(self):

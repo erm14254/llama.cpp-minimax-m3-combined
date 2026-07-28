@@ -2615,13 +2615,33 @@ def residual_three_factor_coalitions(cpp_block, cpp_attention, python_block, pyt
     return coalitions
 
 
-def minimal_sufficient_residual_coalitions(truth_table, native_equal=False, decisive=True):
+def validate_capture_residual_profile(metadata):
+    if not isinstance(metadata, dict): raise ValueError("capture residual profile metadata is required")
+    boundary = metadata.get("longcat_bf16_boundary_rounding")
+    hidden = metadata.get("longcat_bf16_hidden_surface_rounding")
+    if not isinstance(boundary, bool) or not isinstance(hidden, bool):
+        raise ValueError("capture residual rounding profile fields must be Boolean")
+    if hidden and not boundary:
+        raise ValueError("hidden-surface rounding cannot be enabled when boundary rounding is disabled")
+    cpp_contract = "python_final_bf16_rne_add" if boundary else "cpp_float32_add"
+    python_contract = "python_final_bf16_rne_add"
+    return {"capture_boundary_rounding_enabled": boundary,
+        "capture_hidden_surface_rounding_enabled": hidden,
+        "metadata_native_cpp_residual_contract": cpp_contract,
+        "metadata_native_python_residual_contract": python_contract,
+        "native_residual_contracts_differ": cpp_contract != python_contract}
+
+
+def minimal_sufficient_residual_coalitions(truth_table, native_equal=False, decisive=True,
+                                           active_factors=("B", "A", "C"), python_key=None):
     if not decisive: return [], "analysis not decisive"
     if native_equal: return [], "native outcomes already equal"
-    if not truth_table.get("111", False): return [], "full Python coalition does not reproduce Python membership"
+    if python_key is None: python_key = "1" * len(active_factors)
+    if not truth_table.get(python_key, False):
+        return [], "full Python operand coalition does not reproduce Python membership"
     successful = []
     for key, restored in truth_table.items():
-        factors = frozenset(name for bit, name in zip(key, ("B", "A", "C")) if bit == "1")
+        factors = frozenset(name for bit, name in zip(key, active_factors) if bit == "1")
         if restored and factors: successful.append(factors)
     minimal = sorted({factors for factors in successful
         if not any(other < factors for other in successful)}, key=lambda value: (len(value), sorted(value)))
@@ -2662,10 +2682,19 @@ def _telescoping_stage_report(values, path_keys, target_delta, disputed_experts=
 
 def post_attention_residual_three_factor_decomposition(sides, prefix, attended_tokens,
                                                         python_weight, gguf_weight,
-                                                        python_epsilon, gguf_epsilon, router_weight):
+                                                        python_epsilon, gguf_epsilon, router_weight,
+                                                        capture_metadata=None):
     equivalence = norm_weight_epsilon_equivalence(
         python_weight, gguf_weight, python_epsilon, gguf_epsilon)
+    try:
+        profile = validate_capture_residual_profile(capture_metadata)
+    except ValueError as exc:
+        return {"status": "analysis not decisive", "capture_residual_profile_valid": False,
+            "capture_residual_profile_error": str(exc),
+            "diagnostic_boundary_contract_analysis_is_not_cpu_torch_ggml_cuda_or_kernel_identity": True}
     result = {"diagnostic_boundary_contract_analysis_is_not_cpu_torch_ggml_cuda_or_kernel_identity": True,
+        "capture_residual_profile_valid": True, "capture_residual_profile": profile,
+        **profile,
         "shared_component_prerequisite": {
             "raw_norm_weight_exact_equality": equivalence["raw"]["exact_byte_equality"],
             "operational_python_runtime_weight_equals_gguf": equivalence[
@@ -2688,7 +2717,15 @@ def post_attention_residual_three_factor_decomposition(sides, prefix, attended_t
         sides["cpp"][prefix + "router_selection_scores"], sides["cpp"][prefix + "router_topk_indices"],
         attended_tokens)
     cpp_probability_sets = [set(_score_topk_indices(row + cpp_bias)) for row in cpp_probabilities]
-    cpp_native_add = residual_add_contract(cpp_block, cpp_attention, "cpp_float32_add")
+    cpp_contract = profile["metadata_native_cpp_residual_contract"]
+    python_contract = profile["metadata_native_python_residual_contract"]
+    contracts_differ = profile["native_residual_contracts_differ"]
+    active_factors = ("B", "A", "C") if contracts_differ else ("B", "A")
+    cpp_native_add = residual_add_contract(cpp_block, cpp_attention, cpp_contract)
+    alternate_contract = "cpp_float32_add" if cpp_contract == "python_final_bf16_rne_add" else "python_final_bf16_rne_add"
+    result.update({"active_residual_factors": [RESIDUAL_FACTOR_NAMES[name] for name in active_factors],
+        "native_cpp_coalition_key": "000" if contracts_differ else "00",
+        "native_python_coalition_key": "111" if contracts_differ else "11"})
     for target_name in ("default", "math"):
         target_block = np.asarray(sides[target_name][prefix + "block_input"], np.float32).reshape(-1, hidden)
         target_attention = np.asarray(sides[target_name][prefix + "attention_output"], np.float32).reshape(-1, hidden)
@@ -2697,8 +2734,17 @@ def post_attention_residual_three_factor_decomposition(sides, prefix, attended_t
         target_sets = [set(row) for row in np.asarray(
             sides[target_name][prefix + "router_topk_indices"]).reshape(-1, 12)]
         target_probability_sets = [set(_score_topk_indices(row + cpp_bias)) for row in target_probabilities]
-        target_native_add = residual_add_contract(target_block, target_attention, "python_final_bf16_rne_add")
-        coalitions = residual_three_factor_coalitions(cpp_block, cpp_attention, target_block, target_attention)
+        target_native_add = residual_add_contract(target_block, target_attention, python_contract)
+        descriptive_coalitions = residual_three_factor_coalitions(
+            cpp_block, cpp_attention, target_block, target_attention)
+        if contracts_differ:
+            coalitions = descriptive_coalitions
+            cpp_key, python_key = "000", "111"
+        else:
+            coalitions = {f"{b}{a}": residual_add_contract(
+                target_block if b else cpp_block, target_attention if a else cpp_attention, cpp_contract)
+                for b in (0, 1) for a in (0, 1)}
+            cpp_key, python_key = "00", "11"
         native_rows = []
         for token, attended in enumerate(attended_tokens):
             cpp_diff = cpp_native_add[token] - cpp_post[token]; py_diff = target_native_add[token] - target_post[token]
@@ -2708,7 +2754,9 @@ def post_attention_residual_three_factor_decomposition(sides, prefix, attended_t
                 "cpp_native_rms_error": float(np.sqrt(np.mean(np.square(cpp_diff, dtype=np.float64)))),
                 "python_native_exact": bool(np.array_equal(target_native_add[token], target_post[token])),
                 "python_native_maximum_absolute_error": float(np.abs(py_diff).max(initial=0)),
-                "python_native_rms_error": float(np.sqrt(np.mean(np.square(py_diff, dtype=np.float64))))})
+                "python_native_rms_error": float(np.sqrt(np.mean(np.square(py_diff, dtype=np.float64)))),
+                "descriptive_alternate_contract_reconstruction": _vector_metrics(cpp_post[token],
+                    residual_add_contract(cpp_block[token], cpp_attention[token], alternate_contract))})
         references = {}
         for arithmetic in SIDE_SPECIFIC_CPP_ARITHMETIC_REFERENCES:
             norm_values = {}
@@ -2721,7 +2769,10 @@ def post_attention_residual_three_factor_decomposition(sides, prefix, attended_t
                             np.float32(gguf_epsilon), arithmetic, "gguf_float32_runtime_weight")[0]
                     except ValueError:
                         norm_values[key] = np.full_like(value, np.nan, dtype=np.float32)
-            cpp_exact = [bool(np.array_equal(norm_values["000"][token], cpp_ffn[token]))
+            descriptive_norm_values = {key: diagnostic_rmsnorm_with_operational_weight(value, gguf_weight,
+                np.float32(gguf_epsilon), arithmetic, "gguf_float32_runtime_weight")[0]
+                for key, value in descriptive_coalitions.items() if np.isfinite(value).all()}
+            cpp_exact = [bool(np.array_equal(norm_values[cpp_key][token], cpp_ffn[token]))
                          for token in range(len(attended_tokens))]
             matmuls = {}
             for matmul in DIAGNOSTIC_LINEAR_VARIANTS:
@@ -2735,6 +2786,16 @@ def post_attention_residual_three_factor_decomposition(sides, prefix, attended_t
                             coalition_logits[key] = diagnostic_router_linear(value, router_weight, matmul) + linear_residual
                         except ValueError:
                             coalition_logits[key] = np.full((value.shape[0], 384), np.nan, np.float32)
+                descriptive_logits = {}
+                for key, value in descriptive_norm_values.items():
+                    if not np.isfinite(value).all():
+                        descriptive_logits[key] = np.full((value.shape[0], 384), np.nan, np.float32)
+                    else:
+                        try:
+                            descriptive_logits[key] = diagnostic_router_linear(
+                                value, router_weight, matmul) + linear_residual
+                        except ValueError:
+                            descriptive_logits[key] = np.full((value.shape[0], 384), np.nan, np.float32)
                 token_rows = []
                 for token, attended in enumerate(attended_tokens):
                     softmaxes = {}
@@ -2766,32 +2827,44 @@ def post_attention_residual_three_factor_decomposition(sides, prefix, attended_t
                                                    target_probability_sets[token] == target_sets[token])
                         base_decisive = (native_rows[token]["cpp_native_exact"] and
                             native_rows[token]["python_native_exact"] and cpp_exact[token] and
-                            native_membership_valid and evidence["000"]["equals_captured_cpp_membership"] and
-                            evidence["111"]["equals_captured_python_membership"] and
+                            native_membership_valid and evidence[cpp_key]["equals_captured_cpp_membership"] and
+                            evidence[python_key]["equals_captured_python_membership"] and
                             all(row["all_evaluated_stages_finite"] for row in evidence.values()))
                         truth = {key: row["equals_captured_python_membership"] for key, row in evidence.items()}
+                        descriptive_truth = {}
+                        for key, value in descriptive_logits.items():
+                            try:
+                                descriptive_probabilities = softmax(value[token])
+                                descriptive_truth[key] = set(_public_cutoff(
+                                    descriptive_probabilities + cpp_bias, int(attended))[
+                                        "selected_expert_set"]) == target_sets[token]
+                            except ValueError:
+                                descriptive_truth[key] = False
                         minimal, classification = minimal_sufficient_residual_coalitions(truth,
-                            cpp_sets[token] == target_sets[token], base_decisive)
+                            cpp_sets[token] == target_sets[token], base_decisive, active_factors, python_key)
                         softmaxes[softmax_name] = {"coalitions": evidence, "truth_table": truth,
+                            "native_factor_truth_table": truth,
+                            "descriptive_alternate_contract_truth_table": descriptive_truth,
                             "minimal_sufficient_factor_sets": minimal, "classification": classification,
                             "classification_decisive": base_decisive, "reference_applicable_to_token": cpp_exact[token],
                             "captured_topk_membership_reconstruction_valid": native_membership_valid}
                     disputed = sorted(cpp_sets[token] ^ target_sets[token])
                     paths = []
-                    for order in RESIDUAL_PATH_ORDERS:
-                        state = {"B": "0", "A": "0", "C": "0"}; keys = ["000"]
+                    path_orders = RESIDUAL_PATH_ORDERS if contracts_differ else (("B", "A"), ("A", "B"))
+                    for order in path_orders:
+                        state = {name: "0" for name in active_factors}; keys = [cpp_key]
                         for factor in order:
-                            state[factor] = "1"; keys.append("".join(state[name] for name in ("B", "A", "C")))
+                            state[factor] = "1"; keys.append("".join(state[name] for name in active_factors))
                         residual_path = _telescoping_stage_report(
                             {key: coalitions[key][token] for key in keys}, keys,
                             target_post[token] - cpp_post[token])
                         norm_path = _telescoping_stage_report(
                             {key: norm_values[key][token] for key in keys}, keys,
-                            norm_values["111"][token] - norm_values["000"][token])
+                            norm_values[python_key][token] - norm_values[cpp_key][token])
                         router_path = _telescoping_stage_report(
                             {key: coalition_logits[key][token] for key in keys}, keys,
-                            coalition_logits["111"][token] - coalition_logits["000"][token], disputed)
-                        router_target = coalition_logits["111"][token] - coalition_logits["000"][token]
+                            coalition_logits[python_key][token] - coalition_logits[cpp_key][token], disputed)
+                        router_target = coalition_logits[python_key][token] - coalition_logits[cpp_key][token]
                         router_reconstructed = sum((coalition_logits[right][token] - coalition_logits[left][token]
                             for left, right in zip(keys, keys[1:])), np.zeros_like(router_target))
                         router_path["maximum_centered_closure"] = _linear_projection_metrics(
@@ -2802,7 +2875,8 @@ def post_attention_residual_three_factor_decomposition(sides, prefix, attended_t
                             "fixed_cpp_rmsnorm_output": norm_path, "evaluated_router_logits": router_path})
                     token_rows.append({"attended_token": int(attended),
                         "native_cpp_ffn_norm_exact_for_token": cpp_exact[token],
-                        "softmax_references": softmaxes, "six_factor_order_paths": paths})
+                        "softmax_references": softmaxes, "six_factor_order_paths": paths,
+                        "native_path_decompositions": paths})
                 matmuls[matmul] = token_rows
             references[arithmetic] = {"router_matmul_references": matmuls}
         # Only applicable references participate in the causal agreement gate.
@@ -2827,8 +2901,25 @@ def post_attention_residual_three_factor_decomposition(sides, prefix, attended_t
                 "non_applicable_cpp_rmsnorm_references": [name for name in SIDE_SPECIFIC_CPP_ARITHMETIC_REFERENCES
                                                             if name not in applicable],
                 "applicable_reference_classification_agreement": agreement})
-        result["python_targets"][target_name] = {"native_residual_add_reconstruction": native_rows,
+        result["python_targets"][target_name] = {
+            "native_cpp_residual_reconstruction": native_rows,
+            "native_residual_add_reconstruction": native_rows,
+            "native_cpp_coalition_key": cpp_key, "native_python_coalition_key": python_key,
+            "active_residual_factors": [RESIDUAL_FACTOR_NAMES[name] for name in active_factors],
             "references": references, "per_token_applicability": applicability}
+    result["native_factor_truth_tables"] = {target: {arithmetic: {matmul: [
+        {"attended_token": row["attended_token"], "softmax_references": {
+            name: report["native_factor_truth_table"] for name, report in row["softmax_references"].items()}}
+        for row in rows] for matmul, rows in reference["router_matmul_references"].items()}
+        for arithmetic, reference in target_report["references"].items()}
+        for target, target_report in result["python_targets"].items()}
+    result["descriptive_alternate_contract_truth_tables"] = {target: {arithmetic: {matmul: [
+        {"attended_token": row["attended_token"], "softmax_references": {
+            name: report["descriptive_alternate_contract_truth_table"]
+            for name, report in row["softmax_references"].items()}}
+        for row in rows] for matmul, rows in reference["router_matmul_references"].items()}
+        for arithmetic, reference in target_report["references"].items()}
+        for target, target_report in result["python_targets"].items()}
     result["status"] = "complete"
     return result
 
@@ -2943,6 +3034,21 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
         candidate_targets.append("retain all required branches as separate localization tracks")
     next_targets = candidate_targets if globally_decisive else []
     return {"physical_block": primary_block, "python_reference_results": results,
+        "capture_residual_profile": analysis.get("capture_residual_profile"),
+        "metadata_native_cpp_residual_contract": analysis.get("metadata_native_cpp_residual_contract"),
+        "metadata_native_python_residual_contract": analysis.get("metadata_native_python_residual_contract"),
+        "native_residual_contracts_differ": analysis.get("native_residual_contracts_differ"),
+        "active_residual_factors": analysis.get("active_residual_factors", []),
+        "native_cpp_coalition_key": analysis.get("native_cpp_coalition_key"),
+        "native_python_coalition_key": analysis.get("native_python_coalition_key"),
+        "native_factor_truth_tables": analysis.get("native_factor_truth_tables", {}),
+        "descriptive_alternate_contract_truth_tables": analysis.get(
+            "descriptive_alternate_contract_truth_tables", {}),
+        "primary_oracle_result": {"result": results.get("default", {}),
+            "is_global": globally_decisive},
+        "sensitivity_control_result": {"result": results.get("math", {}),
+            "is_global": globally_decisive},
+        "global_definitive_result": results if globally_decisive else None,
         "per_target_token_decisiveness": results,
         "tokens_without_applicable_cpp_rmsnorm_reference": missing,
         "tokens_with_applicable_reference_disagreement": disagreements,
@@ -3250,7 +3356,8 @@ def odd_cross_substitution(cpp, python, odd_block, criterion):
 
 
 def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
-                             criterion, start=10, count=4, router_weights=None, ffn_norm_artifact=None):
+                             criterion, start=10, count=4, router_weights=None, ffn_norm_artifact=None,
+                             capture_metadata=None):
     expected = set(component_window_names(start, count))
     if set(default_npz.files) != expected or set(math_npz.files) != expected:
         raise ValueError("default/math component-window inventory mismatch")
@@ -3320,7 +3427,7 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
                     norm_arrays[f"physical_block_{block:02d}__python_ffn_norm_weight"],
                     norm_arrays[f"physical_block_{block:02d}__gguf_ffn_norm_weight"],
                     norm_metadata["python_epsilon"], norm_metadata["gguf_epsilon"],
-                    router_weights[f"physical_block_{block:02d}__gguf_weight"])})
+                    router_weights[f"physical_block_{block:02d}__gguf_weight"], capture_metadata)})
         if semantic["has_cpp_vs_python_default_real_expert_set_difference"] and first_real_default is None:
             first_real_default = block
         if semantic["has_cpp_vs_python_math_real_expert_set_difference"] and first_real_math is None:
@@ -3820,6 +3927,7 @@ def validate_component_window_capture_metadata(root, start, count):
         raise ValueError(f"component-window metadata mismatch: expected {expected}, got {observed}")
     if metadata.get("block_components_diagnostic") is not False:
         raise ValueError("component-window metadata must disable canonical component capture")
+    validate_capture_residual_profile(metadata)
     return metadata
 
 
@@ -3855,7 +3963,7 @@ def main():
         raise ValueError(f"expected eight-token greedy references for both tokenizer prompts, got {greedy_cases}")
     if replay_only:
         if args.component_window_replay_only:
-            validate_component_window_capture_metadata(
+            capture_metadata = validate_component_window_capture_metadata(
                 args.output_dir, args.block_components_window_start,
                 args.block_components_window_count)
             criterion = policy["bf16"]["physical_block_02"]
@@ -3873,7 +3981,7 @@ def main():
                         args.ffn_rmsnorm_diagnostic_npz, args.ffn_rmsnorm_diagnostic_json)
                 report = compare_component_window(default_window, math_window, capture_dir,
                     cases[0]["attention_mask"], criterion, args.block_components_window_start,
-                    args.block_components_window_count, router_weights, norm_artifact)
+                    args.block_components_window_count, router_weights, norm_artifact, capture_metadata)
             (args.output_dir / "block-components-window-three-way.json").write_text(
                 json.dumps(report, indent=2) + "\n", encoding="ascii")
             return
