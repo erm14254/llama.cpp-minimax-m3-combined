@@ -2998,6 +2998,8 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
         if not control["analysis"].get("shared_component_prerequisite", {}).get(
                 "shared_components_valid", False): return False
         for target_report in control["analysis"]["python_targets"].values():
+            cpp_key = target_report["native_cpp_coalition_key"]
+            python_key = target_report["native_python_coalition_key"]
             native = {row["attended_token"]: row for row in target_report["native_residual_add_reconstruction"]}
             for applicability in target_report["per_token_applicability"]:
                 token = applicability["attended_token"]
@@ -3012,8 +3014,8 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
                             reports.append(report)
                             if (not report["classification_decisive"] or
                                     not report["captured_topk_membership_reconstruction_valid"] or
-                                    not report["coalitions"]["000"]["equals_captured_cpp_membership"] or
-                                    not report["coalitions"]["111"]["equals_captured_python_membership"] or
+                                    not report["coalitions"][cpp_key]["equals_captured_cpp_membership"] or
+                                    not report["coalitions"][python_key]["equals_captured_python_membership"] or
                                     report["classification"] != "native outcomes already equal"): return False
                 if not reports: return False
         return True
