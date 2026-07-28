@@ -2661,6 +2661,11 @@ def minimal_sufficient_residual_coalitions(truth_table, native_equal=False, deci
     return labels, classification
 
 
+def canonical_minimal_factor_sets(factor_sets):
+    """Return an order-insensitive but coalition-exact report representation."""
+    return tuple(sorted(tuple(sorted(factor_set)) for factor_set in factor_sets))
+
+
 def _telescoping_stage_report(values, path_keys, target_delta, disputed_experts=None):
     terms = [np.asarray(values[right] - values[left], np.float32)
              for left, right in zip(path_keys, path_keys[1:])]
@@ -2861,6 +2866,7 @@ def post_attention_residual_three_factor_decomposition(sides, prefix, attended_t
                             "native_factor_truth_table": truth,
                             "descriptive_alternate_contract_truth_table": descriptive_truth,
                             "minimal_sufficient_factor_sets": minimal, "classification": classification,
+                            "canonical_minimal_factor_sets": canonical_minimal_factor_sets(minimal),
                             "structural_prerequisites_valid_before_path_closure": structural_pre_path,
                             "native_python_endpoint_membership_reconstruction_valid": endpoint_valid,
                             "native_cpp_capture_membership_reconstruction_valid": native_cpp_membership_valid,
@@ -2942,8 +2948,17 @@ def post_attention_residual_three_factor_decomposition(sides, prefix, attended_t
             reports = [report for name in applicable for rows in references[name]["router_matmul_references"].values()
                 for report in rows[token]["softmax_references"].values()]
             diagnostic_agreement = bool(reports) and len({report["diagnostic_outcome"] for report in reports}) == 1
-            causal_agreement = (bool(reports) and all(report["causal_classification_decisive"] for report in reports)
-                and len({report["definitive_causal_classification"] for report in reports}) == 1)
+            expected_report_count = (len(applicable) * len(DIAGNOSTIC_LINEAR_VARIANTS) *
+                                     len(DIAGNOSTIC_SOFTMAX_REFERENCES))
+            complete_reference_inventory = bool(reports) and len(reports) == expected_report_count
+            every_report_causal = complete_reference_inventory and all(
+                report["causal_classification_decisive"] for report in reports)
+            classification_agreement = (every_report_causal and
+                len({report["definitive_causal_classification"] for report in reports}) == 1)
+            minimal_factor_set_agreement = (every_report_causal and
+                len({canonical_minimal_factor_sets(report["minimal_sufficient_factor_sets"])
+                     for report in reports}) == 1)
+            causal_evidence_agreement = classification_agreement and minimal_factor_set_agreement
             for name, reference in references.items():
                 for rows in reference["router_matmul_references"].values():
                     for report in rows[token]["softmax_references"].values():
@@ -2962,9 +2977,13 @@ def post_attention_residual_three_factor_decomposition(sides, prefix, attended_t
                 "applicable_cpp_rmsnorm_references": applicable,
                 "non_applicable_cpp_rmsnorm_references": [name for name in SIDE_SPECIFIC_CPP_ARITHMETIC_REFERENCES
                                                             if name not in applicable],
-                "applicable_reference_classification_agreement": causal_agreement,
+                "applicable_reference_classification_agreement": classification_agreement,
                 "applicable_reference_diagnostic_outcome_agreement": diagnostic_agreement,
-                "applicable_reference_causal_classification_agreement": causal_agreement})
+                "applicable_reference_causal_classification_agreement": classification_agreement,
+                "applicable_reference_definitive_classification_agreement": classification_agreement,
+                "applicable_reference_minimal_factor_set_agreement": minimal_factor_set_agreement,
+                "applicable_reference_definitive_causal_evidence_agreement": causal_evidence_agreement,
+                "applicable_reference_inventory_complete": complete_reference_inventory})
         result["python_targets"][target_name] = {
             "native_cpp_residual_reconstruction": native_rows,
             "native_residual_add_reconstruction": native_rows,
@@ -3021,44 +3040,69 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
     for target, target_report in analysis.get("python_targets", {}).items():
         results[target] = {}
         for applicability in target_report["per_token_applicability"]:
-            token = applicability["attended_token"]; minimal = []; reports = []
+            token = applicability["attended_token"]; descriptive_minimal = []; reports = []
             for name in applicability["applicable_cpp_rmsnorm_references"]:
                 for rows in target_report["references"][name]["router_matmul_references"].values():
                     row = next(item for item in rows if item["attended_token"] == token)
                     for report in row["softmax_references"].values():
                         reports.append(report)
-                        minimal.extend(report["minimal_sufficient_factor_sets"])
+                        descriptive_minimal.extend(report["minimal_sufficient_factor_sets"])
             has_applicable = bool(applicability["applicable_cpp_rmsnorm_references"])
             diagnostic_agreement = (applicability.get("applicable_reference_diagnostic_outcome_agreement", False)
                                     and bool(reports))
-            causal_agreement = (applicability.get("applicable_reference_causal_classification_agreement", False)
-                                and bool(reports))
+            classification_agreement = (applicability.get(
+                "applicable_reference_definitive_classification_agreement", False) and bool(reports) and
+                all(report["causal_classification_decisive"] for report in reports) and
+                len({report["definitive_causal_classification"] for report in reports}) == 1)
+            minimal_agreement = (applicability.get(
+                "applicable_reference_minimal_factor_set_agreement", False) and bool(reports) and
+                len({canonical_minimal_factor_sets(report["minimal_sufficient_factor_sets"])
+                     for report in reports}) == 1)
+            causal_evidence_agreement = (applicability.get(
+                "applicable_reference_definitive_causal_evidence_agreement", False) and
+                classification_agreement and minimal_agreement)
+            expected_report_count = (len(applicability["applicable_cpp_rmsnorm_references"]) *
+                len(DIAGNOSTIC_LINEAR_VARIANTS) * len(DIAGNOSTIC_SOFTMAX_REFERENCES))
+            inventory_complete = (applicability.get("applicable_reference_inventory_complete", False) and
+                                  bool(reports) and len(reports) == expected_report_count)
             structurally_valid = bool(reports) and all(report["structural_prerequisites_valid"] for report in reports)
             endpoint_valid = bool(reports) and all(
                 report["native_python_endpoint_membership_reconstruction_valid"] for report in reports)
-            causal_decisive = has_applicable and causal_agreement and all(
-                report["causal_classification_decisive"] for report in reports)
+            causal_decisive = bool(has_applicable and inventory_complete and structurally_valid and endpoint_valid and
+                causal_evidence_agreement and all(report["causal_classification_decisive"] for report in reports))
             if not has_applicable: missing.append({"target": target, "attended_token": token})
             if has_applicable and not diagnostic_agreement: disagreements.append({"target": target, "attended_token": token})
             if has_applicable and not causal_decisive: non_decisive.append({"target": target, "attended_token": token})
             outcome = reports[0]["diagnostic_outcome"] if diagnostic_agreement else "analysis not decisive"
+            if structurally_valid and endpoint_valid and classification_agreement and not minimal_agreement:
+                outcome = "analysis not decisive"
             causal_classification = (reports[0]["definitive_causal_classification"]
                                      if causal_decisive else None)
             if not structurally_valid: reason = "structural prerequisites or exact native path closure failed"
             elif not endpoint_valid: reason = ("native Python operand endpoint does not reproduce captured Python "
                                                "routing membership under the fixed C++ downstream contract")
-            elif not causal_agreement: reason = "applicable causal classifications disagree"
+            elif not inventory_complete: reason = "applicable reference evidence is incomplete"
+            elif not classification_agreement: reason = "applicable definitive causal classifications disagree"
+            elif not minimal_agreement: reason = "applicable minimal sufficient factor sets disagree"
             else: reason = None
-            unique_minimal = []
-            for item in minimal:
-                if item not in unique_minimal: unique_minimal.append(item)
+            canonical_minimal = ([list(item) for item in canonical_minimal_factor_sets(
+                reports[0]["minimal_sufficient_factor_sets"])] if causal_decisive else [])
+            descriptive_unique_minimal = []
+            for item in descriptive_minimal:
+                if item not in descriptive_unique_minimal: descriptive_unique_minimal.append(item)
             results[target][token] = {"diagnostic_outcome": outcome,
                 "definitive_causal_classification": causal_classification,
                 "classification": outcome,
-                "minimal_sufficient_factor_sets": unique_minimal if causal_decisive else [],
+                "minimal_sufficient_factor_sets": canonical_minimal,
+                "canonical_minimal_factor_sets": canonical_minimal,
+                "descriptive_per_reference_minimal_sufficient_factor_sets": descriptive_unique_minimal,
                 "applicable_cpp_rmsnorm_references": applicability["applicable_cpp_rmsnorm_references"],
                 "applicable_reference_diagnostic_outcome_agreement": diagnostic_agreement,
-                "applicable_reference_causal_classification_agreement": causal_agreement,
+                "applicable_reference_causal_classification_agreement": classification_agreement,
+                "applicable_reference_definitive_classification_agreement": classification_agreement,
+                "applicable_reference_minimal_factor_set_agreement": minimal_agreement,
+                "applicable_reference_definitive_causal_evidence_agreement": causal_evidence_agreement,
+                "applicable_reference_inventory_complete": inventory_complete,
                 "target_token_structurally_valid": structurally_valid,
                 "native_python_endpoint_membership_reconstruction_valid": endpoint_valid,
                 "target_token_causally_decisive": causal_decisive,
@@ -3151,6 +3195,12 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
                     reasons.append("applicable diagnostic outcomes disagree")
                 if not applicability.get("applicable_reference_causal_classification_agreement", False):
                     reasons.append("applicable causal classifications disagree")
+                if not applicability.get("applicable_reference_minimal_factor_set_agreement", False):
+                    reasons.append("applicable minimal sufficient factor sets disagree")
+                if not applicability.get("applicable_reference_definitive_causal_evidence_agreement", False):
+                    reasons.append("applicable definitive causal evidence disagrees")
+                if not applicability.get("applicable_reference_inventory_complete", False):
+                    reasons.append("applicable reference evidence is incomplete")
                 if not applicability.get("applicable_reference_classification_agreement", False):
                     reasons.append("legacy applicable classification agreement failed")
                 if not reports: reasons.append("no applicable downstream report")
@@ -3170,6 +3220,10 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
                         "applicable_reference_diagnostic_outcome_agreement", False),
                     "applicable_causal_classification_agreement": applicability.get(
                         "applicable_reference_causal_classification_agreement", False),
+                    "applicable_minimal_factor_set_agreement": applicability.get(
+                        "applicable_reference_minimal_factor_set_agreement", False),
+                    "applicable_definitive_causal_evidence_agreement": applicability.get(
+                        "applicable_reference_definitive_causal_evidence_agreement", False),
                     "all_native_paths_close_exactly": bool(reports) and all(
                         report["all_native_paths_close_exactly"] for report in reports),
                     "failure_reasons": reasons, "final_control_status": not reasons}
@@ -3200,9 +3254,9 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
         locally_decisive = bool(rows) and all(row["target_token_causally_decisive"] for row in rows.values())
         factors = ({factor for row in rows.values() for item in row["minimal_sufficient_factor_sets"]
                     for factor in item} if locally_decisive else set())
-        return sorted(factors), localization_targets(factors, rows), bool(globally_decisive)
-    primary_factors, primary_targets, primary_global = local_target_summary("default")
-    sensitivity_factors, sensitivity_targets, sensitivity_global = local_target_summary("math")
+        return sorted(factors), localization_targets(factors, rows), locally_decisive, bool(globally_decisive)
+    primary_factors, primary_targets, primary_local, primary_global = local_target_summary("default")
+    sensitivity_factors, sensitivity_targets, sensitivity_local, sensitivity_global = local_target_summary("math")
     return {"physical_block": primary_block, "python_reference_results": results,
         "capture_residual_profile": analysis.get("capture_residual_profile"),
         "metadata_native_cpp_residual_contract": analysis.get("metadata_native_cpp_residual_contract"),
@@ -3221,9 +3275,11 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
         "global_definitive_result": results if globally_decisive else None,
         "primary_oracle_localization_factors": primary_factors,
         "primary_oracle_next_localization_targets": primary_targets,
+        "primary_oracle_locally_decisive": primary_local,
         "primary_oracle_is_global": primary_global,
         "sensitivity_control_localization_factors": sensitivity_factors,
         "sensitivity_control_next_localization_targets": sensitivity_targets,
+        "sensitivity_control_locally_decisive": sensitivity_local,
         "sensitivity_control_is_global": sensitivity_global,
         "per_target_token_decisiveness": results,
         "tokens_without_applicable_cpp_rmsnorm_reference": missing,

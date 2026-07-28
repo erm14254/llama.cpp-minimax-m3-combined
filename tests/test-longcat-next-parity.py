@@ -926,6 +926,96 @@ class ParityHarnessTests(unittest.TestCase):
         self.assertEqual(summary["definitive_localization_factors"], [])
         self.assertEqual(summary["restrained_next_localization_targets"], [])
 
+    def test_canonical_minimal_factor_sets_ignore_order_but_preserve_coalitions(self):
+        left = [["block_input"], ["attention_output", "residual_add_contract"]]
+        reordered = [["residual_add_contract", "attention_output"], ["block_input"]]
+        different = [["block_input"], ["block_input", "attention_output"]]
+        self.assertEqual(PARITY.canonical_minimal_factor_sets(left),
+                         PARITY.canonical_minimal_factor_sets(reordered))
+        self.assertNotEqual(PARITY.canonical_minimal_factor_sets(left),
+                            PARITY.canonical_minimal_factor_sets(different))
+
+    def test_missing_applicable_reference_report_suppresses_local_causality(self):
+        control = self._equal_contract_residual_analysis()
+        analysis = copy.deepcopy(control)
+        target = analysis["python_targets"]["default"]
+        name = target["per_token_applicability"][0]["applicable_cpp_rmsnorm_references"][0]
+        rows = next(iter(target["references"][name]["router_matmul_references"].values()))
+        rows[0]["softmax_references"].pop(next(iter(rows[0]["softmax_references"])))
+        summary = PARITY.primary_post_attention_residual_three_factor_summary([
+            {"physical_block": 10, "analysis": analysis},
+            {"physical_block": 12, "analysis": control}], 10)
+        row = summary["python_reference_results"]["default"][1]
+        self.assertFalse(row["applicable_reference_inventory_complete"])
+        self.assertFalse(row["target_token_causally_decisive"])
+        self.assertEqual(row["non_decisive_reason"], "applicable reference evidence is incomplete")
+        self.assertFalse(summary["primary_oracle_locally_decisive"])
+        self.assertEqual(summary["primary_oracle_localization_factors"], [])
+
+    def test_same_broad_classification_with_different_minimal_sets_is_not_locally_decisive(self):
+        control = self._equal_contract_residual_analysis()
+        analysis = copy.deepcopy(control)
+        target = analysis["python_targets"]["default"]
+        reports = []
+        for applicability in target["per_token_applicability"]:
+            for name in applicability["applicable_cpp_rmsnorm_references"]:
+                for rows in target["references"][name]["router_matmul_references"].values():
+                    reports.extend(rows[0]["softmax_references"].values())
+        for report in reports:
+            report.update({"diagnostic_outcome": "multiple single components independently sufficient",
+                "classification": "multiple single components independently sufficient",
+                "definitive_causal_classification": "multiple single components independently sufficient",
+                "minimal_sufficient_factor_sets": [["block_input"], ["attention_output"]],
+                "structural_prerequisites_valid": True,
+                "native_python_endpoint_membership_reconstruction_valid": True,
+                "causal_classification_decisive": True,
+                "classification_decisive": True})
+        reports[-1]["minimal_sufficient_factor_sets"] = [
+            ["block_input"], ["residual_add_contract"]]
+        summary = PARITY.primary_post_attention_residual_three_factor_summary([
+            {"physical_block": 10, "analysis": analysis},
+            {"physical_block": 12, "analysis": control}], 10)
+        row = summary["python_reference_results"]["default"][1]
+        self.assertTrue(row["applicable_reference_definitive_classification_agreement"])
+        self.assertFalse(row["applicable_reference_minimal_factor_set_agreement"])
+        self.assertFalse(row["applicable_reference_definitive_causal_evidence_agreement"])
+        self.assertFalse(row["target_token_causally_decisive"])
+        self.assertEqual(row["diagnostic_outcome"], "analysis not decisive")
+        self.assertIsNone(row["definitive_causal_classification"])
+        self.assertEqual(row["minimal_sufficient_factor_sets"], [])
+        self.assertEqual(row["non_decisive_reason"],
+                         "applicable minimal sufficient factor sets disagree")
+        self.assertTrue(row["descriptive_per_reference_minimal_sufficient_factor_sets"])
+        self.assertFalse(summary["primary_oracle_locally_decisive"])
+        self.assertEqual(summary["primary_oracle_localization_factors"], [])
+        self.assertEqual(summary["primary_oracle_next_localization_targets"], [])
+        self.assertIsNone(summary["global_definitive_result"])
+        self.assertEqual(summary["definitive_localization_factors"], [])
+        math_reports = []
+        math_target = analysis["python_targets"]["math"]
+        for applicability in math_target["per_token_applicability"]:
+            for name in applicability["applicable_cpp_rmsnorm_references"]:
+                for rows in math_target["references"][name]["router_matmul_references"].values():
+                    math_reports.extend(rows[0]["softmax_references"].values())
+        for report in math_reports:
+            report.update({"diagnostic_outcome": "multiple minimal sufficient coalitions",
+                "classification": "multiple minimal sufficient coalitions",
+                "definitive_causal_classification": "multiple minimal sufficient coalitions",
+                "minimal_sufficient_factor_sets": [["block_input", "attention_output"],
+                                                     ["block_input", "residual_add_contract"]],
+                "structural_prerequisites_valid": True,
+                "native_python_endpoint_membership_reconstruction_valid": True,
+                "causal_classification_decisive": True,
+                "classification_decisive": True})
+        math_reports[-1]["minimal_sufficient_factor_sets"] = [
+            ["block_input", "attention_output"], ["attention_output", "residual_add_contract"]]
+        summary = PARITY.primary_post_attention_residual_three_factor_summary([
+            {"physical_block": 10, "analysis": analysis},
+            {"physical_block": 12, "analysis": control}], 10)
+        self.assertFalse(summary["sensitivity_control_locally_decisive"])
+        self.assertEqual(summary["sensitivity_control_localization_factors"], [])
+        self.assertEqual(summary["sensitivity_control_next_localization_targets"], [])
+
     def test_residual_three_factor_stage_finiteness_failures_are_non_decisive(self):
         sides, weight, router_weight = self._residual_three_factor_sides()
         cases = []
