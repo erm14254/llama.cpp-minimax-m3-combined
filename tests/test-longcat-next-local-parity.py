@@ -2244,6 +2244,277 @@ def primary_ffn_rmsnorm_summary(block_reports, primary_block):
     return summary
 
 
+def classify_side_specific_rmsnorm(native_equal, decisive, input_restores, contract_restores,
+                                   native_python_restores=True):
+    if not decisive: return "analysis not decisive"
+    if native_equal: return "native outcomes already equal"
+    if input_restores and contract_restores: return "both components independently sufficient"
+    if input_restores: return "pre-norm input component sufficient"
+    if contract_restores: return "RMSNorm operational-contract component sufficient"
+    if native_python_restores: return "requires both components"
+    return "neither hybrid reproduces Python outcome"
+
+
+def _path_component_metrics(captured, first, second):
+    closure = np.asarray(captured - first - second, np.float32)
+    captured_rms = float(np.sqrt(np.mean(np.square(captured, dtype=np.float64))))
+    first_rms = float(np.sqrt(np.mean(np.square(first, dtype=np.float64))))
+    second_rms = float(np.sqrt(np.mean(np.square(second, dtype=np.float64))))
+    return {"exact_closure_maximum_absolute": float(np.abs(closure).max(initial=0)),
+        "exact_closure_rms": float(np.sqrt(np.mean(np.square(closure, dtype=np.float64)))),
+        "closure_cosine_similarity": _vector_metrics(captured, first + second)["cosine_similarity"],
+        "first_component_rms": first_rms, "second_component_rms": second_rms,
+        "descriptive_first_component_rms_fraction": first_rms / captured_rms if captured_rms else None,
+        "descriptive_second_component_rms_fraction": second_rms / captured_rms if captured_rms else None,
+        "path_dependent_rms_fractions_are_not_unique_causal_percentages": True}
+
+
+def ffn_rmsnorm_side_specific_contract_decomposition(sides, prefix, attended_tokens,
+                                                      python_weight, gguf_weight,
+                                                      python_epsilon, gguf_epsilon, router_weight):
+    """Diagnostic side-matched RMSNorm contracts; not a kernel identity verdict."""
+    equivalence = norm_weight_epsilon_equivalence(
+        python_weight, gguf_weight, python_epsilon, gguf_epsilon)
+    raw_weight_equal = equivalence["raw"]["exact_byte_equality"]
+    epsilon_equal = equivalence["epsilon"]["operational_float32_epsilon_exact_equality"]
+    result = {"source_lineage_established": True, "raw_norm_weight_equivalence": raw_weight_equal,
+        "operational_float32_epsilon_equivalence": epsilon_equal,
+        "diagnostic_operational_contract_analysis_is_not_torch_ggml_cpu_cuda_or_rmsnorm_kernel_identity": True,
+        "cpp_arithmetic_references": {}}
+    if not raw_weight_equal or not epsilon_equal:
+        result["status"] = "analysis not decisive"; return result
+    inputs = {name: np.asarray(sides[name][prefix + "post_attention_residual"], np.float32).reshape(
+        -1, sides[name][prefix + "post_attention_residual"].shape[-1]) for name in ("cpp", "default")}
+    outputs = {name: np.asarray(sides[name][prefix + "ffn_norm"], np.float32).reshape(
+        -1, sides[name][prefix + "ffn_norm"].shape[-1]) for name in ("cpp", "default")}
+    logits = {name: np.asarray(sides[name][prefix + "router_logits"], np.float32).reshape(-1, 384)
+              for name in ("cpp", "default")}
+    probabilities = {name: np.asarray(sides[name][prefix + "router_probabilities"], np.float32).reshape(-1, 384)
+                     for name in ("cpp", "default")}
+    captured_sets = {name: [set(row) for row in np.asarray(
+        sides[name][prefix + "router_topk_indices"]).reshape(-1, 12)] for name in ("cpp", "default")}
+    cpp_bias, _, _ = constant_bias_reconstruction(sides["cpp"][prefix + "router_probabilities"],
+        sides["cpp"][prefix + "router_selection_scores"], sides["cpp"][prefix + "router_topk_indices"],
+        attended_tokens)
+    native_probability_sets = {name: [set(_score_topk_indices(row + cpp_bias)) for row in probabilities[name]]
+                               for name in ("cpp", "default")}
+    py_weight = bf16_round_to_float32(python_weight)
+    f_python = {side: diagnostic_rmsnorm_with_operational_weight(inputs[side], py_weight,
+        np.float32(python_epsilon), "python_bf16_input_bf16_weight_contract",
+        "python_bf16_runtime_weight")[0] for side in ("cpp", "default")}
+    cpp_variants = ("float32_rmsnorm_then_final_bf16", "float64_reference_then_final_bf16")
+    for cpp_arithmetic in cpp_variants:
+        f_cpp = {side: diagnostic_rmsnorm_with_operational_weight(inputs[side], gguf_weight,
+            np.float32(gguf_epsilon), cpp_arithmetic, "gguf_float32_runtime_weight")[0]
+            for side in ("cpp", "default")}
+        native_cpp_exact = bool(np.array_equal(f_cpp["cpp"], outputs["cpp"]))
+        native_python_exact = bool(np.array_equal(f_python["default"], outputs["default"]))
+        captured_delta = np.asarray(outputs["cpp"] - outputs["default"], np.float32)
+        paths = {"input_first": {
+                "input_effect_under_cpp_contract": np.asarray(f_cpp["cpp"] - f_cpp["default"], np.float32),
+                "contract_effect_at_python_input": np.asarray(f_cpp["default"] - f_python["default"], np.float32)},
+            "contract_first": {
+                "contract_effect_at_cpp_input": np.asarray(f_cpp["cpp"] - f_python["cpp"], np.float32),
+                "input_effect_under_python_contract": np.asarray(f_python["cpp"] - f_python["default"], np.float32)}}
+        path_reports = []
+        for token, attended in enumerate(attended_tokens):
+            path_reports.append({"attended_token": int(attended),
+                "input_first": _path_component_metrics(captured_delta[token],
+                    paths["input_first"]["input_effect_under_cpp_contract"][token],
+                    paths["input_first"]["contract_effect_at_python_input"][token]),
+                "contract_first": _path_component_metrics(captured_delta[token],
+                    paths["contract_first"]["contract_effect_at_cpp_input"][token],
+                    paths["contract_first"]["input_effect_under_python_contract"][token])})
+        matmuls = {}
+        for matmul in DIAGNOSTIC_LINEAR_VARIANTS:
+            cpp_linear_residual = np.asarray(logits["cpp"] - diagnostic_router_linear(
+                outputs["cpp"], router_weight, matmul), np.float32)
+            captured_logit_delta = np.asarray(logits["cpp"] - logits["default"], np.float32)
+            remaining_linear = np.asarray(captured_logit_delta - diagnostic_router_linear(
+                captured_delta, router_weight, matmul), np.float32)
+            rows = []
+            for token, attended in enumerate(attended_tokens):
+                candidates = {"native_cpp": f_cpp["cpp"][token],
+                    "python_input_only": f_cpp["default"][token],
+                    "python_contract_only": f_python["cpp"][token],
+                    "native_python": f_python["default"][token]}
+                softmaxes = {}
+                for softmax_name, softmax in DIAGNOSTIC_SOFTMAX_REFERENCES.items():
+                    coalitions = {}
+                    for label, candidate in candidates.items():
+                        candidate_logits = diagnostic_router_linear(candidate[None, :], router_weight,
+                            matmul)[0] + cpp_linear_residual[token]
+                        cutoff = _public_cutoff(softmax(candidate_logits) + cpp_bias, int(attended))
+                        selected = set(cutoff["selected_expert_set"])
+                        coalitions[label] = {**cutoff,
+                            "equals_captured_native_cpp": selected == captured_sets["cpp"][token],
+                            "equals_captured_native_python": selected == captured_sets["default"][token],
+                            "finite": bool(np.isfinite(candidate_logits).all())}
+                    captured_membership_valid = (native_probability_sets["cpp"][token] == captured_sets["cpp"][token]
+                        and native_probability_sets["default"][token] == captured_sets["default"][token])
+                    decisive = (native_cpp_exact and native_python_exact and captured_membership_valid and
+                        coalitions["native_cpp"]["equals_captured_native_cpp"] and
+                        coalitions["native_python"]["equals_captured_native_python"] and
+                        all(row["finite"] for row in coalitions.values()))
+                    softmaxes[softmax_name] = {"coalitions": coalitions,
+                        "native_cpp_ffn_norm_reconstruction_valid": native_cpp_exact,
+                        "native_python_ffn_norm_reconstruction_valid": native_python_exact,
+                        "captured_topk_membership_reconstruction_valid": captured_membership_valid,
+                        "classification_decisive": decisive,
+                        "classification": classify_side_specific_rmsnorm(
+                            captured_sets["cpp"][token] == captured_sets["default"][token], decisive,
+                            coalitions["python_input_only"]["equals_captured_native_python"],
+                            coalitions["python_contract_only"]["equals_captured_native_python"],
+                            coalitions["native_python"]["equals_captured_native_python"])}
+                projected_terms = {path: {name: diagnostic_router_linear(value[token:token+1],
+                    router_weight, matmul)[0] for name, value in terms.items()} for path, terms in paths.items()}
+                closure_if = captured_logit_delta[token] - sum(projected_terms["input_first"].values()) - remaining_linear[token]
+                closure_cf = captured_logit_delta[token] - sum(projected_terms["contract_first"].values()) - remaining_linear[token]
+                disputed = sorted(captured_sets["cpp"][token] ^ captured_sets["default"][token])
+                projected_report = {"captured_router_logit_delta_rms": float(np.sqrt(np.mean(
+                        np.square(captured_logit_delta[token], dtype=np.float64)))),
+                    "raw": {"input_first": _linear_projection_metrics(captured_logit_delta[token],
+                        sum(projected_terms["input_first"].values()) + remaining_linear[token]),
+                        "contract_first": _linear_projection_metrics(captured_logit_delta[token],
+                        sum(projected_terms["contract_first"].values()) + remaining_linear[token])},
+                    "maximum_centered": {path: _linear_projection_metrics(captured_logit_delta[token] -
+                        captured_logit_delta[token].max(), sum(terms.values()) + remaining_linear[token] -
+                        (sum(terms.values()) + remaining_linear[token]).max()) for path, terms in projected_terms.items()},
+                    "mean_centered": {path: _linear_projection_metrics(captured_logit_delta[token] -
+                        captured_logit_delta[token].mean(), sum(terms.values()) + remaining_linear[token] -
+                        (sum(terms.values()) + remaining_linear[token]).mean()) for path, terms in projected_terms.items()},
+                    "input_first_closure_maximum_absolute": float(np.abs(closure_if).max(initial=0)),
+                    "input_first_closure_rms": float(np.sqrt(np.mean(np.square(closure_if, dtype=np.float64)))),
+                    "contract_first_closure_maximum_absolute": float(np.abs(closure_cf).max(initial=0)),
+                    "contract_first_closure_rms": float(np.sqrt(np.mean(np.square(closure_cf, dtype=np.float64)))),
+                    "disputed_experts": [{"expert_id": int(expert),
+                        "captured_router_logit_delta": float(captured_logit_delta[token, expert]),
+                        "input_first_input_projection": float(projected_terms["input_first"][
+                            "input_effect_under_cpp_contract"][expert]),
+                        "input_first_contract_projection": float(projected_terms["input_first"][
+                            "contract_effect_at_python_input"][expert]),
+                        "contract_first_contract_projection": float(projected_terms["contract_first"][
+                            "contract_effect_at_cpp_input"][expert]),
+                        "contract_first_input_projection": float(projected_terms["contract_first"][
+                            "input_effect_under_python_contract"][expert]),
+                        "remaining_router_linear_residual": float(remaining_linear[token, expert]),
+                        "input_first_closure_residual": float(closure_if[expert]),
+                        "contract_first_closure_residual": float(closure_cf[expert])} for expert in disputed]}
+                rows.append({"attended_token": int(attended), "softmax_references": softmaxes,
+                    "router_projected_path_decomposition": projected_report})
+            matmuls[matmul] = rows
+        result["cpp_arithmetic_references"][cpp_arithmetic] = {
+            "native_cpp_ffn_norm_reconstruction_valid": native_cpp_exact,
+            "native_python_ffn_norm_reconstruction_valid": native_python_exact,
+            "exact_path_decompositions": path_reports, "router_matmul_references": matmuls}
+    # A side-specific classification is decisive only if every required arithmetic,
+    # matmul, and softmax diagnostic reaches the same categorical result.
+    for token_index, _ in enumerate(attended_tokens):
+        reports = [softmax_report
+            for reference in result["cpp_arithmetic_references"].values()
+            for rows in reference["router_matmul_references"].values()
+            for softmax_report in rows[token_index]["softmax_references"].values()]
+        original = [report["classification"] for report in reports]
+        agreement = len(set(original)) == 1
+        for report in reports:
+            report["classification_before_required_reference_agreement"] = report["classification"]
+            report["required_reference_classification_agreement"] = agreement
+            if not agreement:
+                report["classification_decisive"] = False
+                report["classification"] = "analysis not decisive"
+    result["status"] = "complete"
+    return result
+
+
+def primary_side_specific_rmsnorm_summary(block_reports, primary_block):
+    selected = next((row for row in block_reports if row["physical_block"] == primary_block), None)
+    control = next((row for row in block_reports if row["physical_block"] == 12), None)
+    if selected is None: return None
+    analysis = selected["analysis"]
+    classifications = {}; input_tokens = set(); contract_tokens = set(); both_tokens = set()
+    all_decisive = True
+    if analysis.get("status") == "complete":
+        for arithmetic, reference in analysis["cpp_arithmetic_references"].items():
+            for matmul, rows in reference["router_matmul_references"].items():
+                for row in rows:
+                    for softmax, report in row["softmax_references"].items():
+                        token = row["attended_token"]
+                        classification = report.get(
+                            "classification_before_required_reference_agreement", report["classification"])
+                        classifications.setdefault(token, {}).setdefault(arithmetic, {}).setdefault(matmul, {})[
+                            softmax] = classification
+                        all_decisive &= report["classification_decisive"]
+                        if classification == "pre-norm input component sufficient": input_tokens.add(token)
+                        if classification == "RMSNorm operational-contract component sufficient": contract_tokens.add(token)
+                        if classification == "requires both components": both_tokens.add(token)
+    def cross_cpp_agrees():
+        for token, arithmetic in classifications.items():
+            matmuls = {name for refs in arithmetic.values() for name in refs}
+            softmaxes = {name for refs in arithmetic.values() for values in refs.values() for name in values}
+            for matmul in matmuls:
+                for softmax in softmaxes:
+                    values = {refs[matmul][softmax] for refs in arithmetic.values()
+                              if matmul in refs and softmax in refs[matmul]}
+                    if len(values) != 1: return False
+        return True
+    def cross_matmul_agrees():
+        return all(len({softmaxes[softmax] for softmaxes in matmuls.values() if softmax in softmaxes}) == 1
+            for arithmetic in classifications.values() for matmuls in arithmetic.values()
+            for softmax in {name for values in matmuls.values() for name in values})
+    def cross_softmax_agrees():
+        return all(len(set(softmaxes.values())) == 1 for arithmetic in classifications.values()
+            for matmuls in arithmetic.values() for softmaxes in matmuls.values())
+    cross_cpp = cross_cpp_agrees(); cross_matmul = cross_matmul_agrees()
+    cross_softmax = cross_softmax_agrees()
+    def control_aligned():
+        if control is None or control["analysis"].get("status") != "complete": return False
+        for reference in control["analysis"]["cpp_arithmetic_references"].values():
+            for rows in reference["router_matmul_references"].values():
+                for row in rows:
+                    for report in row["softmax_references"].values():
+                        if not report["classification_decisive"] or report["classification"] != "native outcomes already equal":
+                            return False
+        return True
+    control_ok = control_aligned()
+    conclusion = None
+    if (all_decisive and cross_cpp and cross_matmul and cross_softmax and control_ok and
+            input_tokens == {1} and both_tokens == {3} and not contract_tokens):
+        conclusion = ("Block-10 token 1 is caused by inherited pre-norm input drift. "
+            "Block-10 token 3 is jointly caused by inherited pre-norm input drift and the Python-versus-C++ "
+            "RMSNorm intermediate-rounding contract. A router change is not justified. An RMSNorm-only change "
+            "would not by itself restore complete block-10 parity.")
+    affected = sorted(token for token, arithmetic in classifications.items()
+        if any(value != "native outcomes already equal" for matmuls in arithmetic.values()
+               for softmaxes in matmuls.values() for value in softmaxes.values()))
+    native_reconstructions = {arithmetic: {
+        "native_cpp_ffn_norm_reconstruction_valid": reference[
+            "native_cpp_ffn_norm_reconstruction_valid"],
+        "native_python_ffn_norm_reconstruction_valid": reference[
+            "native_python_ffn_norm_reconstruction_valid"]}
+        for arithmetic, reference in analysis.get("cpp_arithmetic_references", {}).items()}
+    exact_paths = {arithmetic: reference["exact_path_decompositions"]
+        for arithmetic, reference in analysis.get("cpp_arithmetic_references", {}).items()}
+    router_paths = {arithmetic: {matmul: [{"attended_token": row["attended_token"],
+        "router_projected_path_decomposition": row["router_projected_path_decomposition"]} for row in rows]
+        for matmul, rows in reference["router_matmul_references"].items()}
+        for arithmetic, reference in analysis.get("cpp_arithmetic_references", {}).items()}
+    return {"physical_block": primary_block, "affected_attended_tokens": affected,
+        "native_side_matched_reconstructions_required": True, "per_reference_classifications": classifications,
+        "native_side_matched_reconstruction_results": native_reconstructions,
+        "cross_cpp_arithmetic_agreement": cross_cpp, "cross_router_matmul_agreement": cross_matmul,
+        "cross_router_softmax_agreement": cross_softmax,
+        "tokens_explained_by_pre_norm_input": sorted(input_tokens),
+        "tokens_explained_by_operational_contract": sorted(contract_tokens),
+        "tokens_requiring_both": sorted(both_tokens),
+        "physical_block_12_remains_aligned_control": control_ok,
+        "exact_path_decompositions": exact_paths,
+        "router_projected_path_decompositions": router_paths,
+        "restrained_final_conclusion": conclusion,
+        "next_tracks_not_implemented": ["upstream localization of post_attention_residual",
+            "bounded C++ RMSNorm-contract implementation experiment"],
+        "diagnostic_is_not_torch_ggml_cpu_cuda_or_rmsnorm_kernel_identity": True}
+
+
 def primary_router_cutoff_summary(router_cutoffs, component_rows, even_analysis):
     primary = next((row for row in router_cutoffs
         if row["pairwise_disputed_experts"]["cpp_vs_python_default"]), None)
@@ -2559,6 +2830,7 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
             first_both = name
     routers = []; first_real_default = first_real_math = None; even_analysis = []
     router_cutoffs = []; probability_bias_reports = []; logit_softmax_reports = []; linear_reports = []; norm_reports = []
+    side_specific_norm_reports = []
     for block in range(start, start + count, 2):
         p = f"physical_block_{block:02d}__"
         semantic = semantic_router_report(sides["cpp"][p + "router_topk_indices"],
@@ -2585,6 +2857,13 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
                 norm_arrays[f"physical_block_{block:02d}__gguf_ffn_norm_weight"],
                 norm_metadata["python_epsilon"], norm_metadata["gguf_epsilon"],
                 router_weights[f"physical_block_{block:02d}__gguf_weight"])})
+            side_specific_norm_reports.append({"physical_block": block,
+                "analysis": ffn_rmsnorm_side_specific_contract_decomposition(
+                    sides, p, attended_tokens,
+                    norm_arrays[f"physical_block_{block:02d}__python_ffn_norm_weight"],
+                    norm_arrays[f"physical_block_{block:02d}__gguf_ffn_norm_weight"],
+                    norm_metadata["python_epsilon"], norm_metadata["gguf_epsilon"],
+                    router_weights[f"physical_block_{block:02d}__gguf_weight"])})
         if semantic["has_cpp_vs_python_default_real_expert_set_difference"] and first_real_default is None:
             first_real_default = block
         if semantic["has_cpp_vs_python_math_real_expert_set_difference"] and first_real_math is None:
@@ -2622,6 +2901,8 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
     primary_logit_softmax = primary_logit_softmax_summary(logit_softmax_reports)
     primary_linear = primary_router_linear_summary(linear_reports, first_real_default)
     primary_norm = primary_ffn_rmsnorm_summary(norm_reports, first_real_default)
+    primary_side_specific_norm = primary_side_specific_rmsnorm_summary(
+        side_specific_norm_reports, first_real_default)
     return {"accepted": False, "array_count": len(expected), "physical_block_start": start,
         "physical_block_count": count, "primary_oracle": "python_default",
         "sensitivity_control": "python_math",
@@ -2641,6 +2922,7 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
         "primary_oracle_router_logit_softmax_decomposition": primary_logit_softmax,
         "primary_oracle_router_linear_decomposition": primary_linear,
         "primary_oracle_ffn_rmsnorm_decomposition": primary_norm,
+        "primary_oracle_ffn_rmsnorm_side_specific_contract_decomposition": primary_side_specific_norm,
         **{f"block_{block}_dominant_branch_vs_{label}": attribution[f"block_{block}_vs_{label}"]["dominant_branch"]
            for block in range(start + 1, start + count, 2) for label in ("default", "math")},
         "components": results, "router_semantics": routers,
@@ -2649,6 +2931,7 @@ def compare_component_window(default_npz, math_npz, capture_dir, attention_mask,
         "router_logit_softmax_decomposition": logit_softmax_reports,
         "router_linear_decomposition": linear_reports,
         "ffn_rmsnorm_decomposition": norm_reports,
+        "ffn_rmsnorm_side_specific_contract_decomposition": side_specific_norm_reports,
         "even_block_shortcut_analysis": even_analysis, "odd_block_cross_substitution": attribution}
 def reconstruction_metrics(target, alternatives):
     reports = {}

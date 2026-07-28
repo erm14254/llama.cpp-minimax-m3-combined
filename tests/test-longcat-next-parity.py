@@ -303,6 +303,78 @@ class ParityHarnessTests(unittest.TestCase):
         self.assertEqual(python_metadata["operational_weight_sha256"],
                          hashlib.sha256(rounded_weight.tobytes()).hexdigest())
 
+    def _side_specific_rmsnorm_sides(self, input_delta=.25):
+        hidden = 32; prefix = "physical_block_10__"
+        weight = np.linspace(.5001, 1.4999, hidden, dtype=np.float32)
+        cpp_input = np.linspace(.123, 2.789, hidden, dtype=np.float32).reshape(1, hidden)
+        python_input = cpp_input.copy(); python_input[0, 0] += input_delta
+        cpp_output, _ = PARITY.diagnostic_rmsnorm_with_operational_weight(cpp_input, weight, 1e-6,
+            "float32_rmsnorm_then_final_bf16", "gguf_float32_runtime_weight")
+        python_output, _ = PARITY.diagnostic_rmsnorm_with_operational_weight(python_input, weight, 1e-6,
+            "python_bf16_input_bf16_weight_contract", "python_bf16_runtime_weight")
+        router_weight = np.zeros((384, hidden), np.float32); router_weight[12, 0] = 1
+        cpp_linear = PARITY.diagnostic_router_linear(cpp_output, router_weight, "float32_matmul")
+        python_linear = PARITY.diagnostic_router_linear(python_output, router_weight, "float32_matmul")
+        threshold = np.float32((cpp_linear[0, 12] + python_linear[0, 12]) / 2)
+        base = np.full((1, 384), -10, np.float32); base[:, :11] = 10; base[:, 11] = threshold
+        residual = base - cpp_linear
+        sides = {}
+        for name, input_value, output in (("cpp", cpp_input, cpp_output),
+                ("default", python_input, python_output), ("math", python_input, python_output)):
+            logits = PARITY.diagnostic_router_linear(output, router_weight, "float32_matmul") + residual
+            probabilities = PARITY.diagnostic_softmax_stable_float32(logits)
+            indices = PARITY._score_topk_indices(probabilities[0]).reshape(1, 1, 12)[..., ::-1]
+            sides[name] = {prefix + "post_attention_residual": input_value.reshape(1, 1, hidden),
+                prefix + "ffn_norm": output.reshape(1, 1, hidden),
+                prefix + "router_logits": logits.reshape(1, 1, 384),
+                prefix + "router_probabilities": probabilities.reshape(1, 1, 384),
+                prefix + "router_selection_scores": probabilities.reshape(1, 1, 384),
+                prefix + "router_topk_indices": indices}
+        return sides, weight, router_weight
+
+    def test_side_specific_rmsnorm_paths_and_native_contracts(self):
+        sides, weight, router_weight = self._side_specific_rmsnorm_sides()
+        report = PARITY.ffn_rmsnorm_side_specific_contract_decomposition(
+            sides, "physical_block_10__", [1], weight, weight.copy(), 1e-6, 1e-6, router_weight)
+        self.assertEqual(report["status"], "complete")
+        for reference in report["cpp_arithmetic_references"].values():
+            self.assertTrue(reference["native_cpp_ffn_norm_reconstruction_valid"])
+            self.assertTrue(reference["native_python_ffn_norm_reconstruction_valid"])
+            paths = reference["exact_path_decompositions"][0]
+            self.assertLess(paths["input_first"]["exact_closure_rms"], 1e-6)
+            self.assertLess(paths["contract_first"]["exact_closure_rms"], 1e-6)
+            for rows in reference["router_matmul_references"].values():
+                projected = rows[0]["router_projected_path_decomposition"]
+                self.assertLess(projected["input_first_closure_rms"], 1e-6)
+                self.assertLess(projected["contract_first_closure_rms"], 1e-6)
+                for expert in projected["disputed_experts"]:
+                    self.assertLess(abs(expert["input_first_closure_residual"]), 1e-6)
+                    self.assertLess(abs(expert["contract_first_closure_residual"]), 1e-6)
+                for softmax in rows[0]["softmax_references"].values():
+                    self.assertTrue(softmax["classification_decisive"])
+                    self.assertEqual(len(softmax["coalitions"]["native_cpp"]["selected_expert_set"]), 12)
+        broken = {side: dict(values) for side, values in sides.items()}
+        broken["default"] = dict(broken["default"])
+        broken["default"]["physical_block_10__ffn_norm"] = np.zeros_like(
+            broken["default"]["physical_block_10__ffn_norm"])
+        invalid = PARITY.ffn_rmsnorm_side_specific_contract_decomposition(
+            broken, "physical_block_10__", [1], weight, weight.copy(), 1e-6, 1e-6, router_weight)
+        for reference in invalid["cpp_arithmetic_references"].values():
+            for rows in reference["router_matmul_references"].values():
+                for softmax in rows[0]["softmax_references"].values():
+                    self.assertFalse(softmax["classification_decisive"])
+                    self.assertEqual(softmax["classification"], "analysis not decisive")
+
+    def test_side_specific_rmsnorm_classification_categories(self):
+        classify = PARITY.classify_side_specific_rmsnorm
+        self.assertEqual(classify(False, True, True, False), "pre-norm input component sufficient")
+        self.assertEqual(classify(False, True, False, True),
+                         "RMSNorm operational-contract component sufficient")
+        self.assertEqual(classify(False, True, True, True), "both components independently sufficient")
+        self.assertEqual(classify(False, True, False, False), "requires both components")
+        self.assertEqual(classify(True, True, False, False), "native outcomes already equal")
+        self.assertEqual(classify(False, False, True, True), "analysis not decisive")
+
     def test_router_tensor_names_resolve_logical_and_physical_coordinates(self):
         expected = {
             (5, 10): ("model.layers.5.mlp.router.classifier.weight",
