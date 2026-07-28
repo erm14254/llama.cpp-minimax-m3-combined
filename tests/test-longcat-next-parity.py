@@ -18,9 +18,162 @@ EXTRACTOR_PATH = Path(__file__).parents[1] / "scripts/longcat-next/extract-route
 EXTRACTOR_SPEC = importlib.util.spec_from_file_location("longcat_router_extractor", EXTRACTOR_PATH)
 EXTRACTOR = importlib.util.module_from_spec(EXTRACTOR_SPEC)
 EXTRACTOR_SPEC.loader.exec_module(EXTRACTOR)
+NORM_EXTRACTOR_PATH = Path(__file__).parents[1] / "scripts/longcat-next/extract-ffn-rmsnorm-diagnostic.py"
+NORM_EXTRACTOR_SPEC = importlib.util.spec_from_file_location("longcat_norm_extractor", NORM_EXTRACTOR_PATH)
+NORM_EXTRACTOR = importlib.util.module_from_spec(NORM_EXTRACTOR_SPEC)
+NORM_EXTRACTOR_SPEC.loader.exec_module(NORM_EXTRACTOR)
 
 
 class ParityHarnessTests(unittest.TestCase):
+    def test_ffn_rmsnorm_names_vector_extraction_and_epsilon(self):
+        expected = {(5, 10): ("model.layers.5.post_attention_layernorm.0.weight", "blk.10.ffn_norm.weight"),
+                    (6, 12): ("model.layers.6.post_attention_layernorm.0.weight", "blk.12.ffn_norm.weight")}
+        for logical, physical in NORM_EXTRACTOR.LAYERS:
+            self.assertEqual((EXTRACTOR.resolve_tensor_name(NORM_EXTRACTOR.PYTHON_TEMPLATE, logical, physical),
+                              EXTRACTOR.resolve_tensor_name(NORM_EXTRACTOR.GGUF_TEMPLATE, logical, physical)),
+                             expected[(logical, physical)])
+        vector, transposed = NORM_EXTRACTOR.canonical_norm_weight(np.zeros((1, 3072), np.float32))
+        self.assertEqual(vector.shape, (3072,)); self.assertTrue(transposed)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); (root / "config.json").write_text('{"rms_norm_eps": 1e-6}')
+            value, key = NORM_EXTRACTOR.python_epsilon(root)
+            self.assertEqual((value, key), (1e-6, "rms_norm_eps"))
+
+    def test_selective_bf16_and_f32_norm_vector_safetensor_extraction(self):
+        import torch
+        from safetensors.torch import save_file
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); shard = root / "norm.safetensors"
+            bf16 = torch.linspace(-1, 1, 3072).to(torch.bfloat16); f32 = torch.ones(3072)
+            save_file({"norm.bf16": bf16, "norm.f32": f32, "unrequested": torch.zeros(3072)}, shard)
+            index = {"weight_map": {name: shard.name for name in ("norm.bf16", "norm.f32", "unrequested")}}
+            got, dtype, _ = EXTRACTOR.safetensor_weight(root, index, "norm.bf16")
+            canonical, transposed = NORM_EXTRACTOR.canonical_norm_weight(got)
+            self.assertEqual((dtype, canonical.shape, transposed), ("torch.bfloat16", (3072,), False))
+            np.testing.assert_array_equal(canonical, bf16.float().numpy())
+            got, dtype, _ = EXTRACTOR.safetensor_weight(root, index, "norm.f32")
+            self.assertEqual((dtype, got.dtype), ("torch.float32", np.float32))
+
+    def test_rmsnorm_diagnostics_equivalence_and_variants(self):
+        weight = np.linspace(.5, 1.5, 32, dtype=np.float32)
+        gguf = PARITY.bf16_round_to_float32(weight)
+        equivalent = PARITY.norm_weight_epsilon_equivalence(weight, gguf, 1e-6, 1e-6)
+        self.assertTrue(equivalent["shared_components_valid"])
+        mismatch = gguf.copy(); mismatch[0] += 1
+        self.assertFalse(PARITY.norm_weight_epsilon_equivalence(weight, mismatch, 1e-6, 1e-6)[
+            "shared_components_valid"])
+        self.assertFalse(PARITY.norm_weight_epsilon_equivalence(weight, gguf, 1e-6, 2e-6)[
+            "epsilon"]["exact_equality"])
+        value = np.linspace(-2, 2, 64, dtype=np.float32).reshape(2, 32)
+        outputs = {}
+        for variant in PARITY.RMSNORM_VARIANTS:
+            outputs[variant], scalars = PARITY.diagnostic_rmsnorm(value, weight, 1e-6, variant)
+            self.assertTrue(np.isfinite(outputs[variant]).all()); self.assertEqual(len(scalars["mean_square"]), 2)
+        manual_x = np.asarray(value, np.float32)
+        ms = np.mean(np.asarray(manual_x * manual_x, np.float32), axis=-1, keepdims=True, dtype=np.float32)
+        inv = np.asarray(1 / np.sqrt(np.asarray(ms + np.float32(1e-6), np.float32)), np.float32)
+        manual = PARITY.bf16_round_to_float32(PARITY.bf16_round_to_float32(manual_x * inv) *
+                                               PARITY.bf16_round_to_float32(weight))
+        np.testing.assert_array_equal(outputs["python_bf16_intermediate_contract"], manual)
+
+    def _write_norm_artifact(self, root):
+        arrays = {key: np.ones((3072,), np.float32) for key in PARITY.FFN_RMSNORM_ARRAY_KEYS}
+        npz = root / "norm.npz"; EXTRACTOR.deterministic_npz(npz, arrays)
+        records = []
+        for logical, physical in ((5, 10), (6, 12)):
+            for short, source in (("python", "python_checkpoint"), ("gguf", "gguf")):
+                key = f"physical_block_{physical:02d}__{short}_ffn_norm_weight"
+                records.append(EXTRACTOR.make_weight_record(logical, physical, source, key, arrays[key],
+                                                             "BF16", False, "synthetic"))
+        metadata = {"schema_version": 1, "bounded_physical_blocks": [10, 12],
+            "model_instantiated": False, "inference_executed": False, "weight_records": records,
+            "python_epsilon": 1e-6, "gguf_epsilon": 1e-6,
+            "npz_sha256": hashlib.sha256(npz.read_bytes()).hexdigest()}
+        js = root / "norm.json"; js.write_text(json.dumps(metadata)); return npz, js
+
+    def test_rmsnorm_artifact_binding(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); npz, js = self._write_norm_artifact(root)
+            arrays, metadata = PARITY.load_ffn_rmsnorm_artifacts(npz, js)
+            self.assertEqual(set(arrays), PARITY.FFN_RMSNORM_ARRAY_KEYS); self.assertEqual(metadata["python_epsilon"], 1e-6)
+            damaged = json.loads(js.read_text()); damaged["npz_sha256"] = "0" * 64; js.write_text(json.dumps(damaged))
+            with self.assertRaises(ValueError): PARITY.load_ffn_rmsnorm_artifacts(npz, js)
+            for mutation in ("extra", "missing", "shape", "dtype", "nonfinite"):
+                values = {key: value.copy() for key, value in arrays.items()}; first = next(iter(values))
+                if mutation == "extra": values["extra"] = np.zeros(1, np.float32)
+                elif mutation == "missing": values.pop(first)
+                elif mutation == "shape": values[first] = np.zeros(3071, np.float32)
+                elif mutation == "dtype": values[first] = values[first].astype(np.float64)
+                else: values[first][0] = np.nan
+                candidate = root / f"{mutation}.npz"; EXTRACTOR.deterministic_npz(candidate, values)
+                candidate_metadata = json.loads(json.dumps(metadata))
+                candidate_metadata["npz_sha256"] = hashlib.sha256(candidate.read_bytes()).hexdigest()
+                candidate_json = root / f"{mutation}.json"; candidate_json.write_text(json.dumps(candidate_metadata))
+                with self.assertRaises(ValueError):
+                    PARITY.load_ffn_rmsnorm_artifacts(candidate, candidate_json)
+
+    def _rmsnorm_sides(self, pre_delta, norm_residual_delta, boundary_gap):
+        hidden = 32; prefix = "physical_block_10__"; weight = np.ones(hidden, np.float32)
+        inputs = {"cpp": np.ones((1, 1, hidden), np.float32),
+                  "default": np.ones((1, 1, hidden), np.float32),
+                  "math": np.ones((1, 1, hidden), np.float32)}
+        inputs["default"][..., 0] += pre_delta; inputs["math"][..., 0] += pre_delta
+        outputs = {}
+        for name in inputs:
+            outputs[name], _ = PARITY.diagnostic_rmsnorm(
+                inputs[name], weight, 1e-6, "python_bf16_intermediate_contract")
+        outputs["default"][..., 0] += norm_residual_delta; outputs["math"][..., 0] += norm_residual_delta
+        router_weight = np.zeros((384, hidden), np.float32); router_weight[12, 0] = 1
+        cpp_linear = PARITY.diagnostic_router_linear(outputs["cpp"].reshape(1, hidden), router_weight,
+                                                     "float32_matmul").reshape(1, 1, 384)
+        base = np.full((1, 1, 384), -10, np.float32); base[..., :11] = 10
+        base[..., 11] = np.float32(boundary_gap); base[..., 12] = 0
+        linear_residual = base - cpp_linear; sides = {}
+        for name in inputs:
+            logits = PARITY.diagnostic_router_linear(outputs[name].reshape(1, hidden), router_weight,
+                "float32_matmul").reshape(1, 1, 384) + linear_residual
+            probabilities = PARITY.diagnostic_softmax_stable_float32(logits)
+            indices = PARITY._score_topk_indices(probabilities.reshape(384)).reshape(1, 1, 12)[..., ::-1]
+            sides[name] = {prefix + "post_attention_residual": inputs[name], prefix + "ffn_norm": outputs[name],
+                prefix + "router_logits": logits, prefix + "router_probabilities": probabilities,
+                prefix + "router_selection_scores": probabilities.copy(), prefix + "router_topk_indices": indices}
+        return sides, weight, router_weight
+
+    def test_rmsnorm_end_to_end_membership_and_delta_projection(self):
+        cases = ((1.0, 0.0, .1, "pre-norm input component sufficient"),
+                 (0.0, .25, .1, "RMSNorm diagnostic residual sufficient"),
+                 (1.0, .25, .1, "both components independently sufficient"),
+                 (.02, .02, .03, "requires both components"),
+                 (0.0, 0.0, .1, "native outcomes already equal"))
+        reports = []
+        for pre, residual, gap, expected in cases:
+            sides, weight, router_weight = self._rmsnorm_sides(pre, residual, gap)
+            report = PARITY.ffn_rmsnorm_block_decomposition(
+                sides, "physical_block_10__", [0], weight, PARITY.bf16_round_to_float32(weight),
+                1e-6, 1e-6, router_weight)
+            self.assertEqual(report["status"], "complete")
+            self.assertEqual(report["source_lineage"]["capture_input_surface"], "post_attention_residual")
+            self.assertFalse(report["source_lineage"]["block_input_is_norm_input"])
+            classifications = {softmax["classification"] for norm in report["references"].values()
+                for matmul in norm["router_matmul_references"].values() for token in matmul
+                for softmax in token["softmax_references"].values()}
+            self.assertEqual(classifications, {expected})
+            for norm in report["references"].values():
+                self.assertLess(norm["ffn_norm_delta_decomposition"][0]["rms_closure_error"], 1e-6)
+                for matmul in norm["router_matmul_references"].values():
+                    projected = matmul[0]["router_projected_decomposition"]
+                    self.assertLess(projected["total_closure_rms"], 1e-6)
+                    for softmax in matmul[0]["softmax_references"].values():
+                        self.assertTrue(all(len(row["selected_expert_set"]) == 12
+                                            for row in softmax["coalitions"].values()))
+            reports.append(report)
+        primary = PARITY.primary_ffn_rmsnorm_summary([
+            {"physical_block": 10, "analysis": reports[0]},
+            {"physical_block": 12, "analysis": reports[-1]}], 10)
+        self.assertTrue(primary["physical_block_12_remains_aligned_control"])
+        self.assertEqual(primary["tokens_explained_by_pre_norm_input"], [0])
+        self.assertIn("No RMSNorm implementation change is justified", primary["stop_condition_conclusion"])
+
     def test_router_tensor_names_resolve_logical_and_physical_coordinates(self):
         expected = {
             (5, 10): ("model.layers.5.mlp.router.classifier.weight",
