@@ -64,15 +64,18 @@ def weight_equivalence(python_weight, gguf_weight):
 def safetensor_weight(checkpoint_dir, index, tensor_name):
     try:
         from safetensors import safe_open
+        import torch
     except ImportError as exc:
-        raise RuntimeError("safetensors is required only on the extraction workstation") from exc
+        raise RuntimeError("safetensors and torch are required only on the extraction workstation") from exc
     shard = index["weight_map"].get(tensor_name)
     if shard is None:
         raise KeyError(f"checkpoint index does not contain {tensor_name}")
     path = checkpoint_dir / shard
-    with safe_open(path, framework="np", device="cpu") as handle:
-        value = handle.get_tensor(tensor_name)
-    return value, path.name
+    with safe_open(path, framework="pt", device="cpu") as handle:
+        tensor = handle.get_tensor(tensor_name)
+        source_dtype = str(tensor.dtype)
+        value = tensor.detach().to(dtype=torch.float32, device="cpu").contiguous().numpy()
+    return np.ascontiguousarray(value, dtype=np.float32), source_dtype, path.name
 
 
 def gguf_weight(path, tensor_name):
@@ -111,11 +114,11 @@ def main():
     index_path = args.checkpoint_dir / args.checkpoint_index
     index = json.loads(index_path.read_text(encoding="utf-8"))
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    arrays = {}; records = []
+    arrays = {}; records = []; equivalence_records = []
     for logical, physical in LAYERS:
         python_name = args.python_name_template.format(layer=logical)
         gguf_name = args.gguf_name_template.format(layer=logical)
-        py_raw, shard = safetensor_weight(args.checkpoint_dir, index, python_name)
+        py_raw, py_dtype, shard = safetensor_weight(args.checkpoint_dir, index, python_name)
         gg_raw, gg_type = gguf_weight(args.gguf, gguf_name)
         py, py_t = canonical_router_weight(py_raw); gg, gg_t = canonical_router_weight(gg_raw)
         py = np.asarray(py, np.float32); gg = np.asarray(gg, np.float32)
@@ -130,14 +133,19 @@ def main():
                 "sha256": hashlib.sha256(value.tobytes()).hexdigest(),
                 "finite_audit": {"finite": bool(np.isfinite(value).all()),
                                  "element_count": int(value.size)}}
-        records += [record("python_checkpoint", python_name, py, str(py_raw.dtype), py_t, shard),
+        records += [record("python_checkpoint", python_name, py, py_dtype, py_t, shard),
                     record("gguf", gguf_name, gg, gg_type, gg_t, args.gguf.name)]
-        records.append({"logical_layer": logical, "physical_even_block": physical,
-                        "weight_equivalence_audit": weight_equivalence(py, gg)})
-    deterministic_npz(args.output_dir / "router-linear-diagnostic.npz", arrays)
-    metadata = {"schema_version": 1, "diagnostic_only": True,
+        equivalence_records.append({"logical_layer": logical, "physical_even_block": physical,
+            "python_array_key": f"physical_block_{physical:02d}__python_weight",
+            "gguf_array_key": f"physical_block_{physical:02d}__gguf_weight",
+            "weight_equivalence_audit": weight_equivalence(py, gg)})
+    npz_path = args.output_dir / "router-linear-diagnostic.npz"
+    deterministic_npz(npz_path, arrays)
+    metadata = {"schema_version": 2, "diagnostic_only": True,
         "model_instantiated": False, "inference_executed": False,
-        "bounded_physical_blocks": [10, 12], "records": records}
+        "bounded_physical_blocks": [10, 12], "weight_records": records,
+        "weight_equivalence_records": equivalence_records,
+        "npz_sha256": hashlib.sha256(npz_path.read_bytes()).hexdigest()}
     (args.output_dir / "router-linear-diagnostic.json").write_text(
         json.dumps(metadata, indent=2) + "\n", encoding="ascii")
 

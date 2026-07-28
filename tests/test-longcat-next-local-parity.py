@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Opt-in LongCat-Next C++ capture/comparison with frozen Stage-1 policy."""
 import argparse
+import hashlib
 import itertools
 import json
 import math
@@ -33,6 +34,9 @@ COMPONENT_MOE_SUFFIXES = ("router_logits", "router_probabilities", "router_selec
 OBSERVED_FLOAT32_ROUTER_SUFFIXES = {
     "identity_residual", "identity_weight_sum", "router_logits", "router_probabilities",
     "router_selection_scores", "router_topk_weights"}
+ROUTER_LINEAR_ARRAY_KEYS = {
+    f"physical_block_{block:02d}__{source}_weight"
+    for block in (10, 12) for source in ("python", "gguf")}
 
 
 def observed_bfloat16_policy_names():
@@ -1420,7 +1424,10 @@ def diagnostic_router_linear(router_input, weight, variant):
 def router_input_lineage_audit(sides, prefix, attended_tokens):
     """Establish the norm-output router input; block_input is deliberately audited as a rejected alias."""
     reports = {}
-    established = True; block_alias_exact = True
+    source_lineage_established = True
+    numerical_lineage_consistent = True
+    block_alias_exact = True
+    total_nonzero = 0
     for side in ("cpp", "default", "math"):
         identity = np.asarray(sides[side][prefix + "identity_residual"], np.float32).reshape(
             -1, sides[side][prefix + "identity_residual"].shape[-1])
@@ -1428,26 +1435,42 @@ def router_input_lineage_audit(sides, prefix, attended_tokens):
         ffn_norm = np.asarray(sides[side][prefix + "ffn_norm"], np.float32).reshape(identity.shape)
         block_input = np.asarray(sides[side][prefix + "block_input"], np.float32).reshape(identity.shape)
         valid = np.flatnonzero(weights != 0)
+        total_nonzero += int(valid.size)
         if valid.size:
             reconstructed = identity[valid] / weights[valid, None]
             norm_metrics = _vector_metrics(reconstructed, ffn_norm[valid])
             block_metrics = _vector_metrics(reconstructed, block_input[valid])
-            side_established = bool(norm_metrics["maximum_absolute_difference"] <= 2e-6)
-            block_alias_exact &= bool(block_metrics["exact_equality"])
+            rounded = bf16_round_to_float32(reconstructed)
+            finite = all(np.isfinite(value).all() for value in (
+                reconstructed, rounded, ffn_norm[valid], block_input[valid], weights[valid]))
+            norm_exact = bool(finite and np.array_equal(rounded, ffn_norm[valid]))
+            block_exact = bool(finite and np.array_equal(rounded, block_input[valid]))
+            side_consistent = norm_exact
+            block_alias_exact &= block_exact
         else:
-            norm_metrics = block_metrics = None; side_established = False; block_alias_exact = False
-        established &= side_established
+            norm_metrics = block_metrics = None
+            finite = norm_exact = block_exact = side_consistent = False
+            block_alias_exact = False
+        numerical_lineage_consistent &= side_consistent
         reports[side] = {"tokens_with_nonzero_identity_weight_sum": [int(attended_tokens[i]) for i in valid],
-            "identity_residual_divided_by_weight_vs_ffn_norm": norm_metrics,
-            "identity_residual_divided_by_weight_vs_block_input": block_metrics,
-            "numerical_lineage_consistent_with_ffn_norm": side_established}
-    return {"status": "established" if established else "not established",
-        "router_input_canonical_surface": "ffn_norm" if established else None,
+            "nonzero_identity_weight_token_count": int(valid.size),
+            "division_vs_ffn_norm_raw_metrics": norm_metrics,
+            "division_vs_block_input_raw_metrics": block_metrics,
+            "bf16_rounded_division_equals_ffn_norm_exactly": norm_exact,
+            "bf16_rounded_division_equals_block_input_exactly": block_exact,
+            "all_relevant_arrays_finite": finite,
+            "numerical_lineage_consistent": side_consistent}
+    permitted = bool(source_lineage_established and total_nonzero > 0 and numerical_lineage_consistent)
+    return {"status": "established" if permitted else "not established",
+        "router_input_canonical_surface": "ffn_norm" if permitted else None,
         "proposed_block_input_alias_is_exact": block_alias_exact,
         "python_source_lineage": "post_attention_layernorm output -> router F.linear input",
         "cpp_source_lineage": "build_norm(ffn_inp, ffn_norm) output cur -> ggml_mul_mat(ffn_gate_inp, cur)",
+        "source_lineage_established": source_lineage_established,
+        "nonzero_identity_weight_token_count": total_nonzero,
+        "numerical_lineage_consistent": numerical_lineage_consistent,
         "numerical_consistency_audit": reports,
-        "linear_decomposition_permitted": established}
+        "linear_decomposition_permitted": permitted}
 
 
 def router_weight_equivalence_audit(python_weight, gguf_weight):
@@ -1465,6 +1488,73 @@ def router_weight_equivalence_audit(python_weight, gguf_weight):
         "python_bf16_rounded_to_float32_vs_gguf_decoded_float32": bf16,
         "gguf_equals_bf16_rounded_python_exactly": bool(np.array_equal(rounded, gg)),
         "weights_equivalent_for_shared_weight_analysis": bool(np.array_equal(rounded, gg))}
+
+
+def load_router_linear_artifacts(npz_path, metadata_path):
+    """Load and cryptographically bind the four bounded router arrays to schema-v2 metadata."""
+    npz_path = Path(npz_path); metadata_path = Path(metadata_path)
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="ascii"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("router-linear JSON artifact is invalid or swapped") from exc
+    if metadata.get("schema_version") != 2 or metadata.get("bounded_physical_blocks") != [10, 12]:
+        raise ValueError("router-linear metadata schema or block coverage mismatch")
+    if metadata.get("model_instantiated") is not False or metadata.get("inference_executed") is not False:
+        raise ValueError("router-linear metadata must prove no model construction or inference")
+    expected_npz_hash = metadata.get("npz_sha256")
+    if expected_npz_hash != hashlib.sha256(npz_path.read_bytes()).hexdigest():
+        raise ValueError("router-linear NPZ SHA-256 mismatch")
+    try:
+        handle = np.load(npz_path, allow_pickle=False)
+    except Exception as exc:
+        raise ValueError("router-linear NPZ artifact is invalid or swapped") from exc
+    try:
+        if set(handle.files) != ROUTER_LINEAR_ARRAY_KEYS:
+            raise ValueError("router-linear NPZ keys must be the exact four bounded arrays")
+        arrays = {key: np.asarray(handle[key]) for key in handle.files}
+    finally:
+        handle.close()
+    records = metadata.get("weight_records")
+    if not isinstance(records, list) or len(records) != 4:
+        raise ValueError("router-linear metadata must contain exactly four weight records")
+    record_by_identity = {}
+    source_map = {"python": "python_checkpoint", "gguf": "gguf"}
+    for record in records:
+        identity = (record.get("physical_even_block"), record.get("source"))
+        if identity in record_by_identity:
+            raise ValueError("duplicate router-linear weight metadata record")
+        record_by_identity[identity] = record
+    for key, array in arrays.items():
+        block = int(key[15:17]); short_source = key.split("__", 1)[1].split("_", 1)[0]
+        record = record_by_identity.get((block, source_map[short_source]))
+        if record is None:
+            raise ValueError(f"missing metadata record for {key}")
+        if array.shape != (384, 3072) or array.dtype != np.float32 or not np.isfinite(array).all():
+            raise ValueError(f"{key}: expected finite float32 [384, 3072]")
+        if (record.get("shape") != [384, 3072] or record.get("serialized_dtype") != "float32" or
+                record.get("canonical_tensor_orientation") != "experts_by_hidden"):
+            raise ValueError(f"{key}: metadata shape, dtype, or orientation mismatch")
+        if record.get("sha256") != hashlib.sha256(np.ascontiguousarray(array).tobytes()).hexdigest():
+            raise ValueError(f"{key}: metadata/NPZ array SHA-256 mismatch")
+    equivalence = metadata.get("weight_equivalence_records")
+    if not isinstance(equivalence, list) or len(equivalence) != 2:
+        raise ValueError("router-linear metadata must contain exactly two equivalence records")
+    seen = set()
+    for record in equivalence:
+        block = record.get("physical_even_block")
+        if block in seen or block not in (10, 12):
+            raise ValueError("duplicate or unexpected router-linear equivalence record")
+        seen.add(block)
+        py_key = f"physical_block_{block:02d}__python_weight"
+        gg_key = f"physical_block_{block:02d}__gguf_weight"
+        if record.get("python_array_key") != py_key or record.get("gguf_array_key") != gg_key:
+            raise ValueError("router-linear equivalence record is not bound to its arrays")
+        observed = router_weight_equivalence_audit(arrays[py_key], arrays[gg_key])
+        recorded = record.get("weight_equivalence_audit", {})
+        if recorded.get("gguf_equals_bf16_rounded_python_exactly") != observed[
+                "gguf_equals_bf16_rounded_python_exactly"]:
+            raise ValueError("router-linear equivalence metadata disagrees with NPZ arrays")
+    return arrays, metadata
 
 
 def _linear_projection_metrics(captured_delta, projected_delta):
@@ -1490,6 +1580,51 @@ def classify_router_linear_membership(native_equal, decisive, input_restores, re
     return "neither hybrid reproduces Python outcome"
 
 
+def weight_sensitive_fallback_analysis(inputs, logits, probabilities, captured_indices, cpp_bias,
+                                       attended_tokens, python_weight, gguf_weight):
+    combinations = (("cpp_input_gguf_weight", "cpp", gguf_weight),
+        ("python_input_gguf_weight", "default", gguf_weight),
+        ("cpp_input_python_weight", "cpp", python_weight),
+        ("python_input_python_weight", "default", python_weight))
+    native = {name: [set(row) for row in captured_indices[name]] for name in ("cpp", "default")}
+    variants = {}
+    for variant in DIAGNOSTIC_LINEAR_VARIANTS:
+        combination_reports = {}
+        for label, input_side, weight in combinations:
+            candidate = diagnostic_router_linear(inputs[input_side], weight, variant)
+            comparison = {}
+            for captured_side in ("cpp", "default"):
+                residual = np.asarray(logits[captured_side] - candidate, np.float32)
+                comparison[f"vs_{captured_side}_captured_logits"] = {
+                    "raw_maximum_centered_and_mean_centered_metrics": centered_logit_comparison(
+                        candidate, logits[captured_side]),
+                    "residual_maximum_absolute": float(np.abs(residual).max(initial=0)),
+                    "residual_rms": float(np.sqrt(np.mean(np.square(residual, dtype=np.float64)))),
+                    "finite": bool(np.isfinite(candidate).all()),
+                    "exact_equality": bool(np.array_equal(candidate, logits[captured_side]))}
+            softmax_reports = {}
+            for softmax_name, softmax in DIAGNOSTIC_SOFTMAX_REFERENCES.items():
+                token_rows = []
+                candidate_probabilities = softmax(candidate)
+                for token, attended in enumerate(attended_tokens):
+                    cutoff = _public_cutoff(np.asarray(candidate_probabilities[token] + cpp_bias, np.float32), attended)
+                    selected = set(cutoff["selected_expert_set"])
+                    token_rows.append({**cutoff, "attended_token": int(attended),
+                        "equals_native_cpp_membership": selected == native["cpp"][token],
+                        "equals_native_python_default_membership": selected == native["default"][token],
+                        "finite": bool(np.isfinite(candidate_probabilities[token]).all())})
+                softmax_reports[softmax_name] = token_rows
+            combination_reports[label] = {"diagnostic_logits_shape": list(candidate.shape),
+                "finite": bool(np.isfinite(candidate).all()), "captured_logit_comparisons": comparison,
+                "softmax_membership_evidence": softmax_reports}
+        variants[variant] = {"combinations": combination_reports,
+            "classification": "weight representation differs; input and weight effects remain separate",
+            "classification_is_causal": False}
+    return {"shared_weight_input_residual_verdict_emitted": False,
+        "non_causal_classification": "weight-sensitive analysis required",
+        "variants": variants}
+
+
 def router_linear_decomposition(sides, prefix, attended_tokens, python_weight, gguf_weight):
     lineage = router_input_lineage_audit(sides, prefix, attended_tokens)
     weight_audit = router_weight_equivalence_audit(python_weight, gguf_weight)
@@ -1502,25 +1637,20 @@ def router_linear_decomposition(sides, prefix, attended_tokens, python_weight, g
         -1, sides[name][prefix + "ffn_norm"].shape[-1]) for name in ("cpp", "default", "math")}
     logits = {name: np.asarray(sides[name][prefix + "router_logits"], np.float32).reshape(
         -1, ROUTED_EXPERT_COUNT) for name in ("cpp", "default", "math")}
-    if not weight_audit["weights_equivalent_for_shared_weight_analysis"]:
-        result["status"] = "weight representation differs"
-        result["weight_sensitive_fallback"] = {variant: {
-            label: {"finite": bool(np.isfinite(diagnostic_router_linear(inp, weight, variant)).all()),
-                    "shape": list(diagnostic_router_linear(inp, weight, variant).shape)}
-            for label, inp, weight in (("cpp_input_gguf_weight", inputs["cpp"], gguf_weight),
-                ("python_input_gguf_weight", inputs["default"], gguf_weight),
-                ("cpp_input_python_weight", inputs["cpp"], python_weight),
-                ("python_input_python_weight", inputs["default"], python_weight))}
-            for variant in DIAGNOSTIC_LINEAR_VARIANTS}
-        return result
-    result["status"] = "complete"
-    shared = np.asarray(gguf_weight, np.float32)
     probabilities = {name: np.asarray(sides[name][prefix + "router_probabilities"], np.float32).reshape(
         -1, ROUTED_EXPERT_COUNT) for name in ("cpp", "default")}
     captured_indices = {name: np.asarray(sides[name][prefix + "router_topk_indices"]).reshape(-1, 12)
                         for name in ("cpp", "default")}
     cpp_bias, _, _ = constant_bias_reconstruction(sides["cpp"][prefix + "router_probabilities"],
         sides["cpp"][prefix + "router_selection_scores"], sides["cpp"][prefix + "router_topk_indices"], attended_tokens)
+    if not weight_audit["weights_equivalent_for_shared_weight_analysis"]:
+        result["status"] = "weight representation differs"
+        result["weight_sensitive_fallback"] = weight_sensitive_fallback_analysis(
+            inputs, logits, probabilities, captured_indices, cpp_bias, attended_tokens,
+            python_weight, gguf_weight)
+        return result
+    result["status"] = "complete"
+    shared = np.asarray(gguf_weight, np.float32)
     for variant in DIAGNOSTIC_LINEAR_VARIANTS:
         diagnostic = {name: diagnostic_router_linear(inputs[name], shared, variant)
                       for name in ("cpp", "default", "math")}
@@ -1611,8 +1741,13 @@ def primary_router_linear_summary(linear_reports, first_affected_block):
                 if classification == "router-input component sufficient": input_tokens.add(row["attended_token"])
                 if classification == "diagnostic-linear residual sufficient": residual_tokens.add(row["attended_token"])
                 if classification == "requires both components": both_tokens.add(row["attended_token"])
+    cross_softmax = all(row["cross_softmax_classification_agreement"]
+        for rows in per_variant.values() for row in rows)
+    cross_matmul = all(len(values) == 1 for values in token_classifications.values())
     summary.update({"affected_attended_tokens": sorted(affected), "per_variant_classifications": per_variant,
-        "cross_matmul_and_cross_softmax_agreement": all(len(values) == 1 for values in token_classifications.values()),
+        "cross_softmax_agreement": cross_softmax,
+        "cross_matmul_agreement": cross_matmul,
+        "cross_matmul_and_cross_softmax_agreement": cross_softmax and cross_matmul,
         "tokens_explained_by_router_input": sorted(input_tokens),
         "tokens_explained_by_linear_residual": sorted(residual_tokens),
         "tokens_requiring_both": sorted(both_tokens),
@@ -2483,18 +2618,11 @@ def main():
                  np.load(args.block_components_window_math_npz, allow_pickle=False) as math_window:
                 router_weights = None
                 if args.router_linear_diagnostic_npz is not None:
-                    linear_metadata = json.loads(args.router_linear_diagnostic_json.read_text(encoding="ascii"))
-                    if (linear_metadata.get("bounded_physical_blocks") != [10, 12] or
-                            linear_metadata.get("model_instantiated") is not False or
-                            linear_metadata.get("inference_executed") is not False):
-                        raise ValueError("invalid bounded router-linear diagnostic metadata")
-                    router_weights = np.load(args.router_linear_diagnostic_npz, allow_pickle=False)
-                try:
-                    report = compare_component_window(default_window, math_window, capture_dir,
-                        cases[0]["attention_mask"], criterion, args.block_components_window_start,
-                        args.block_components_window_count, router_weights)
-                finally:
-                    if router_weights is not None: router_weights.close()
+                    router_weights, _ = load_router_linear_artifacts(
+                        args.router_linear_diagnostic_npz, args.router_linear_diagnostic_json)
+                report = compare_component_window(default_window, math_window, capture_dir,
+                    cases[0]["attention_mask"], criterion, args.block_components_window_start,
+                    args.block_components_window_count, router_weights)
             (args.output_dir / "block-components-window-three-way.json").write_text(
                 json.dumps(report, indent=2) + "\n", encoding="ascii")
             return

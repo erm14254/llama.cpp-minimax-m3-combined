@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import importlib.util
+import hashlib
 import json
 import tempfile
 import unittest
@@ -19,6 +20,28 @@ EXTRACTOR_SPEC.loader.exec_module(EXTRACTOR)
 
 
 class ParityHarnessTests(unittest.TestCase):
+    def test_bounded_safetensor_reader_supports_bf16_and_f16(self):
+        try:
+            import torch
+            from safetensors.torch import save_file
+        except ImportError as exc:
+            self.fail(f"checkpoint-free extractor dependencies unavailable: {exc}")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); shard = root / "router.safetensors"
+            bf16 = torch.arange(32, dtype=torch.float32).reshape(4, 8).to(torch.bfloat16)
+            f16 = torch.arange(24, dtype=torch.float32).reshape(3, 8).to(torch.float16)
+            untouched = torch.ones((2, 2), dtype=torch.float32)
+            save_file({"wanted.bf16": bf16, "wanted.f16": f16, "unrequested": untouched}, shard)
+            index = {"weight_map": {name: shard.name for name in
+                ("wanted.bf16", "wanted.f16", "unrequested")}}
+            got, dtype, location = EXTRACTOR.safetensor_weight(root, index, "wanted.bf16")
+            self.assertEqual((dtype, location, got.dtype), ("torch.bfloat16", shard.name, np.float32))
+            self.assertTrue(got.flags.c_contiguous)
+            np.testing.assert_array_equal(got, bf16.float().numpy())
+            got, dtype, _ = EXTRACTOR.safetensor_weight(root, index, "wanted.f16")
+            self.assertEqual((dtype, got.dtype), ("torch.float16", np.float32))
+            np.testing.assert_array_equal(got, f16.float().numpy())
+
     def test_router_linear_orientation_and_weight_equivalence(self):
         python = np.linspace(-1, 1, 384 * 512, dtype=np.float32).reshape(384, 512)
         gguf = PARITY.bf16_round_to_float32(python)
@@ -38,8 +61,9 @@ class ParityHarnessTests(unittest.TestCase):
         prefix = "physical_block_10__"; attended = [1, 3]
         sides = {}
         for name in ("cpp", "default", "math"):
-            norm = np.arange(16, dtype=np.float32).reshape(1, 2, 8) / 8
-            weight = np.array([[[0.5], [0.25]]], np.float32)
+            norm = PARITY.bf16_round_to_float32(
+                np.linspace(-1.3, 1.7, 16, dtype=np.float32).reshape(1, 2, 8))
+            weight = np.array([[[0.37], [0.61]]], np.float32)
             sides[name] = {prefix + "ffn_norm": norm,
                 prefix + "block_input": norm + 2,
                 prefix + "identity_weight_sum": weight,
@@ -48,9 +72,169 @@ class ParityHarnessTests(unittest.TestCase):
         self.assertEqual(report["status"], "established")
         self.assertEqual(report["router_input_canonical_surface"], "ffn_norm")
         self.assertFalse(report["proposed_block_input_alias_is_exact"])
+        self.assertTrue(report["source_lineage_established"])
+        self.assertTrue(report["numerical_lineage_consistent"])
+        self.assertGreater(report["numerical_consistency_audit"]["cpp"][
+            "division_vs_ffn_norm_raw_metrics"]["maximum_absolute_difference"], 0)
+        self.assertTrue(report["numerical_consistency_audit"]["cpp"][
+            "bf16_rounded_division_equals_ffn_norm_exactly"])
         sides["cpp"][prefix + "identity_residual"] += 0.1
         self.assertEqual(PARITY.router_input_lineage_audit(sides, prefix, attended)["status"],
                          "not established")
+
+    def _linear_sides(self, input_effect=0.0, residual_effect=0.0):
+        prefix = "physical_block_10__"; hidden = 512
+        weight = np.zeros((384, hidden), np.float32); weight[12, 0] = np.float32(input_effect)
+        inputs = {"cpp": np.zeros((1, 1, hidden), np.float32),
+                  "default": np.zeros((1, 1, hidden), np.float32),
+                  "math": np.zeros((1, 1, hidden), np.float32)}
+        inputs["default"][0, 0, 0] = inputs["math"][0, 0, 0] = 1
+        base = np.full((1, 1, 384), -10, np.float32); base[..., :11] = 10
+        base[..., 11] = np.float32(0.1); base[..., 12] = 0
+        residuals = {"cpp": base.copy(), "default": base.copy(), "math": base.copy()}
+        residuals["default"][..., 12] += np.float32(residual_effect)
+        residuals["math"][..., 12] += np.float32(residual_effect)
+        sides = {}
+        for name in ("cpp", "default", "math"):
+            logits = PARITY.diagnostic_router_linear(inputs[name].reshape(1, hidden), weight, "float32_matmul").reshape(1, 1, 384) + residuals[name]
+            probabilities = PARITY.diagnostic_softmax_stable_float32(logits)
+            indices = PARITY._score_topk_indices(probabilities.reshape(384)).reshape(1, 1, 12)[..., ::-1]
+            identity_weight = np.array([[[0.37]]], np.float32)
+            sides[name] = {prefix + "ffn_norm": inputs[name], prefix + "block_input": inputs[name] + 2,
+                prefix + "identity_weight_sum": identity_weight,
+                prefix + "identity_residual": inputs[name] * identity_weight,
+                prefix + "router_logits": logits, prefix + "router_probabilities": probabilities,
+                prefix + "router_selection_scores": probabilities.copy(),
+                prefix + "router_topk_indices": indices}
+        return sides, weight
+
+    def test_router_linear_decomposition_end_to_end_classifications(self):
+        cases = ((0.25, 0, "router-input component sufficient"),
+                 (0, 0.25, "diagnostic-linear residual sufficient"),
+                 (0.25, 0.25, "both components independently sufficient"),
+                 (0.0625, 0.0625, "requires both components"),
+                 (0, 0, "native outcomes already equal"))
+        for input_effect, residual_effect, expected in cases:
+            sides, weight = self._linear_sides(input_effect, residual_effect)
+            report = PARITY.router_linear_decomposition(sides, "physical_block_10__", [0], weight,
+                                                         PARITY.bf16_round_to_float32(weight))
+            self.assertEqual(report["status"], "complete")
+            classifications = {softmax["classification"] for variant in report["variants"].values()
+                               for softmax in variant["tokens"][0]["softmax_references"].values()}
+            self.assertEqual(classifications, {expected})
+            projection = report["variants"]["float32_matmul"]["tokens"][0]["direct_delta_projection"]
+            if residual_effect == 0:
+                self.assertLess(projection["raw"]["residual_rms"], 1e-6)
+            else:
+                self.assertGreater(projection["raw"]["residual_rms"], 0)
+            for variant in report["variants"].values():
+                selected = variant["tokens"][0]["softmax_references"]["stable_float32"]["coalitions"]
+                self.assertTrue(all(len(row["selected_expert_set"]) == 12 for row in selected.values()))
+
+    def test_weight_mismatch_fallback_contains_logits_and_membership(self):
+        sides, python_weight = self._linear_sides(0.25, 0)
+        gguf_weight = python_weight.copy(); gguf_weight[13, 0] = 0.5
+        report = PARITY.router_linear_decomposition(
+            sides, "physical_block_10__", [0], python_weight, gguf_weight)
+        self.assertEqual(report["status"], "weight representation differs")
+        fallback = report["weight_sensitive_fallback"]
+        self.assertFalse(fallback["shared_weight_input_residual_verdict_emitted"])
+        for variant in fallback["variants"].values():
+            self.assertEqual(len(variant["combinations"]), 4)
+            for combination in variant["combinations"].values():
+                self.assertIn("captured_logit_comparisons", combination)
+                self.assertEqual(set(combination["softmax_membership_evidence"]),
+                    set(PARITY.DIAGNOSTIC_SOFTMAX_REFERENCES))
+                self.assertEqual(len(combination["softmax_membership_evidence"]["stable_float32"][0][
+                    "selected_expert_set"]), 12)
+
+    def test_linear_decomposition_surfaces_reference_disagreement_and_primary_alignment(self):
+        sides, weight = self._linear_sides(0.25, 0)
+        original_softmax = PARITY.DIAGNOSTIC_SOFTMAX_REFERENCES["stable_float64_then_float32"]
+        def shifted(logits):
+            value = original_softmax(logits).copy(); value[..., 13] += 0.5
+            return value
+        PARITY.DIAGNOSTIC_SOFTMAX_REFERENCES["stable_float64_then_float32"] = shifted
+        try:
+            report = PARITY.router_linear_decomposition(
+                sides, "physical_block_10__", [0], weight, PARITY.bf16_round_to_float32(weight))
+        finally:
+            PARITY.DIAGNOSTIC_SOFTMAX_REFERENCES["stable_float64_then_float32"] = original_softmax
+        self.assertTrue(any(not row["tokens"][0]["cross_softmax_classification_agreement"]
+                            for row in report["variants"].values()))
+        original_linear = PARITY.diagnostic_router_linear
+        def variant_shift(router_input, router_weight, variant):
+            value = original_linear(router_input, router_weight, variant)
+            if variant == "float64_matmul_then_float32":
+                value = value.copy(); value[..., 13] += router_input[..., 0] * 20
+            return value
+        PARITY.diagnostic_router_linear = variant_shift
+        try:
+            matmul_report = PARITY.router_linear_decomposition(
+                sides, "physical_block_10__", [0], weight, PARITY.bf16_round_to_float32(weight))
+        finally:
+            PARITY.diagnostic_router_linear = original_linear
+        aligned_sides, aligned_weight = self._linear_sides(0, 0)
+        aligned = PARITY.router_linear_decomposition(aligned_sides, "physical_block_10__", [0],
+            aligned_weight, PARITY.bf16_round_to_float32(aligned_weight))
+        summary = PARITY.primary_router_linear_summary([
+            {"physical_block": 10, "analysis": matmul_report}, {"physical_block": 12, "analysis": aligned}], 10)
+        self.assertTrue(summary["block_12_remains_available_as_aligned_comparison"])
+        self.assertFalse(summary["cross_matmul_agreement"])
+
+    def _write_router_artifacts(self, root, arrays=None):
+        if arrays is None:
+            arrays = {key: np.zeros((384, 3072), np.float32) for key in PARITY.ROUTER_LINEAR_ARRAY_KEYS}
+        npz = root / "router.npz"; metadata_path = root / "router.json"
+        EXTRACTOR.deterministic_npz(npz, arrays)
+        records = []
+        for block in (10, 12):
+            for short, source in (("python", "python_checkpoint"), ("gguf", "gguf")):
+                key = f"physical_block_{block:02d}__{short}_weight"; value = arrays[key]
+                records.append({"logical_layer": block // 2, "physical_even_block": block,
+                    "source": source, "source_tensor_name": key, "canonical_tensor_orientation": "experts_by_hidden",
+                    "shape": list(value.shape), "source_dtype": "torch.bfloat16" if short == "python" else "BF16",
+                    "serialized_dtype": str(value.dtype), "sha256": hashlib.sha256(value.tobytes()).hexdigest(),
+                    "finite_audit": {"finite": bool(np.isfinite(value).all()), "element_count": int(value.size)}})
+        equivalence = []
+        for block in (10, 12):
+            py = arrays[f"physical_block_{block:02d}__python_weight"]
+            gg = arrays[f"physical_block_{block:02d}__gguf_weight"]
+            equivalence.append({"logical_layer": block // 2, "physical_even_block": block,
+                "python_array_key": f"physical_block_{block:02d}__python_weight",
+                "gguf_array_key": f"physical_block_{block:02d}__gguf_weight",
+                "weight_equivalence_audit": PARITY.router_weight_equivalence_audit(py, gg)})
+        metadata = {"schema_version": 2, "model_instantiated": False, "inference_executed": False,
+            "bounded_physical_blocks": [10, 12], "weight_records": records,
+            "weight_equivalence_records": equivalence,
+            "npz_sha256": hashlib.sha256(npz.read_bytes()).hexdigest()}
+        metadata_path.write_text(json.dumps(metadata), encoding="ascii")
+        return npz, metadata_path, metadata
+
+    def test_router_artifact_json_npz_binding_rejections(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td); npz, metadata_path, metadata = self._write_router_artifacts(root)
+            arrays, _ = PARITY.load_router_linear_artifacts(npz, metadata_path)
+            self.assertEqual(set(arrays), PARITY.ROUTER_LINEAR_ARRAY_KEYS)
+            # Swapped artifacts are diagnosed before analysis.
+            with self.assertRaises(ValueError): PARITY.load_router_linear_artifacts(metadata_path, npz)
+            # Metadata-to-array hash mismatch.
+            damaged = json.loads(json.dumps(metadata)); damaged["weight_records"][0]["sha256"] = "0" * 64
+            metadata_path.write_text(json.dumps(damaged), encoding="ascii")
+            with self.assertRaisesRegex(ValueError, "array SHA-256"):
+                PARITY.load_router_linear_artifacts(npz, metadata_path)
+            # Extra/missing keys, wrong shape, and non-finite content are rejected after rebinding NPZ hash.
+            for mutation in ("extra", "missing", "shape", "nonfinite"):
+                values = {key: value.copy() for key, value in arrays.items()}
+                if mutation == "extra": values["extra"] = np.zeros((1,), np.float32)
+                elif mutation == "missing": values.pop(next(iter(values)))
+                elif mutation == "shape": values[next(iter(values))] = np.zeros((384, 3071), np.float32)
+                else: values[next(iter(values))][0, 0] = np.nan
+                candidate = root / f"{mutation}.npz"; EXTRACTOR.deterministic_npz(candidate, values)
+                rebound = json.loads(json.dumps(metadata)); rebound["npz_sha256"] = hashlib.sha256(candidate.read_bytes()).hexdigest()
+                candidate_json = root / f"{mutation}.json"; candidate_json.write_text(json.dumps(rebound), encoding="ascii")
+                with self.assertRaises(ValueError):
+                    PARITY.load_router_linear_artifacts(candidate, candidate_json)
 
     def test_diagnostic_router_linear_variants_and_projection(self):
         rng = np.random.default_rng(7)
