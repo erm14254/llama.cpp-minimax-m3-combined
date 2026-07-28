@@ -789,6 +789,8 @@ class ParityHarnessTests(unittest.TestCase):
             {"physical_block": 12, "analysis": self._equal_contract_residual_analysis()}], 10)
         self.assertIsNone(summary["global_definitive_result"])
         self.assertEqual(summary["definitive_localization_factors"], [])
+        self.assertEqual(summary["python_reference_results"]["default"][1]["non_decisive_reason"],
+                         "structural prerequisites or exact native path closure failed")
 
     def test_residual_primary_summary_rejects_missing_and_cross_python_mismatch(self):
         sides, weight, router_weight = self._residual_three_factor_sides()
@@ -1153,6 +1155,8 @@ class ParityHarnessTests(unittest.TestCase):
             self.assertFalse(row["attended_token_inventory_complete"])
             self.assertEqual(row["missing_applicability_attended_tokens"], [1])
             self.assertFalse(row["target_token_causally_decisive"])
+            self.assertFalse(row["target_token_structurally_valid"])
+            self.assertEqual(row["non_decisive_reason"], "applicable reference evidence is incomplete")
             self.assertIsNone(summary["global_definitive_result"])
 
     def test_malformed_reference_containers_are_non_throwing_inventory_failures(self):
@@ -1196,6 +1200,42 @@ class ParityHarnessTests(unittest.TestCase):
             self.assertIsNone(summary["global_definitive_result"], mutate.__name__)
             self.assertFalse(summary["physical_block_12_remains_aligned_control"], mutate.__name__)
             self.assertTrue(summary["physical_block_12_control_failure_reasons"])
+            self.assertFalse(summary["cross_rmsnorm_diagnostic_outcome_agreement"])
+            self.assertFalse(summary["cross_router_matmul_diagnostic_outcome_agreement"])
+            self.assertFalse(summary["cross_router_softmax_diagnostic_outcome_agreement"])
+
+        for selected_analysis in ("malformed", {"python_targets": "malformed"},
+                                  {"python_targets": {"default": "malformed", "math": "malformed"}}):
+            summary = PARITY.primary_post_attention_residual_three_factor_summary([
+                {"physical_block": 10, "analysis": selected_analysis},
+                {"physical_block": 12, "analysis": pristine}], 10)
+            self.assertIsNone(summary["global_definitive_result"])
+            self.assertTrue(summary["malformed_primary_summary_paths"] or
+                            summary["target_attended_token_inventories"])
+
+        malformed_control = copy.deepcopy(pristine)
+        malformed_control["python_targets"]["default"] = "malformed"
+        summary = PARITY.primary_post_attention_residual_three_factor_summary([
+            {"physical_block": 10, "analysis": pristine},
+            {"physical_block": 12, "analysis": malformed_control}], 10)
+        self.assertFalse(summary["physical_block_12_remains_aligned_control"])
+        status = next(row for row in summary["physical_block_12_per_target_token_control_status"]
+                      if row["python_target"] == "default")
+        self.assertIsNone(status["attended_token"])
+        self.assertIn("block-12 target report is malformed", status["failure_reasons"])
+
+        for mutation in ("coalitions", "native_cpp_coalition_key", "native_python_coalition_key"):
+            malformed_control = copy.deepcopy(pristine)
+            target = malformed_control["python_targets"]["default"]
+            if mutation == "coalitions":
+                name = target["per_token_applicability"][0]["applicable_cpp_rmsnorm_references"][0]
+                rows = next(iter(target["references"][name]["router_matmul_references"].values()))
+                next(iter(rows[0]["softmax_references"].values())).pop("coalitions")
+            else: target.pop(mutation)
+            summary = PARITY.primary_post_attention_residual_three_factor_summary([
+                {"physical_block": 10, "analysis": pristine},
+                {"physical_block": 12, "analysis": malformed_control}], 10)
+            self.assertFalse(summary["physical_block_12_remains_aligned_control"], mutation)
 
         malformed = copy.deepcopy(pristine)
         for target in malformed["python_targets"].values(): remove_applicability(target)

@@ -2697,7 +2697,7 @@ def collect_applicable_residual_reference_reports(target_report, attended_token)
         f"rmsnorm={rmsnorm}|matmul={matmul}|softmax={softmax}|token={int(attended_token)}")
     expected = {coordinate(rmsnorm, matmul, softmax)
         for rmsnorm in applicable for matmul in expected_matmuls for softmax in expected_softmaxes}
-    observed_counts = {}; reports = []; missing_rmsnorm = []; missing_rows = []; duplicate_rows = []
+    observed_counts = {}; reports = []; collected_reports = []; missing_rmsnorm = []; missing_rows = []; duplicate_rows = []
     unexpected_key_coordinates = set()
     references = target_report.get("references", {})
     if not isinstance(references, dict):
@@ -2732,7 +2732,11 @@ def collect_applicable_residual_reference_reports(target_report, attended_token)
                     observed_counts[key] = observed_counts.get(key, 0) + 1
                     if softmax not in expected_softmaxes: unexpected_key_coordinates.add(key)
                     if matmul in expected_matmuls and softmax in expected_softmaxes:
-                        if isinstance(report, dict): reports.append(report)
+                        if isinstance(report, dict):
+                            reports.append(report)
+                            collected_reports.append({"coordinate": {"rmsnorm": rmsnorm,
+                                "matmul": matmul, "softmax": softmax,
+                                "attended_token": int(attended_token)}, "report": report})
                         else: malformed.append(
                             f"references.{rmsnorm}.{matmul}.{softmax}.report")
     observed = set(observed_counts)
@@ -2743,7 +2747,7 @@ def collect_applicable_residual_reference_reports(target_report, attended_token)
         missing_coordinates, unexpected_coordinates, duplicate_coordinates, missing_rmsnorm,
         missing_rows, duplicate_rows, unknown_applicable, duplicate_applicable,
         unexpected_rmsnorm_keys, malformed))
-    return {"reports": reports,
+    return {"reports": reports, "collected_reports": collected_reports,
         "declared_applicable_rmsnorm_references": declared_names,
         "known_applicable_rmsnorm_references": applicable,
         "unknown_applicable_rmsnorm_references": unknown_applicable,
@@ -3186,14 +3190,28 @@ def post_attention_residual_three_factor_decomposition(sides, prefix, attended_t
 
 
 def primary_post_attention_residual_three_factor_summary(block_reports, primary_block):
-    selected = next((row for row in block_reports if row["physical_block"] == primary_block), None)
-    control = next((row for row in block_reports if row["physical_block"] == 12), None)
+    summary_malformed_paths = []
+    if not isinstance(block_reports, list):
+        block_reports = []; summary_malformed_paths.append("block_reports")
+    safe_block_rows = [row for row in block_reports if isinstance(row, dict)]
+    if len(safe_block_rows) != len(block_reports): summary_malformed_paths.append("block_reports.items")
+    selected = next((row for row in safe_block_rows if row.get("physical_block") == primary_block), None)
+    control = next((row for row in safe_block_rows if row.get("physical_block") == 12), None)
     if selected is None: return None
-    analysis = selected["analysis"]; results = {}; target_token_inventories = {}
+    analysis = selected.get("analysis", {})
+    if not isinstance(analysis, dict):
+        analysis = {}; summary_malformed_paths.append("selected.analysis")
+    python_targets = analysis.get("python_targets", {})
+    if not isinstance(python_targets, dict):
+        python_targets = {}; summary_malformed_paths.append("selected.analysis.python_targets")
+    results = {}; target_token_inventories = {}
     missing = []; disagreements = []; non_decisive = []
-    for target, target_report in analysis.get("python_targets", {}).items():
+    for target, raw_target_report in python_targets.items():
+        target_report = raw_target_report if isinstance(raw_target_report, dict) else {}
+        if not isinstance(raw_target_report, dict):
+            summary_malformed_paths.append(f"selected.analysis.python_targets.{target}")
         results[target] = {}
-        token_inventory = collect_attended_token_inventory(target_report)
+        token_inventory = collect_attended_token_inventory(raw_target_report)
         target_token_inventories[target] = token_inventory
         applicability_container = target_report.get("per_token_applicability", [])
         if not isinstance(applicability_container, list): applicability_container = []
@@ -3223,7 +3241,10 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
             structurally_valid = bool(reports) and all(report["structural_prerequisites_valid"] for report in reports)
             endpoint_valid = bool(reports) and all(
                 report["native_python_endpoint_membership_reconstruction_valid"] for report in reports)
-            causal_decisive = bool(token_inventory["attended_token_inventory_complete"] and has_applicable and
+            evidence_complete = bool(token_inventory["attended_token_inventory_complete"] and
+                inventory_complete and reports)
+            effective_structurally_valid = evidence_complete and structurally_valid
+            causal_decisive = bool(evidence_complete and has_applicable and
                 inventory_complete and structurally_valid and endpoint_valid and
                 causal_evidence_agreement and all(report["causal_classification_decisive"] for report in reports))
             if not has_applicable or token in token_inventory["missing_applicability_attended_tokens"]:
@@ -3231,14 +3252,16 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
             if has_applicable and not diagnostic_agreement: disagreements.append({"target": target, "attended_token": token})
             if has_applicable and not causal_decisive: non_decisive.append({"target": target, "attended_token": token})
             outcome = reports[0]["diagnostic_outcome"] if diagnostic_agreement else "analysis not decisive"
-            if structurally_valid and endpoint_valid and classification_agreement and not minimal_agreement:
+            if not evidence_complete:
+                outcome = "analysis not decisive"
+            elif structurally_valid and endpoint_valid and classification_agreement and not minimal_agreement:
                 outcome = "analysis not decisive"
             causal_classification = (reports[0]["definitive_causal_classification"]
                                      if causal_decisive else None)
-            if not structurally_valid: reason = "structural prerequisites or exact native path closure failed"
+            if not evidence_complete: reason = "applicable reference evidence is incomplete"
+            elif not structurally_valid: reason = "structural prerequisites or exact native path closure failed"
             elif not endpoint_valid: reason = ("native Python operand endpoint does not reproduce captured Python "
                                                "routing membership under the fixed C++ downstream contract")
-            elif not inventory_complete: reason = "applicable reference evidence is incomplete"
             elif not classification_agreement: reason = "applicable definitive causal classifications disagree"
             elif not minimal_agreement: reason = "applicable minimal sufficient factor sets disagree"
             else: reason = None
@@ -3284,7 +3307,7 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
                 "duplicate_applicability_attended_tokens": token_inventory[
                     "duplicate_applicability_attended_tokens"],
                 "attended_token_inventory_complete": token_inventory["attended_token_inventory_complete"],
-                "target_token_structurally_valid": structurally_valid,
+                "target_token_structurally_valid": effective_structurally_valid,
                 "native_python_endpoint_membership_reconstruction_valid": endpoint_valid,
                 "target_token_causally_decisive": causal_decisive,
                 "target_token_decisive": causal_decisive,
@@ -3315,21 +3338,21 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
                for target in results.values() for row in target.values()): return False
         if causal and not all_target_tokens_decisive: return False
         groups = {}
-        for target, target_report in analysis.get("python_targets", {}).items():
-            applicable_by_token = {row["attended_token"]: set(row["applicable_cpp_rmsnorm_references"])
-                                   for row in target_report["per_token_applicability"]}
-            for arithmetic, reference in target_report["references"].items():
-                for matmul, rows in reference["router_matmul_references"].items():
-                    for row in rows:
-                        if arithmetic not in applicable_by_token.get(row.get("attended_token"), set()): continue
-                        for softmax, report in row["softmax_references"].items():
-                            coordinates = {"rmsnorm": arithmetic, "matmul": matmul, "softmax": softmax}
-                            key = (target, row["attended_token"], *(
-                                coordinates[name] for name in ("rmsnorm", "matmul", "softmax") if name != dimension))
-                            value = ((report["definitive_causal_classification"], tuple(sorted(
-                                tuple(sorted(item)) for item in report["minimal_sufficient_factor_sets"])))
-                                if causal else report["diagnostic_outcome"])
-                            groups.setdefault(key, set()).add(value)
+        for target, raw_target_report in python_targets.items():
+            target_report = raw_target_report if isinstance(raw_target_report, dict) else {}
+            token_inventory = collect_attended_token_inventory(raw_target_report)
+            if not token_inventory["attended_token_inventory_complete"]: return False
+            for token in token_inventory["expected_attended_tokens"]:
+                inventory = collect_applicable_residual_reference_reports(target_report, token)
+                if not inventory["inventory_complete"]: return False
+                for collected in inventory["collected_reports"]:
+                    coordinate = collected["coordinate"]; report = collected["report"]
+                    key = (target, token, *(coordinate[name] for name in
+                        ("rmsnorm", "matmul", "softmax") if name != dimension))
+                    value = ((report.get("definitive_causal_classification"),
+                        canonical_minimal_factor_sets(report.get("minimal_sufficient_factor_sets", [])))
+                        if causal else report.get("diagnostic_outcome"))
+                    groups.setdefault(key, set()).add(value)
         return bool(groups) and all(len(values) == 1 for values in groups.values())
     cross_rmsnorm_diagnostic = reference_dimension_agreement("rmsnorm", False)
     cross_matmul_diagnostic = reference_dimension_agreement("matmul", False)
@@ -3339,14 +3362,33 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
     cross_softmax = reference_dimension_agreement("softmax", True)
     control_statuses = []; control_failure_reasons = []
     def aligned_control():
-        if control is None or control["analysis"].get("status") != "complete":
+        if control is None:
             control_failure_reasons.append("block-12 analysis is missing or incomplete"); return False
-        if not control["analysis"].get("shared_component_prerequisite", {}).get(
-                "shared_components_valid", False):
+        control_analysis = control.get("analysis", {}) if isinstance(control, dict) else {}
+        if not isinstance(control_analysis, dict) or control_analysis.get("status") != "complete":
+            control_failure_reasons.append("block-12 analysis is missing or incomplete"); return False
+        shared = control_analysis.get("shared_component_prerequisite", {})
+        if not isinstance(shared, dict) or not shared.get("shared_components_valid", False):
             control_failure_reasons.append("block-12 shared components are invalid"); return False
-        for target_name, target_report in control["analysis"]["python_targets"].items():
-            cpp_key = target_report["native_cpp_coalition_key"]
-            python_key = target_report["native_python_coalition_key"]
+        control_targets = control_analysis.get("python_targets", {})
+        if not isinstance(control_targets, dict):
+            reasons = ["block-12 target report is malformed", "applicable token inventory is incomplete",
+                       "applicable reference evidence is incomplete"]
+            control_statuses.append({"python_target": None, "attended_token": None,
+                "applicable_reference_inventory_complete": False, "final_control_status": False,
+                "failure_reasons": reasons})
+            control_failure_reasons.extend(reasons); return False
+        for target_name, raw_target_report in control_targets.items():
+            if not isinstance(raw_target_report, dict):
+                reasons = ["block-12 target report is malformed", "applicable token inventory is incomplete",
+                           "applicable reference evidence is incomplete"]
+                control_statuses.append({"python_target": target_name, "attended_token": None,
+                    "applicable_reference_inventory_complete": False, "final_control_status": False,
+                    "failure_reasons": reasons})
+                control_failure_reasons.extend(f"{target_name}: {reason}" for reason in reasons); continue
+            target_report = raw_target_report
+            cpp_key = target_report.get("native_cpp_coalition_key")
+            python_key = target_report.get("native_python_coalition_key")
             native_rows = target_report.get("native_residual_add_reconstruction", [])
             if not isinstance(native_rows, list): native_rows = []
             native = {row.get("attended_token"): row for row in native_rows if isinstance(row, dict)}
@@ -3368,21 +3410,29 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
                     reasons.append("no applicable C++ RMSNorm reference")
                 reports = inventory["reports"]
                 for report in reports:
-                    if not report["native_cpp_capture_membership_reconstruction_valid"]:
+                    if not report.get("native_cpp_capture_membership_reconstruction_valid", False):
                         reasons.append("native C++ capture membership reconstruction failed")
-                    if not report["native_python_capture_membership_reconstruction_valid"]:
+                    if not report.get("native_python_capture_membership_reconstruction_valid", False):
                         reasons.append("native Python capture membership reconstruction failed")
-                    if not report["coalitions"][cpp_key]["equals_captured_cpp_membership"]:
+                    coalitions = report.get("coalitions", {})
+                    if not isinstance(coalitions, dict):
+                        coalitions = {}; reasons.append("coalition map is missing or malformed")
+                    cpp_coalition = coalitions.get(cpp_key, {}) if cpp_key is not None else {}
+                    python_coalition = coalitions.get(python_key, {}) if python_key is not None else {}
+                    if not isinstance(cpp_coalition, dict) or not cpp_coalition.get(
+                            "equals_captured_cpp_membership", False):
                         reasons.append("native C++ coalition membership reconstruction failed")
-                    if not report["captured_topk_membership_reconstruction_valid"]:
+                    if not report.get("captured_topk_membership_reconstruction_valid", False):
                         reasons.append("native captured top-k membership reconstruction failed")
-                    if not report["coalitions"][python_key]["equals_captured_python_membership"]:
+                    if not isinstance(python_coalition, dict) or not python_coalition.get(
+                            "equals_captured_python_membership", False):
                         reasons.append("native Python coalition membership reconstruction failed")
-                    if not report["fixed_cpp_downstream_python_operand_endpoint_matches_python_membership"]:
+                    if not report.get("fixed_cpp_downstream_python_operand_endpoint_matches_python_membership", False):
                         reasons.append("fixed-C++ Python operand endpoint reconstruction failed")
-                    if not report["all_native_paths_close_exactly"]:
+                    if not report.get("all_native_paths_close_exactly", False):
                         reasons.append("native path closure is not exact")
-                    if not report["classification_decisive"] or report["classification"] != "native outcomes already equal":
+                    if not report.get("classification_decisive", False) or report.get(
+                            "classification") != "native outcomes already equal":
                         reasons.append("applicable result is not decisively native-equal")
                 fresh_diagnostic_agreement = bool(reports) and len({report.get("diagnostic_outcome")
                     for report in reports}) == 1
@@ -3412,11 +3462,11 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
                         native_row.get("python_native_exact", False)),
                     "applicable_cpp_rmsnorm_references": inventory["known_applicable_rmsnorm_references"],
                     "native_cpp_capture_membership_reconstruction_valid": bool(reports) and all(
-                        report["native_cpp_capture_membership_reconstruction_valid"] for report in reports),
+                        report.get("native_cpp_capture_membership_reconstruction_valid", False) for report in reports),
                     "native_python_capture_membership_reconstruction_valid": bool(reports) and all(
-                        report["native_python_capture_membership_reconstruction_valid"] for report in reports),
+                        report.get("native_python_capture_membership_reconstruction_valid", False) for report in reports),
                     "fixed_cpp_python_operand_endpoint_reconstruction_valid": bool(reports) and all(
-                        report["fixed_cpp_downstream_python_operand_endpoint_matches_python_membership"]
+                        report.get("fixed_cpp_downstream_python_operand_endpoint_matches_python_membership", False)
                         for report in reports),
                     "applicable_diagnostic_outcome_agreement": fresh_diagnostic_agreement,
                     "applicable_causal_classification_agreement": fresh_classification_agreement,
@@ -3439,14 +3489,16 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
                     "applicable_reference_inventory_complete": inventory["inventory_complete"],
                     **token_inventory,
                     "all_native_paths_close_exactly": bool(reports) and all(
-                        report["all_native_paths_close_exactly"] for report in reports),
+                        report.get("all_native_paths_close_exactly", False) for report in reports),
                     "failure_reasons": reasons, "final_control_status": not reasons}
                 control_statuses.append(status)
                 control_failure_reasons.extend(f"{target_name} token {token}: {reason}" for reason in reasons)
         return bool(control_statuses) and all(row["final_control_status"] for row in control_statuses)
     control_ok = aligned_control()
-    globally_decisive = bool(analysis.get("shared_component_prerequisite", {}).get(
-        "shared_components_valid", False) and all_target_tokens_decisive and cross_python and
+    primary_shared = analysis.get("shared_component_prerequisite", {})
+    if not isinstance(primary_shared, dict): primary_shared = {}
+    globally_decisive = bool(primary_shared.get("shared_components_valid", False) and
+        all_target_tokens_decisive and cross_python and
         cross_rmsnorm and cross_matmul and cross_softmax and control_ok)
     descriptive_factors = {factor for target in results.values() for row in target.values()
         for item in row["minimal_sufficient_factor_sets"] for factor in item}
@@ -3474,6 +3526,7 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
     primary_factors, primary_targets, primary_local, primary_global = local_target_summary("default")
     sensitivity_factors, sensitivity_targets, sensitivity_local, sensitivity_global = local_target_summary("math")
     return {"physical_block": primary_block, "python_reference_results": results,
+        "malformed_primary_summary_paths": sorted(set(summary_malformed_paths)),
         "capture_residual_profile": analysis.get("capture_residual_profile"),
         "metadata_native_cpp_residual_contract": analysis.get("metadata_native_cpp_residual_contract"),
         "metadata_native_python_residual_contract": analysis.get("metadata_native_python_residual_contract"),
@@ -3523,8 +3576,9 @@ def primary_post_attention_residual_three_factor_summary(block_reports, primary_
         "physical_block_12_per_target_token_control_status": control_statuses,
         "restrained_next_localization_targets": next_targets,
         "descriptive_candidate_next_localization_targets": candidate_targets,
-        "native_residual_add_reconstruction_results": {target: report["native_residual_add_reconstruction"]
-            for target, report in analysis.get("python_targets", {}).items()},
+        "native_residual_add_reconstruction_results": {target: report.get(
+            "native_residual_add_reconstruction", []) for target, report in python_targets.items()
+            if isinstance(report, dict)},
         "full_three_factor_decomposition": analysis,
         "diagnostic_is_not_cpu_torch_ggml_cuda_or_kernel_identity": True}
 
