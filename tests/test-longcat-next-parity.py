@@ -7,21 +7,25 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
 SCRIPT = Path(__file__).with_name("test-longcat-next-local-parity.py")
 SPEC = importlib.util.spec_from_file_location("longcat_next_parity", SCRIPT)
-PARITY = importlib.util.module_from_spec(SPEC)
+assert SPEC is not None and SPEC.loader is not None
+PARITY: Any = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PARITY)
 
 EXTRACTOR_PATH = Path(__file__).parents[1] / "scripts/longcat-next/extract-router-linear-diagnostic.py"
 EXTRACTOR_SPEC = importlib.util.spec_from_file_location("longcat_router_extractor", EXTRACTOR_PATH)
-EXTRACTOR = importlib.util.module_from_spec(EXTRACTOR_SPEC)
+assert EXTRACTOR_SPEC is not None and EXTRACTOR_SPEC.loader is not None
+EXTRACTOR: Any = importlib.util.module_from_spec(EXTRACTOR_SPEC)
 EXTRACTOR_SPEC.loader.exec_module(EXTRACTOR)
 NORM_EXTRACTOR_PATH = Path(__file__).parents[1] / "scripts/longcat-next/extract-ffn-rmsnorm-diagnostic.py"
 NORM_EXTRACTOR_SPEC = importlib.util.spec_from_file_location("longcat_norm_extractor", NORM_EXTRACTOR_PATH)
-NORM_EXTRACTOR = importlib.util.module_from_spec(NORM_EXTRACTOR_SPEC)
+assert NORM_EXTRACTOR_SPEC is not None and NORM_EXTRACTOR_SPEC.loader is not None
+NORM_EXTRACTOR: Any = importlib.util.module_from_spec(NORM_EXTRACTOR_SPEC)
 NORM_EXTRACTOR_SPEC.loader.exec_module(NORM_EXTRACTOR)
 
 
@@ -2702,7 +2706,7 @@ class ParityHarnessTests(unittest.TestCase):
                                ("block_components_window_count", 2),
                                ("block_components_window_diagnostic", False),
                                ("block_components_diagnostic", True)):
-                invalid = dict(payload)
+                invalid: dict[str, Any] = dict(payload)
                 invalid[key] = value
                 path.write_text(json.dumps(invalid), encoding="ascii")
                 with self.subTest(key=key), self.assertRaises(ValueError):
@@ -2711,7 +2715,7 @@ class ParityHarnessTests(unittest.TestCase):
                                          "longcat_bf16_hidden_surface_rounding": True},
                                     {"longcat_bf16_boundary_rounding": False,
                                      "longcat_bf16_hidden_surface_rounding": True}):
-                invalid = dict(payload)
+                invalid = dict[str, Any](payload)
                 invalid.update(invalid_profile)
                 if not invalid_profile: invalid.pop("longcat_bf16_boundary_rounding")
                 path.write_text(json.dumps(invalid), encoding="ascii")

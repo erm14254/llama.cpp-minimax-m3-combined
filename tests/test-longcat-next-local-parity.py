@@ -8,6 +8,7 @@ import math
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 
@@ -2532,7 +2533,9 @@ def ffn_rmsnorm_side_specific_contract_decomposition(sides, prefix, attended_tok
         applicable_reports = [report for _, report in named_reports if report["reference_applicable_to_token"]]
         original = [report["classification"] for report in applicable_reports]
         agreement = bool(applicable_reports) and len(set(original)) == 1
-        result.setdefault("per_token_applicability", []).append({
+        per_token_applicability = cast(
+            list[dict[str, Any]], result.setdefault("per_token_applicability", []))
+        per_token_applicability.append({
             "attended_token": int(attended_tokens[token_index]),
             "applicable_cpp_arithmetic_references": applicable_names,
             "non_applicable_cpp_arithmetic_references": non_applicable_names,

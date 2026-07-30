@@ -9,17 +9,20 @@ import unittest
 import hashlib
 import struct
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
     "core_reference_v2", ROOT / "scripts/longcat-next/core_reference_v2.py")
-v2 = importlib.util.module_from_spec(SPEC)
+assert SPEC is not None and SPEC.loader is not None
+v2: Any = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(v2)
 CORE_SPEC = importlib.util.spec_from_file_location(
     "core_reference", ROOT / "scripts/longcat-next/core_reference.py")
-core = importlib.util.module_from_spec(CORE_SPEC)
+assert CORE_SPEC is not None and CORE_SPEC.loader is not None
+core: Any = importlib.util.module_from_spec(CORE_SPEC)
 CORE_SPEC.loader.exec_module(core)
 
 
@@ -28,6 +31,19 @@ class Handle:
 
 
 class Module:
+    classifier: Any
+    config: Any
+    e_score_correction_bias: Any
+    lm_head: Any
+    mlp: Any
+    model: Any
+    n_routed_experts: Any
+    named_modules: Any
+    router: Any
+    router_bias: Any
+    routed_scaling_factor: Any
+    top_k: Any
+
     def __init__(self):
         self.pre = []
         self.post = []
@@ -49,7 +65,7 @@ class Layer(Module):
 
 class Model:
     def __init__(self):
-        trunk = type("Trunk", (), {})()
+        trunk: Any = type("Trunk", (), {})()
         trunk.layers = [Layer() for _ in range(14)]
         trunk.named_modules = lambda: []
         self.model = trunk
@@ -125,6 +141,7 @@ class FakeTensor:
 
 
 class FakeTorch:
+    nn: Any
     linear_override = None
     float32 = "torch.float32"
     uint8 = "torch.uint8"
@@ -192,7 +209,7 @@ class PlacementParameter:
 class PlacementRouter:
     def __init__(self, device="cuda", meta=False, weight_dtype="torch.bfloat16",
                  correction_dtype="torch.bfloat16", place_submodules=True):
-        self.classifier = type("Classifier", (), {})()
+        self.classifier: Any = type("Classifier", (), {})()
         self.classifier.weight = PlacementParameter((384, 3072), "meta" if meta else device,
                                                     weight_dtype, is_meta=meta)
         self.e_score_correction_bias = PlacementParameter(
@@ -326,7 +343,7 @@ def write_valid_worker(run_dir, run_index, precision="bf16", backend="default"):
 
 def synthetic_router_model(scaling=1.0):
     model = Model()
-    router = Module()
+    router: Any = Module()
     router.classifier = type("Classifier", (), {
         "weight": FakeTensor(np.eye(3)), "bias": None})()
     router.config = type("Config", (), {"hidden_size": 3})()
@@ -425,8 +442,9 @@ class CoreV2Tests(unittest.TestCase):
                 self.mlps = [Module(), Module()]
                 self.mlp = Module()
                 self.mlp.router = Module()
-        model = type("ComponentModel", (), {})()
-        model.model = type("Trunk", (), {})()
+        model: Any = type("ComponentModel", (), {})()
+        trunk: Any = type("Trunk", (), {})()
+        model.model = trunk
         model.model.layers = [ComponentLayer() for _ in range(14)]
         router = model.model.layers[5].mlp.router
         router.classifier = type("Classifier", (), {
@@ -706,7 +724,7 @@ class CoreV2Tests(unittest.TestCase):
         class Generation:
             @staticmethod
             def from_pretrained(*args, **kwargs): return "generation"
-        model = type("Dispatched", (), {})()
+        model: Any = type("Dispatched", (), {})()
         with tempfile.TemporaryDirectory() as temporary:
             result = core.dispatch_auto_model_with_preload(
                 model, "model", {"": 0}, temporary, "torch.bfloat16", temporary,

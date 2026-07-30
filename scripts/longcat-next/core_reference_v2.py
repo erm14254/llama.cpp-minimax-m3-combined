@@ -22,6 +22,7 @@ import tempfile
 import itertools
 import contextvars
 from pathlib import Path
+from typing import Any, cast
 
 SCHEMA_VERSION = 2
 EXPECTED_ACCEPTED_ARRAYS = 433
@@ -32,9 +33,11 @@ DEFAULT_DIAGNOSTIC_CASES = (
     "eos_window_position_0",
     "prompt_at_once_vs_token_at_a_time",
 )
-CURRENT_ATTENTION_CONTEXT = contextvars.ContextVar("longcat_attention_context", default=None)
-CURRENT_ROUTER_CONTEXT = contextvars.ContextVar("longcat_router_context", default=None)
-CURRENT_ROUTER_LINEAR_SESSION = contextvars.ContextVar(
+CURRENT_ATTENTION_CONTEXT: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "longcat_attention_context", default=None)
+CURRENT_ROUTER_CONTEXT: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "longcat_router_context", default=None)
+CURRENT_ROUTER_LINEAR_SESSION: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
     "longcat_router_linear_session", default=None)
 PROVENANCE_REQUIRED_FIELDS = frozenset({
     "generator_schema_version", "script_sha256", "llama_cpp", "checkpoint",
@@ -94,6 +97,7 @@ def router_runtime_identity(module):
     require(runtime_module == "transformers.models.longcat_flash.modeling_longcat_flash",
             f"unexpected LongCat router module: {runtime_module}")
     source_module = importlib.import_module(runtime_module)
+    assert source_module.__file__ is not None
     source_path = Path(source_module.__file__).resolve()
     require(source_path.name == "modeling_longcat_flash.py",
             f"unexpected LongCat router source: {source_path}")
@@ -159,8 +163,9 @@ def instrument_router_linear(torch):
             checker.check(weight, **common, operation="router_linear",
                           role="classifier_weight_runtime",
                           failure_phase="before_original_linear")
-            if active["logical_layer"] not in session["logical_layers_observed"]:
-                session["logical_layers_observed"].append(active["logical_layer"])
+            logical_layers = cast(list[int], session["logical_layers_observed"])
+            if active["logical_layer"] not in logical_layers:
+                logical_layers.append(active["logical_layer"])
             correction_bias = active["module"].e_score_correction_bias.detach().clone()
             checker.check(correction_bias, **common, operation="router_runtime_parameter",
                           role="e_score_correction_bias_runtime")
@@ -1140,7 +1145,8 @@ def package_versions(names):
 
 
 def sdpa_backend_controls(torch):
-    controls = {"effective_kernel_identity": "not determinable before/after an individual SDPA call"}
+    controls: dict[str, Any] = {
+        "effective_kernel_identity": "not determinable before/after an individual SDPA call"}
     cuda = getattr(getattr(torch, "backends", None), "cuda", None)
     for name in ("flash_sdp_enabled", "math_sdp_enabled", "mem_efficient_sdp_enabled",
                  "cudnn_sdp_enabled"):
@@ -1167,14 +1173,15 @@ def collect_provenance(repo_root, model_dir, precision, backend, run_index,
         for value in itertools.chain(model.parameters(), model.buffers()):
             devices.add(str(value.device))
             dtypes.add(str(value.dtype))
-    cuda = {"available": bool(torch.cuda.is_available()), "build": torch.version.cuda,
-            "runtime": None, "driver": None, "gpu": None, "capability": None}
+    cuda: dict[str, Any] = {"available": bool(torch.cuda.is_available()), "build": torch.version.cuda,
+                            "runtime": None, "driver": None, "gpu": None, "capability": None}
     if cuda["available"]:
         cuda.update({"gpu": torch.cuda.get_device_name(0),
                      "capability": list(torch.cuda.get_device_capability(0))})
-        try: cuda["runtime"] = torch._C._cuda_getRuntimeVersion()
+        torch_c: Any = torch._C
+        try: cuda["runtime"] = torch_c._cuda_getRuntimeVersion()
         except AttributeError: pass
-        try: cuda["driver"] = torch._C._cuda_getDriverVersion()
+        try: cuda["driver"] = torch_c._cuda_getDriverVersion()
         except AttributeError: pass
     env_names = ("CUBLAS_WORKSPACE_CONFIG", "CUDA_LAUNCH_BLOCKING", "HF_HUB_OFFLINE",
                  "TRANSFORMERS_OFFLINE", "PYTORCH_CUDA_ALLOC_CONF", "TORCH_LOGS",

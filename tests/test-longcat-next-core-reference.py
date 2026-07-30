@@ -11,13 +11,15 @@ import unittest
 import zipfile
 from pathlib import Path
 from unittest import mock
+from typing import Any
 
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
     "longcat_next_core_reference", ROOT / "scripts/longcat-next/core_reference.py")
-core = importlib.util.module_from_spec(SPEC)
+assert SPEC is not None and SPEC.loader is not None
+core: Any = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(core)
 
 
@@ -198,7 +200,7 @@ class CoreHelperTests(unittest.TestCase):
         self.assertIn("sm_120", report["error"])
 
     def test_local_custom_code_preflight_uses_dynamic_loader(self):
-        dynamic_utils = types.ModuleType("transformers.dynamic_module_utils")
+        dynamic_utils: Any = types.ModuleType("transformers.dynamic_module_utils")
         calls = []
 
         def loader(reference, path, **kwargs):
@@ -259,7 +261,7 @@ class CoreHelperTests(unittest.TestCase):
         backend = types.SimpleNamespace(pre_tokenizer=pretokenizer)
         BloomTokenizer = type("BloomTokenizer", (), {})
         BloomTokenizerFast = type("BloomTokenizerFast", (), {})
-        tokenizer = BloomTokenizerFast()
+        tokenizer: Any = BloomTokenizerFast()
         tokenizer.is_fast = True
         tokenizer.slow_tokenizer_class = BloomTokenizer
         tokenizer.backend_tokenizer = backend
@@ -287,14 +289,14 @@ class CoreHelperTests(unittest.TestCase):
             root.joinpath("tokenizer.json").write_text("{}", encoding="ascii")
             root.joinpath("tokenizer_config.json").write_text(
                 json.dumps({"tokenizer_class": "BloomTokenizer"}), encoding="ascii")
-            unrelated = type("UnrelatedTokenizerFast", (), {})()
+            unrelated: Any = type("UnrelatedTokenizerFast", (), {})()
             unrelated.is_fast = True
             unrelated.backend_tokenizer = backend
             with self.assertRaisesRegex(core.CoreFixtureError, "BloomTokenizerFast"):
                 core.tokenizer_provenance(unrelated, root)
             root.joinpath("tokenizer_config.json").write_text(
                 json.dumps({"tokenizer_class": "MistralTokenizer"}), encoding="ascii")
-            bloom = type("BloomTokenizerFast", (), {})()
+            bloom: Any = type("BloomTokenizerFast", (), {})()
             bloom.is_fast = True
             bloom.backend_tokenizer = backend
             with self.assertRaisesRegex(core.CoreFixtureError, "declared tokenizer class"):
@@ -354,7 +356,8 @@ class CoreHelperTests(unittest.TestCase):
                 if prepared.do_sample:
                     self.branches.append("sampling")
                     import torch
-                    torch.multinomial(None, num_samples=1)
+                    torch_module: Any = torch
+                    torch_module.multinomial(None, num_samples=1)
                 else:
                     self.branches.append("argmax")
                 return "generated"
@@ -364,7 +367,7 @@ class CoreHelperTests(unittest.TestCase):
         copied, policy = core.fixture_greedy_generation_config(model.generation_config, 1)
         fallback, _ = model._prepare_generation_config(copied)
         self.assertTrue(fallback.do_sample)
-        fake_torch = types.ModuleType("torch")
+        fake_torch: Any = types.ModuleType("torch")
         fake_torch.multinomial = mock.Mock(side_effect=AssertionError("sampling forbidden"))
         effective_results = []
         with mock.patch.dict("sys.modules", {"torch": fake_torch}):
@@ -533,9 +536,9 @@ class CoreHelperTests(unittest.TestCase):
                 return cls(visual_generation_config={"custom_params": {
                     "token_h": 37, "token_w": 37, "anyres_prefix": "x"}},
                     audio_generation_config={"audio_parallel_decoding": False})
-        dynamic = types.ModuleType("mock_longcat_official")
+        dynamic: Any = types.ModuleType("mock_longcat_official")
         dynamic.LongcatNextForCausalLMGenerationStatus = Status
-        transformers = types.ModuleType("transformers")
+        transformers: Any = types.ModuleType("transformers")
         transformers.GenerationConfig = GenerationConfig
 
         class Model:

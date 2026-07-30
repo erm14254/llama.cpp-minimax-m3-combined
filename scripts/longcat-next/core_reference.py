@@ -15,6 +15,7 @@ import zipfile
 import importlib.util
 from copy import deepcopy
 from pathlib import Path
+from typing import Any, cast
 from urllib.parse import unquote, urlparse
 
 EXPECTED_TENSORS = 13450
@@ -27,7 +28,8 @@ CORE_SCHEMA_VERSION = 2
 
 _V2_SPEC = importlib.util.spec_from_file_location(
     "longcat_next_core_reference_v2", Path(__file__).with_name("core_reference_v2.py"))
-v2 = importlib.util.module_from_spec(_V2_SPEC)
+assert _V2_SPEC is not None and _V2_SPEC.loader is not None
+v2: Any = importlib.util.module_from_spec(_V2_SPEC)
 _V2_SPEC.loader.exec_module(v2)
 REQUIRED_FILES = (
     "config.json", "tokenizer_config.json", "tokenizer.json",
@@ -178,12 +180,12 @@ def version_pair(value):
 
 
 def runtime_probe(packages, runtime_profile, placement):
-    report = {"ok": True, "operating_system": os.name,
-              "platform": __import__("platform").platform(),
-              "python_version": __import__("platform").python_version(),
-              "python_implementation": __import__("platform").python_implementation(),
-              "python_executable": sys.executable,
-              "cuda_selected": placement in ("auto", "cuda")}
+    report: dict[str, Any] = {"ok": True, "operating_system": os.name,
+                              "platform": __import__("platform").platform(),
+                              "python_version": __import__("platform").python_version(),
+                              "python_implementation": __import__("platform").python_implementation(),
+                              "python_executable": sys.executable,
+                              "cuda_selected": placement in ("auto", "cuda")}
     try:
         torch = importlib.import_module("torch")
         report.update({"torch_version": getattr(torch, "__version__", None),
@@ -236,7 +238,7 @@ def runtime_probe(packages, runtime_profile, placement):
 
 
 def import_local_custom_classes(model_dir):
-    report = {"ok": False, "classes": {}, "error": None}
+    report: dict[str, Any] = {"ok": False, "classes": {}, "error": None}
     try:
         from transformers.dynamic_module_utils import get_class_from_dynamic_module
         for reference in ("configuration_longcat_next.LongcatNextConfig",
@@ -366,9 +368,9 @@ def perform_flash_attention_smoke(torch, flash_attn):
 
 def flash_attention_probe(runtime, placement, runtime_profile, flash_wheel_path=None):
     platform_module = __import__("platform")
-    report = {"ok": True, "platform": platform_module.platform(),
-              "operating_system": platform_module.system(), "operation": "not requested",
-              "official_pinned_version": OFFICIAL_FLASH_ATTN}
+    report: dict[str, Any] = {"ok": True, "platform": platform_module.platform(),
+                              "operating_system": platform_module.system(), "operation": "not requested",
+                              "official_pinned_version": OFFICIAL_FLASH_ATTN}
     if placement not in ("auto", "cuda"):
         return report
     try:
@@ -487,15 +489,15 @@ def loading_kwargs(precision, placement, offload_dir=None, cpu_memory=None, gpu_
     enforce_offline_environment()
     import torch
     dtype = torch.bfloat16 if precision == "bf16" else torch.float16
-    kwargs = {"local_files_only": True, "trust_remote_code": True,
-              "use_safetensors": True, "low_cpu_mem_usage": True, "dtype": dtype}
+    kwargs: dict[str, Any] = {"local_files_only": True, "trust_remote_code": True,
+                              "use_safetensors": True, "low_cpu_mem_usage": True, "dtype": dtype}
     if placement == "auto":
         kwargs["device_map"] = "auto"
     elif placement == "cpu":
         kwargs["device_map"] = {"": "cpu"}
     else:
         kwargs["device_map"] = {"": 0}
-    max_memory = {}
+    max_memory: dict[str | int, int] = {}
     if cpu_memory:
         max_memory["cpu"] = parse_memory_limit(cpu_memory, "CPU")
     if gpu_memory:
@@ -644,7 +646,7 @@ def build_auto_dispatch_plan(model_dir, dtype, cpu_memory=None, gpu_memory=None)
     footprint = router_cuda_footprint(empty_model, router_prefixes, dtype)
     requested_gpu = (convert_file_size_to_int(gpu_memory) if gpu_memory else
                      int(torch.cuda.mem_get_info(0)[0]))
-    max_memory = {0: reserve_router_gpu_headroom(requested_gpu)}
+    max_memory: dict[str | int, int] = {0: reserve_router_gpu_headroom(requested_gpu)}
     if cpu_memory:
         max_memory["cpu"] = convert_file_size_to_int(cpu_memory)
     no_split = router_no_split_classes(empty_model._get_no_split_modules("auto"))
@@ -908,6 +910,7 @@ def resolve_effective_greedy_policy(model, generation_config, overrides):
     prepare = getattr(model, "_prepare_generation_config", None)
     require(callable(prepare),
             "official model does not expose _prepare_generation_config for greedy-policy validation")
+    assert callable(prepare)
     effective, _ = prepare(deepcopy(generation_config), **dict(overrides))
     fields = ("do_sample", "temperature", "top_p", "top_k", "max_new_tokens",
               "use_cache", "return_dict_in_generate")
@@ -945,6 +948,7 @@ def generate_with_greedy_policy(model, encoded, generation_config, policy,
         if finite_checker is not None:
             scores = getattr(generated, "scores", None)
             require(scores is not None, "greedy generation did not return requested scores")
+            assert scores is not None
             for step, score in enumerate(scores):
                 finite_checker.check(score, module_name="generation.scores",
                                      operation="generation", role="score",
@@ -1002,8 +1006,8 @@ def build_text_generation_context(model, model_dir):
         from transformers import GenerationConfig
         generation = GenerationConfig.from_pretrained(
             str(model_dir), local_files_only=True, trust_remote_code=True)
-        visual = GenerationConfig(**generation.visual_generation_config)
-        audio = GenerationConfig(**generation.audio_generation_config)
+        visual = GenerationConfig(**getattr(generation, "visual_generation_config"))
+        audio = GenerationConfig(**getattr(generation, "audio_generation_config"))
         dynamic_module = importlib.import_module(model.__class__.__module__)
         status_class = getattr(dynamic_module, "LongcatNextForCausalLMGenerationStatus")
         status = status_class(visual, audio)
@@ -1367,6 +1371,7 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_
     import torch
     modules = resolve_capture_modules(model)
     require(finite_checker is not None, "schema-v2 capture requires an on-device finite checker")
+    assert finite_checker is not None
     captured = {}
     source_dtypes = {}
     handles = []
@@ -1567,7 +1572,7 @@ def run_core_worker_generation(args, weight_free_fixture, diagnostic=False):
     v2.atomic_json(Path(args.output_dir) / "placement-preload-audit.json", {
         "schema_version": 2, "phase": "before_checkpoint_load",
         "placement": args.placement, **placement_policy,
-        "router_prefix_count": len(placement_policy.get("router_prefixes", []))
+        "router_prefix_count": len(cast(list[Any], placement_policy.get("router_prefixes", [])))
         if args.placement == "auto" else 14,
     })
     if args.attention_backend != "default":

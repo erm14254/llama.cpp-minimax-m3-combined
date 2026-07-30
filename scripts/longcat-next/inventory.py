@@ -8,6 +8,7 @@ import struct
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
+from typing import Any
 
 EXPECTED_TOTAL = 13450
 EXPECTED_PAYLOAD = 150825367872
@@ -114,7 +115,7 @@ def validate_image(path):
     length, header = read_safetensors_header(path)
     require(length == 226408, f"image header length: expected 226408, got {length}")
     require(len(header) == 1771, f"image tensor count: expected 1771, got {len(header)}")
-    summary = defaultdict(lambda: [0, 0, 0, set()])
+    summary: dict[str, list[Any]] = defaultdict(lambda: [0, 0, 0, set()])
     for name, item in header.items():
         require(isinstance(item, dict), f"image tensor {name}: metadata must be an object")
         for field in ("dtype", "shape", "data_offsets"):

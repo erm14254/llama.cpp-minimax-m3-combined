@@ -3,11 +3,13 @@
 import importlib.util
 import unittest
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
     "longcat_next_inventory", ROOT / "conversion/longcat_next_inventory.py")
-inventory = importlib.util.module_from_spec(SPEC)
+assert SPEC is not None and SPEC.loader is not None
+inventory: Any = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(inventory)
 
 

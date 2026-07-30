@@ -6,12 +6,14 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
 _SPEC = importlib.util.spec_from_file_location("router_extract", HERE / "extract-router-linear-diagnostic.py")
-COMMON = importlib.util.module_from_spec(_SPEC)
+assert _SPEC is not None and _SPEC.loader is not None
+COMMON: Any = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(COMMON)
 LAYERS = COMMON.LAYERS
 PYTHON_TEMPLATE = "model.layers.{logical}.post_attention_layernorm.0.weight"

@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 HF_REVISION = "0cf0631862402ff36366e513e4023d22e7e5c84c"
 SOURCE_REVISION = "49dc718151f9943a9dca2c1169541934bb85d83e"
@@ -24,9 +25,10 @@ TOKENIZER_CONFIG_SHA256 = "22dddd0eb59965adf6e4861a7c8a9ed803595cd16bc86ed6e2d4e
 SEEDS = {"python": 20260725, "torch": 20260725, "numpy": 20260725}
 
 
-def load_core_reference():
+def load_core_reference() -> Any:
     path = Path(__file__).with_name("core_reference.py")
     spec = importlib.util.spec_from_file_location("longcat_next_core_reference", path)
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
