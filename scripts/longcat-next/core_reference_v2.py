@@ -202,8 +202,8 @@ def router_component_values(logits, correction_bias, topk_indices, topk_weights,
     selection_scores = probabilities.view(-1, probabilities.shape[-1]) + correction_bias.unsqueeze(0)
     identity_weight_sum = (topk_weights * (topk_indices >= 256).type(topk_weights.dtype)).sum(
         dim=-1, keepdim=True)
-    identity_residual = (router_input.view(-1, router_input.shape[-1]) *
-                         identity_weight_sum).view(*router_input.shape)
+    identity_residual = (router_input.view(-1, router_input.shape[-1])
+                         * identity_weight_sum).view(*router_input.shape)
     return probabilities, selection_scores, identity_weight_sum, identity_residual
 
 
@@ -449,8 +449,8 @@ class TorchFiniteChecker:
                 "first invalid tensor: unmaterialized meta tensor: "
                 f"module={report['module_name']} physical_block={report['physical_block']} "
                 f"role={report['role']} failure_phase={report.get('failure_phase')}")
-        raise V2Error(message or
-                      f"first non-finite tensor: {report['module_name']} "
+        raise V2Error(message
+                      or f"first non-finite tensor: {report['module_name']} "
                       f"physical_block={report['physical_block']} role={report['role']}")
 
     def check(self, value, **context):
@@ -596,6 +596,7 @@ def install_trunk_finite_hooks(model, checker, serialize_blocks=(0, 1, 2, 27), c
                     torch = checker.torch_module
                 replay = []
                 reasons = []
+
                 def inspect(value, operation, role=None):
                     report = checker.inspect_tensor(
                         value, **common, operation=operation, role=role or operation)
@@ -609,8 +610,8 @@ def install_trunk_finite_hooks(model, checker, serialize_blocks=(0, 1, 2, 27), c
                     "process_id": os.getpid(), "run_index": checker.run_index})
                 scores = inspect(active["router_logits"].softmax(dim=-1), "softmax_scores")
                 scores_for_choice = inspect(
-                    scores.view(-1, module.n_routed_experts) +
-                    active["correction_bias"].unsqueeze(0),
+                    scores.view(-1, module.n_routed_experts)
+                    + active["correction_bias"].unsqueeze(0),
                     "scores_for_choice")
                 require(int(module.top_k) == int(topk_indices.shape[-1]),
                         f"{name}: configured top_k differs from original output")
@@ -633,9 +634,9 @@ def install_trunk_finite_hooks(model, checker, serialize_blocks=(0, 1, 2, 27), c
                     if not torch.equal(original_finite, replay_finite):
                         reasons.append("finite_mask")
                     classification_equal = (
-                        torch.equal(torch.isnan(original_weights), torch.isnan(replay_final)) and
-                        torch.equal(torch.isposinf(original_weights), torch.isposinf(replay_final)) and
-                        torch.equal(torch.isneginf(original_weights), torch.isneginf(replay_final)))
+                        torch.equal(torch.isnan(original_weights), torch.isnan(replay_final))
+                        and torch.equal(torch.isposinf(original_weights), torch.isposinf(replay_final))
+                        and torch.equal(torch.isneginf(original_weights), torch.isneginf(replay_final)))
                     if not classification_equal:
                         reasons.append("nonfinite_classification")
                     if torch.equal(original_finite, replay_finite):
@@ -876,8 +877,10 @@ def install_block_component_window_hooks(model, checker, capture, start=10, coun
     for block in range(start, start + count):
         logical, sublayer = divmod(block, 2)
         layer = layers[logical]
-        attention_norms = list(layer.input_layernorm); attentions = list(layer.self_attn)
-        ffn_norms = list(layer.post_attention_layernorm); dense_mlps = list(layer.mlps)
+        attention_norms = list(layer.input_layernorm)
+        attentions = list(layer.self_attn)
+        ffn_norms = list(layer.post_attention_layernorm)
+        dense_mlps = list(layer.mlps)
         require(len(attention_norms) == len(attentions) == len(ffn_norms) == len(dense_mlps) == 2,
                 f"logical layer {logical} does not expose two validated physical sublayers")
         require(hasattr(layer, "mlp") and hasattr(layer.mlp, "router"),
@@ -959,7 +962,8 @@ def manual_sdpa_f32_numpy(query, key, value, attn_mask=None, is_causal=False,
     if enable_gqa:
         require(q.shape[-3] % k.shape[-3] == 0, "GQA query heads must be divisible by KV heads")
         factor = q.shape[-3] // k.shape[-3]
-        k = np.repeat(k, factor, axis=-3); v = np.repeat(v, factor, axis=-3)
+        k = np.repeat(k, factor, axis=-3)
+        v = np.repeat(v, factor, axis=-3)
     score = np.matmul(q, np.swapaxes(k, -2, -1))
     score *= float(scale) if scale is not None else 1.0 / math.sqrt(q.shape[-1])
     if is_causal:
@@ -1008,8 +1012,8 @@ def instrument_sdpa(torch, checker, backend):
                 "module_name": active.get("module_name"),
                 "module_call_index": module_call, "global_call_sequence": global_sequence}
         calls.append(call)
-        common = {"module_name": active.get("module_name") or
-                  "torch.nn.functional.scaled_dot_product_attention",
+        common = {"module_name": active.get("module_name")
+                  or "torch.nn.functional.scaled_dot_product_attention",
                   "logical_layer": active.get("logical_layer"),
                   "physical_block": active.get("physical_block"),
                   "operation": "scaled_dot_product_attention"}
@@ -1068,8 +1072,8 @@ def load_shard_manifest(path):
         require(row["filename"].startswith("model-") and row["filename"].endswith(".safetensors"),
                 "invalid shard filename")
         require(isinstance(row["bytes"], int) and row["bytes"] > 0, "invalid shard byte count")
-        require(len(row["lfs_sha256"]) == 64 and
-                all(c in "0123456789abcdef" for c in row["lfs_sha256"]), "invalid LFS SHA-256 OID")
+        require(len(row["lfs_sha256"]) == 64
+                and all(c in "0123456789abcdef" for c in row["lfs_sha256"]), "invalid LFS SHA-256 OID")
         names.add(row["filename"])
     expected_names = {f"model-{index:05d}-of-00015.safetensors" for index in range(1, 16)}
     require(names == expected_names, "shard manifest filenames do not match the official 15-shard set")
@@ -1109,8 +1113,8 @@ def verify_and_scan_source(model_dir, manifest_path, report_dir, safe_open_fn=No
                     report = torch_finite_report(torch, f"{row['filename']}:{name}", tensor)
                     reports.append(report)
                     if report["finite_count"] != report["total_elements"]:
-                        atomic_json(Path(report_dir) / "source-scan" /
-                                    "first-nonfinite-source.json", report)
+                        atomic_json(Path(report_dir) / "source-scan"
+                                    / "first-nonfinite-source.json", report)
                         raise V2Error(f"non-finite source tensor {row['filename']}:{name}")
                 del tensor
         atomic_json(Path(report_dir) / "source-scan" / (row["filename"] + ".json"), {
@@ -1152,6 +1156,7 @@ def collect_provenance(repo_root, model_dir, precision, backend, run_index,
                        script_paths, model=None, extra=None):
     import torch
     root = Path(repo_root)
+
     def git(*args):
         return subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
     dirty = bool(git("status", "--porcelain"))
@@ -1160,7 +1165,8 @@ def collect_provenance(repo_root, model_dir, precision, backend, run_index,
     if model is not None:
         device_map = getattr(model, "hf_device_map", None)
         for value in itertools.chain(model.parameters(), model.buffers()):
-            devices.add(str(value.device)); dtypes.add(str(value.dtype))
+            devices.add(str(value.device))
+            dtypes.add(str(value.dtype))
     cuda = {"available": bool(torch.cuda.is_available()), "build": torch.version.cuda,
             "runtime": None, "driver": None, "gpu": None, "capability": None}
     if cuda["available"]:
@@ -1245,16 +1251,16 @@ def validate_worker_artifacts(run_dir, precision, backend, run_index, contract,
         "offload_buffers", "device_map_validation"}
     require(required_placement_fields <= set(placement),
             "worker placement policy fields are incomplete")
-    require(placement["preload_module_classes"] == ["LongcatFlashTopkRouter"] and
-            placement["router_no_split_class"] == "LongcatFlashTopkRouter" and
-            placement["offload_buffers"] is True,
+    require(placement["preload_module_classes"] == ["LongcatFlashTopkRouter"]
+            and placement["router_no_split_class"] == "LongcatFlashTopkRouter"
+            and placement["offload_buffers"] is True,
             "worker router preload/no-split configuration is invalid")
     require(placement["reserved_gpu_headroom_bytes"] >= 128 * 1024 * 1024,
             "worker automatic placement headroom is invalid")
     canonical_map = json.dumps(placement["ordinary_device_map"], sort_keys=True,
                                separators=(",", ":"), default=str)
-    require(hashlib.sha256(canonical_map.encode("utf-8")).hexdigest() ==
-            placement["ordinary_device_map_sha256"],
+    require(hashlib.sha256(canonical_map.encode("utf-8")).hexdigest()
+            == placement["ordinary_device_map_sha256"],
             "worker ordinary device-map hash differs")
     require(placement["device_map_validation"].get("non_overlapping_device_map") is True,
             "worker ordinary device map overlaps")
@@ -1265,38 +1271,39 @@ def validate_worker_artifacts(run_dir, precision, backend, run_index, contract,
             "worker router policy element size differs")
     classifier_bytes = placement.get("router_inventory_classifier_bytes")
     correction_bytes = placement.get("router_inventory_correction_bias_bytes")
-    require(isinstance(classifier_bytes, int) and isinstance(correction_bytes, int) and
-            classifier_bytes == 33_030_144 and correction_bytes == 10_752 and
-            placement.get("router_inventory_total_bytes") == 33_040_896 and
-            placement.get("single_router_preload_bytes") == 2_360_064 and
-            classifier_bytes + correction_bytes == placement.get("router_inventory_total_bytes") and
-            placement.get("single_router_preload_bytes") * 14 ==
-            placement.get("router_inventory_total_bytes"),
+    require(isinstance(classifier_bytes, int) and isinstance(correction_bytes, int)
+
+            and classifier_bytes == 33_030_144 and correction_bytes == 10_752
+            and placement.get("router_inventory_total_bytes") == 33_040_896
+            and placement.get("single_router_preload_bytes") == 2_360_064
+            and classifier_bytes + correction_bytes == placement.get("router_inventory_total_bytes")
+            and placement.get("single_router_preload_bytes") * 14
+            == placement.get("router_inventory_total_bytes"),
             "worker router policy byte components are invalid")
-    require(audit.get("all_router_direct_weight_access_safe") is True and
-            audit.get("preload_policy_verified") is True and
-            audit.get("non_overlapping_device_map") is True and audit.get("router_count") == 14,
+    require(audit.get("all_router_direct_weight_access_safe") is True
+            and audit.get("preload_policy_verified") is True
+            and audit.get("non_overlapping_device_map") is True and audit.get("router_count") == 14,
             "worker router placement audit is not accepted")
-    require(audit.get("classifier_dtype_verified") is True and
-            audit.get("correction_bias_dtype_verified") is True,
+    require(audit.get("classifier_dtype_verified") is True
+            and audit.get("correction_bias_dtype_verified") is True,
             "worker router dtype audit is not accepted")
     router_rows = audit.get("routers", [])
-    require(len(router_rows) == 14 and
-            all(row.get("router_class") == "LongcatFlashTopkRouter" and
-                row.get("direct_weight_access_safe") is True for row in router_rows),
+    require(len(router_rows) == 14
+            and all(row.get("router_class") == "LongcatFlashTopkRouter"
+                    and row.get("direct_weight_access_safe") is True for row in router_rows),
             "worker router safety audit does not contain fourteen safe routers")
     for row in router_rows:
         if str(row.get("governing_device")) in ("cpu", "disk"):
-            require(row.get("router_hook_place_submodules") is True and
-                    row.get("direct_weight_access_safe") is True,
+            require(row.get("router_hook_place_submodules") is True
+                    and row.get("direct_weight_access_safe") is True,
                     "worker offloaded router lacks parent submodule preloading")
     live = metadata.get("router_live_materialization", [])
     require(bool(live), "worker live router materialization summary is missing")
     for row in live:
-        require(row.get("router_invocation_count") == 14 and
-                row.get("logical_layers_observed") == list(range(14)) and
-                row.get("all_live_router_weights_materialized") is True and
-                row.get("all_live_correction_biases_materialized") is True,
+        require(row.get("router_invocation_count") == 14
+                and row.get("logical_layers_observed") == list(range(14))
+                and row.get("all_live_router_weights_materialized") is True
+                and row.get("all_live_correction_biases_materialized") is True,
                 "worker live router materialization summary is invalid")
     provenance = metadata.get("provenance", {})
     require(PROVENANCE_REQUIRED_FIELDS <= set(provenance), "worker provenance is incomplete")
@@ -1306,8 +1313,8 @@ def validate_worker_artifacts(run_dir, precision, backend, run_index, contract,
             "worker process/run provenance differs")
     require(provenance.get("requested_attention_backend") == backend,
             "worker requested attention backend differs")
-    require(provenance.get("requested_precision") == precision and
-            isinstance(provenance.get("effective_precision"), str),
+    require(provenance.get("requested_precision") == precision
+            and isinstance(provenance.get("effective_precision"), str),
             "worker requested/effective precision differs")
     effective = provenance.get("effective_attention_backend", {})
     require(effective.get("requested_backend") == backend, "worker effective backend record differs")
@@ -1316,17 +1323,17 @@ def validate_worker_artifacts(run_dir, precision, backend, run_index, contract,
     require(backend != "sdpa-f32", "sdpa-f32 workers cannot be accepted")
     require(provenance.get("script_sha256") == expected_script_hashes,
             "worker generator script identities differ")
-    require(provenance.get("shard_manifest_sha256") ==
-            expected_script_hashes["checkpoint-shards-v2.json"], "worker shard manifest hash differs")
+    require(provenance.get("shard_manifest_sha256")
+            == expected_script_hashes["checkpoint-shards-v2.json"], "worker shard manifest hash differs")
     require(isinstance(provenance.get("start_utc"), str) and isinstance(provenance.get("end_utc"), str),
             "worker timestamps are incomplete")
-    require(isinstance(provenance.get("sdpa_backend_controls"), dict) and
-            "effective_kernel_identity" in provenance["sdpa_backend_controls"],
+    require(isinstance(provenance.get("sdpa_backend_controls"), dict)
+            and "effective_kernel_identity" in provenance["sdpa_backend_controls"],
             "worker SDPA backend controls are incomplete")
-    require(reproducibility.get("schema_version") == 2 and
-            reproducibility.get("repeat_count") == 1, "worker reproducibility document is invalid")
-    require(validation_file.get("all_finite") is True and
-            validation_file.get("contract_valid") is True, "worker validation document is invalid")
+    require(reproducibility.get("schema_version") == 2
+            and reproducibility.get("repeat_count") == 1, "worker reproducibility document is invalid")
+    require(validation_file.get("all_finite") is True
+            and validation_file.get("contract_valid") is True, "worker validation document is invalid")
     arrays, validation = load_worker_arrays(root, precision=precision, contract=contract)
     recorded = metadata.get("arrays", {})
     require(set(recorded) == set(arrays), "worker array metadata names differ from NPZ")
@@ -1467,10 +1474,10 @@ def validate_candidate(candidate_dir, contract_path, implementation_paths):
             run_dir, precision, backend, index, contract, identities)
         arrays_by_run.append(arrays)
         process_ids.append(metadata["provenance"]["process_id"])
-        require(candidate_validation.get("per_run_npz_sha256", {}).get(f"run-{index:02d}") ==
-                sha256_file(run_dir / "arrays.npz"), "candidate per-run NPZ hash differs")
-        require(candidate_metadata.get("per_run_metadata_sha256", {}).get(f"run-{index:02d}") ==
-                sha256_file(run_dir / "metadata.json"), "candidate per-run metadata hash differs")
+        require(candidate_validation.get("per_run_npz_sha256", {}).get(f"run-{index:02d}")
+                == sha256_file(run_dir / "arrays.npz"), "candidate per-run NPZ hash differs")
+        require(candidate_metadata.get("per_run_metadata_sha256", {}).get(f"run-{index:02d}")
+                == sha256_file(run_dir / "metadata.json"), "candidate per-run metadata hash differs")
     comparison = compare_independent_runs(arrays_by_run)
     require(len(set(process_ids)) == len(process_ids), "candidate workers are not independent processes")
     require(all(row["byte_identical"] for row in comparison.values()),
@@ -1484,10 +1491,10 @@ def validate_candidate(candidate_dir, contract_path, implementation_paths):
             "canonical NPZ differs from run 00")
     require(sha256_file(canonical_metadata) == sha256_file(run_dirs[0] / "metadata.json"),
             "canonical metadata differs from run 00")
-    require(parent_repro.get("independent_processes") == len(run_dirs) and
-            parent_repro.get("byte_identical") is True, "parent reproducibility is invalid")
-    require(candidate_validation.get("whole_candidate_finite") is True and
-            candidate_validation.get("exact_inventory_count") == EXPECTED_ACCEPTED_ARRAYS,
+    require(parent_repro.get("independent_processes") == len(run_dirs)
+            and parent_repro.get("byte_identical") is True, "parent reproducibility is invalid")
+    require(candidate_validation.get("whole_candidate_finite") is True
+            and candidate_validation.get("exact_inventory_count") == EXPECTED_ACCEPTED_ARRAYS,
             "candidate validation gate is invalid")
     return {"schema_version": 2, "candidate_dir": str(root.resolve()), "valid": True,
             "precision": precision, "attention_backend": backend,

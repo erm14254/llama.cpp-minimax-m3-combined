@@ -15,10 +15,12 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
     "core_reference_v2", ROOT / "scripts/longcat-next/core_reference_v2.py")
-v2 = importlib.util.module_from_spec(SPEC); SPEC.loader.exec_module(v2)
+v2 = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(v2)
 CORE_SPEC = importlib.util.spec_from_file_location(
     "core_reference", ROOT / "scripts/longcat-next/core_reference.py")
-core = importlib.util.module_from_spec(CORE_SPEC); CORE_SPEC.loader.exec_module(core)
+core = importlib.util.module_from_spec(CORE_SPEC)
+CORE_SPEC.loader.exec_module(core)
 
 
 class Handle:
@@ -26,13 +28,23 @@ class Handle:
 
 
 class Module:
-    def __init__(self): self.pre = []; self.post = []
-    def register_forward_pre_hook(self, hook): self.pre.append(hook); return Handle()
-    def register_forward_hook(self, hook): self.post.append(hook); return Handle()
+    def __init__(self):
+        self.pre = []
+        self.post = []
+
+    def register_forward_pre_hook(self, hook):
+        self.pre.append(hook)
+        return Handle()
+
+    def register_forward_hook(self, hook):
+        self.post.append(hook)
+        return Handle()
 
 
 class Layer(Module):
-    def __init__(self): super().__init__(); self.input_layernorm = [Module(), Module()]
+    def __init__(self):
+        super().__init__()
+        self.input_layernorm = [Module(), Module()]
 
 
 class Model:
@@ -50,13 +62,16 @@ class Recorder:
 
 class FakeTensor:
     softmax_override = None
+
     def __init__(self, value, dtype=None):
-        self.value = np.asarray(value); self.dtype = dtype or self.value.dtype; self.device = "cpu"
+        self.value = np.asarray(value)
+        self.dtype = dtype or self.value.dtype
+        self.device = "cpu"
+
     @property
     def shape(self): return self.value.shape
     def is_floating_point(self): return self.value.dtype.kind == "f"
     def numel(self): return self.value.size
-    def sum(self): return FakeTensor(self.value.sum())
     def item(self): return self.value.item()
     def detach(self): return self
     def clone(self): return FakeTensor(self.value.copy(), self.dtype)
@@ -65,35 +80,45 @@ class FakeTensor:
     def min(self): return FakeTensor(self.value.min())
     def max(self): return FakeTensor(self.value.max())
     def abs(self): return FakeTensor(np.abs(self.value))
+
     def view(self, *shape):
         if len(shape) == 1 and shape[0] == FakeTorch.uint8:
             return FakeTensor(np.ascontiguousarray(self.value).view(np.uint8), FakeTorch.uint8)
         return FakeTensor(self.value.reshape(shape), self.dtype)
+
     def unsqueeze(self, dim): return FakeTensor(np.expand_dims(self.value, dim), self.dtype)
     def contiguous(self): return self
     def all(self): return FakeTensor(self.value.all())
     def float(self): return FakeTensor(self.value.astype(np.float32), "torch.float32")
+
     def type(self, dtype):
         if dtype == FakeTorch.float32:
             return FakeTensor(self.value.astype(np.float32), "torch.float32")
         if dtype == self.dtype:
             return FakeTensor(self.value.astype(self.value.dtype), self.dtype)
         raise TypeError(f"unsupported fake dtype {dtype}")
+
     def softmax(self, dim=-1):
         if FakeTensor.softmax_override is not None:
             return FakeTensor(FakeTensor.softmax_override)
         shifted = self.value - np.max(self.value, axis=dim, keepdims=True)
-        values = np.exp(shifted); return FakeTensor(values / values.sum(axis=dim, keepdims=True))
+        values = np.exp(shifted)
+        return FakeTensor(values / values.sum(axis=dim, keepdims=True))
+
     def gather(self, dim, indices):
         return FakeTensor(np.take_along_axis(self.value, indices.value.astype(np.int64), axis=dim))
+
     def sum(self, dim=None, keepdim=False):
-        if dim is None: return FakeTensor(self.value.sum())
+        if dim is None:
+            return FakeTensor(self.value.sum())
         return FakeTensor(self.value.sum(axis=dim, keepdims=keepdim))
+
     def __add__(self, other): return FakeTensor(self.value + getattr(other, "value", other))
     def __truediv__(self, other): return FakeTensor(self.value / getattr(other, "value", other))
     def __mul__(self, other): return FakeTensor(self.value * getattr(other, "value", other))
     def __ge__(self, other): return FakeTensor(self.value >= getattr(other, "value", other))
     def __invert__(self): return FakeTensor(~self.value)
+
     def __getitem__(self, key):
         if isinstance(key, FakeTensor): key = key.value
         return FakeTensor(self.value[key])
@@ -116,11 +141,13 @@ class FakeTorch:
     def isneginf(value): return FakeTensor(np.isneginf(value.value))
     @staticmethod
     def nonzero(value, as_tuple=False): return FakeTensor(np.argwhere(value.value))
+
     @staticmethod
     def topk(value, k, dim=-1, sorted=True):
         FakeTorch.topk_sorted_calls.append(sorted)
         indices = np.argsort(value.value, axis=dim)[..., ::-1][..., :k]
         return FakeTensor(np.take_along_axis(value.value, indices, axis=dim)), FakeTensor(indices)
+
     @staticmethod
     def equal(left, right): return np.array_equal(left.value, right.value)
 
@@ -131,7 +158,10 @@ class MetaLikeWeight:
 
 
 class FakeDevice:
-    def __init__(self, kind, index=None): self.type = kind; self.index = index
+    def __init__(self, kind, index=None):
+        self.type = kind
+        self.index = index
+
     def __str__(self): return self.type if self.index is None else f"{self.type}:{self.index}"
 
 
@@ -141,15 +171,20 @@ class MetaTensor(FakeTensor):
         self.dtype = dtype
         self.device = FakeDevice("meta")
         self.is_meta = True
+
     def type(self, dtype): return self
     def item(self): raise AssertionError("meta tensor item() must never be called")
 
 
 class PlacementParameter:
     def __init__(self, shape, device="cuda", dtype="torch.bfloat16", is_meta=False):
-        self.shape = shape; self.device = FakeDevice(device, 0 if device == "cuda" else None)
-        self.dtype = dtype; self.is_meta = is_meta
+        self.shape = shape
+        self.device = FakeDevice(device, 0 if device == "cuda" else None)
+        self.dtype = dtype
+        self.is_meta = is_meta
+
     def numel(self): return int(np.prod(self.shape))
+
     def element_size(self):
         return {"torch.bfloat16": 2, "torch.float16": 2, "torch.float32": 4}[str(self.dtype)]
 
@@ -166,6 +201,7 @@ class PlacementRouter:
             "execution_device": FakeDevice("cuda", 0), "offload": meta,
             "place_submodules": place_submodules})()
         self.classifier._hf_hook = None
+
     def parameters(self, recurse=False): return iter(())
 
 
@@ -178,10 +214,12 @@ class PlacementModel:
         assigned = governing_device if governing_device is not None else (
             "cpu" if device == "cpu" else 0)
         self.hf_device_map = {f"model.layers.{i}.mlp.router": assigned for i in range(14)}
+
     def named_modules(self):
         yield "", self
         for i, router in enumerate(self.routers):
             yield f"model.layers.{i}.mlp.router", router
+
     def named_parameters(self):
         for i, router in enumerate(self.routers):
             prefix = f"model.layers.{i}.mlp.router"
@@ -232,7 +270,6 @@ def contract_arrays(precision="bf16"):
     activation = np.float32 if precision == "bf16" else np.float16
     arrays = {}
     for name, rule in expected.items():
-        case = name.split("/", 1)[0]
         shape = tuple(1 if dim == "tokens" else 9 if dim == "prompt_plus_generated" else dim
                       for dim in rule["shape"])
         dtype = np.int64 if rule["dtype"] == "int64" else (
@@ -367,14 +404,15 @@ class CoreV2Tests(unittest.TestCase):
                      else 12 if suffix in {"router_topk_indices", "router_topk_weights"}
                      else 1 if suffix == "identity_weight_sum" else 3072)
             capture[name] = np.zeros((1, 2, width),
-                np.int64 if suffix == "router_topk_indices" else np.float32)
+                                     np.int64 if suffix == "router_topk_indices" else np.float32)
         with tempfile.TemporaryDirectory() as temporary:
             core.write_block_components_window_diagnostic(capture, temporary, 2, 10, 4)
             with np.load(Path(temporary) / "block-components-window.npz", allow_pickle=False) as archive:
                 self.assertEqual(set(archive.files), set(names))
                 self.assertEqual(archive["physical_block_10__router_topk_indices"].dtype.kind, "i")
             metadata = json.loads((Path(temporary) / "block-components-window.json").read_text())
-            self.assertFalse(metadata["accepted"]); self.assertEqual(metadata["array_count"], 44)
+            self.assertFalse(metadata["accepted"])
+            self.assertEqual(metadata["array_count"], 44)
             self.assertTrue(all(row["finite_count"] == row["total_elements"] for row in metadata["arrays"]))
 
     def test_block_component_window_live_router_capture_at_physical_block_10(self):
@@ -385,7 +423,8 @@ class CoreV2Tests(unittest.TestCase):
                 self.self_attn = [Module(), Module()]
                 self.post_attention_layernorm = [Module(), Module()]
                 self.mlps = [Module(), Module()]
-                self.mlp = Module(); self.mlp.router = Module()
+                self.mlp = Module()
+                self.mlp.router = Module()
         model = type("ComponentModel", (), {})()
         model.model = type("Trunk", (), {})()
         model.model.layers = [ComponentLayer() for _ in range(14)]
@@ -395,8 +434,10 @@ class CoreV2Tests(unittest.TestCase):
             "bias": None})()
         router.config = type("Config", (), {"hidden_size": 3072})()
         router.e_score_correction_bias = FakeTensor(np.zeros(384, np.float32), "torch.float32")
-        router.top_k = 12; router.n_routed_experts = 384
-        router.routed_scaling_factor = 1.0; router.router_bias = False
+        router.top_k = 12
+        router.n_routed_experts = 384
+        router.routed_scaling_factor = 1.0
+        router.router_bias = False
         model.model.named_modules = lambda: [("layers.5.mlp.router", router)]
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -430,7 +471,7 @@ class CoreV2Tests(unittest.TestCase):
                          else 12 if suffix in {"router_topk_indices", "router_topk_weights"}
                          else 1 if suffix == "identity_weight_sum" else 3072)
                 capture[name] = np.zeros((1, 2, width),
-                    np.int64 if suffix == "router_topk_indices" else np.float32)
+                                         np.int64 if suffix == "router_topk_indices" else np.float32)
             core.write_block_components_window_diagnostic(capture, temporary, 2, 10, 4)
             with np.load(Path(temporary) / "block-components-window.npz") as archive:
                 self.assertEqual(set(archive.files), set(v2.block_component_window_names(10, 4)))
@@ -453,7 +494,9 @@ class CoreV2Tests(unittest.TestCase):
                 self.self_attn = [Module(), Module()]
                 self.post_attention_layernorm = [Module(), Module()] if valid else [Module()]
                 self.mlps = [Module(), Module()]
-                self.mlp = Module(); self.mlp.router = Module()
+                self.mlp = Module()
+                self.mlp.router = Module()
+
         class ComponentModel:
             def __init__(self, valid=True):
                 self.model = type("Trunk", (), {"layers": [ComponentLayer(valid) for _ in range(14)]})()
@@ -500,10 +543,12 @@ class CoreV2Tests(unittest.TestCase):
         arrays = {f"physical_block_{block:02d}": np.zeros((1, 1, 3072), np.float32)
                   for block in range(28)}
         with tempfile.TemporaryDirectory() as temporary:
-            missing = dict(arrays); missing.pop("physical_block_13")
+            missing = dict(arrays)
+            missing.pop("physical_block_13")
             with self.assertRaisesRegex(core.CoreFixtureError, "inventory"):
                 core.write_all_physical_blocks_diagnostic(missing, temporary, 1)
-            invalid = dict(arrays); invalid["physical_block_13"] = invalid["physical_block_13"].copy()
+            invalid = dict(arrays)
+            invalid["physical_block_13"] = invalid["physical_block_13"].copy()
             invalid["physical_block_13"][0, 0, 0] = np.nan
             with self.assertRaisesRegex(core.CoreFixtureError, "non-finite"):
                 core.write_all_physical_blocks_diagnostic(invalid, temporary, 1)
@@ -531,7 +576,7 @@ class CoreV2Tests(unittest.TestCase):
             with self.assertRaises(v2.V2Error):
                 v2.compare_independent_runs([{"x": bad}] * 2)
         with self.assertRaises(v2.V2Error):
-                v2.compare_independent_runs([{"x": np.zeros(1, np.float32)},
+            v2.compare_independent_runs([{"x": np.zeros(1, np.float32)},
                                          {"x": np.array([np.nan], np.float32)}])
 
     def test_meta_tensor_report_never_reads_values(self):
@@ -639,6 +684,7 @@ class CoreV2Tests(unittest.TestCase):
     def test_no_split_and_dispatch_preload_arguments(self):
         self.assertIn("LongcatFlashTopkRouter", core.router_no_split_classes(["ExistingBlock"]))
         inferred = {}
+
         def infer(model, **kwargs):
             inferred.update(kwargs)
             return {"model.layers.0": 0, "model.layers.1": "cpu"}
@@ -651,9 +697,12 @@ class CoreV2Tests(unittest.TestCase):
                          ["ExistingBlock", "LongcatFlashTopkRouter"])
         self.assertFalse(any(".mlp.router" in key for key in ordinary))
         calls = {}
+
         def dispatcher(model, checkpoint, device_map, offload_folder, offload_state_dict,
                        offload_buffers, dtype, preload_module_classes):
-            calls.update(locals()); return model
+            calls.update(locals())
+            return model
+
         class Generation:
             @staticmethod
             def from_pretrained(*args, **kwargs): return "generation"
@@ -685,6 +734,7 @@ class CoreV2Tests(unittest.TestCase):
                               offload_state_dict, offload_buffers, dtype,
                               preload_module_classes):
             raise RuntimeError("synthetic dispatch failure")
+
         class Generation:
             @staticmethod
             def from_pretrained(*args, **kwargs):
@@ -775,7 +825,6 @@ class CoreV2Tests(unittest.TestCase):
             failure, trace = self._run_invalid_router(temporary, [[np.nan, np.nan]])
             self.assertEqual((failure["logical_layer"], failure["physical_block"]), (4, 8))
             self.assertEqual(failure["operation"], "router_logits")
-            roles = [row.get("role") for row in trace["checks"]]
             self.assertTrue(any(row.get("operation") == "router_input" for row in trace["checks"]))
             self.assertEqual(FakeTorch.topk_sorted_calls[-1], False)
             configuration = next(row for row in trace["checks"]
@@ -966,6 +1015,7 @@ class CoreV2Tests(unittest.TestCase):
     def test_sdpa_wrapper_restores_after_success_and_exception(self):
         class Checker:
             def check(self, value, **context): pass
+
         def original(q, k, value, **kwargs): return value
         functional = type("Functional", (), {"scaled_dot_product_attention": staticmethod(original)})()
         torch = type("Torch", (), {"nn": type("NN", (), {"functional": functional})()})()
@@ -983,6 +1033,7 @@ class CoreV2Tests(unittest.TestCase):
         model.model.named_modules = lambda: [
             ("layers.7.self_attn.0", attention[0]),
             ("layers.7.self_attn.1", attention[1])]
+
         class Checker:
             def __init__(self): self.rows = []
             def check(self, value, **context): self.rows.append(context)
@@ -997,14 +1048,16 @@ class CoreV2Tests(unittest.TestCase):
                 functional.scaled_dot_product_attention(1, 2, 3)
                 module.post[0](module, (), 3)
         sdpa_outputs = [row for row in checker.rows
-                        if row.get("operation") == "scaled_dot_product_attention" and
-                        row.get("role") == "output"]
+                        if row.get("operation") == "scaled_dot_product_attention"
+                        and row.get("role") == "output"]
         self.assertEqual([row["physical_block"] for row in sdpa_outputs], [14, 15])
         self.assertEqual(sdpa_outputs[1]["module_name"], "model.model.layers.7.self_attn.1")
 
     def test_finite_trunk_nonfinite_lm_head_reports_lm_head(self):
         with tempfile.TemporaryDirectory() as temporary:
-            model = Module(); model.model = type("Trunk", (), {"norm": Module()})(); model.lm_head = Module()
+            model = Module()
+            model.model = type("Trunk", (), {"norm": Module()})()
+            model.lm_head = Module()
             checker = v2.TorchFiniteChecker(temporary, "case", "default", 0, FakeTorch)
             v2.install_output_finite_hooks(model, checker)
             model.model.norm.post[0](model.model.norm, (), FakeTensor([1.0]))
@@ -1033,7 +1086,9 @@ class CoreV2Tests(unittest.TestCase):
 
     def test_bf16_safetensors_source_scan_preserves_dtype_and_rejects_nonfinite(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); shards = []; tensors = {}
+            root = Path(temporary)
+            shards = []
+            tensors = {}
             values = ([1.0], [np.nan], [np.inf], [-np.inf])
             bf16_bits = (0x3f80, 0x7fc0, 0x7f80, 0xff80)
             for index in range(15):
@@ -1042,7 +1097,7 @@ class CoreV2Tests(unittest.TestCase):
                 # A real Safetensors envelope declaring BF16; the injected opener
                 # avoids requiring a heavyweight Torch install in this unit test.
                 header = json.dumps({"weight": {"dtype": "BF16", "shape": [1],
-                                                  "data_offsets": [0, 2]}}).encode("utf-8")
+                                                "data_offsets": [0, 2]}}).encode("utf-8")
                 header += b" " * ((8 - len(header) % 8) % 8)
                 raw = bf16_bits[index] if index < len(bf16_bits) else 0x4000
                 path.write_bytes(struct.pack("<Q", len(header)) + header + struct.pack("<H", raw))
@@ -1053,12 +1108,14 @@ class CoreV2Tests(unittest.TestCase):
                         "revision": v2.PINNED_MODEL_REVISION, "shards": shards}
             manifest_path = root / "manifest.json"
             manifest_path.write_text(json.dumps(manifest), encoding="ascii")
+
             class Opened:
                 def __init__(self, tensor): self.tensor = tensor
                 def __enter__(self): return self
                 def __exit__(self, *args): pass
                 def keys(self): return ["weight"]
                 def get_tensor(self, name): return self.tensor
+
             def opener(path, framework, device):
                 self.assertEqual((framework, device), ("pt", "cpu"))
                 return Opened(tensors[Path(path).name])
@@ -1085,14 +1142,15 @@ class CoreV2Tests(unittest.TestCase):
                 with self.assertRaises(v2.V2Error):
                     v2.verify_and_scan_source(root, manifest_path,
                                               root / ("reports-" + filename), opener, FakeTorch)
-                report = json.loads((root / ("reports-" + filename) / "source-scan" /
-                                     "first-nonfinite-source.json").read_text())
+                report = json.loads((root / ("reports-" + filename) / "source-scan"
+                                     / "first-nonfinite-source.json").read_text())
                 self.assertEqual(report[count_key], 1)
 
     def test_independent_workers_are_retained_and_promoted_atomically(self):
         with tempfile.TemporaryDirectory() as temporary:
             final = Path(temporary) / "candidate"
             commands = [["fake", "--output-dir", "{run_dir}"] for _ in range(2)]
+
             def runner(command, **kwargs):
                 run_dir = Path(command[command.index("--output-dir") + 1])
                 write_valid_worker(run_dir, int(run_dir.name[-2:]))
@@ -1128,6 +1186,7 @@ class CoreV2Tests(unittest.TestCase):
     def test_empty_worker_metadata_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             final = Path(temporary) / "candidate"
+
             def runner(command, **kwargs):
                 run_dir = Path(command[command.index("--output-dir") + 1])
                 write_valid_worker(run_dir, int(run_dir.name[-2:]))
@@ -1142,6 +1201,7 @@ class CoreV2Tests(unittest.TestCase):
     def test_worker_router_policy_audit_byte_mismatch_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             final = Path(temporary) / "candidate"
+
             def runner(command, **kwargs):
                 run_dir = Path(command[command.index("--output-dir") + 1])
                 write_valid_worker(run_dir, int(run_dir.name[-2:]))
@@ -1159,6 +1219,7 @@ class CoreV2Tests(unittest.TestCase):
     def test_worker_obsolete_child_pinning_policy_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             final = Path(temporary) / "candidate"
+
             def runner(command, **kwargs):
                 run_dir = Path(command[command.index("--output-dir") + 1])
                 write_valid_worker(run_dir, int(run_dir.name[-2:]))

@@ -27,7 +27,7 @@ def load_official_class(path):
     if found != METHODS:
         raise RuntimeError(f"official source methods mismatch: expected {METHODS}, got {found}")
     isolated = ast.Module(body=[ast.ClassDef(name="OfficialNgramEmbedding", bases=[], keywords=[],
-                                              body=methods, decorator_list=[])], type_ignores=[])
+                                             body=methods, decorator_list=[])], type_ignores=[])
     ast.fix_missing_locations(isolated)
     namespace = {"torch": torch, "Dict": Dict, "List": List, "Tuple": Tuple}
     exec(compile(isolated, str(path), "exec"), namespace)
@@ -73,6 +73,7 @@ def main():
     json.dump({"hashes": [official_hashes(instance, sequence) for sequence in sequences]}, sys.stdout,
               sort_keys=True)
     sys.stdout.write("\n")
+
 
 if __name__ == "__main__":
     main()

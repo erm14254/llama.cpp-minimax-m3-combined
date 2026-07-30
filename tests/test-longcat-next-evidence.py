@@ -10,19 +10,23 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+
 def load(name, relative):
     spec = importlib.util.spec_from_file_location(name, ROOT / relative)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
+
 inventory = load("longcat_next_inventory", "scripts/longcat-next/inventory.py")
 fixtures = load("longcat_next_fixtures", "scripts/longcat-next/make-reference-fixtures.py")
 
 SUB = inventory.EXPECTED_SUBFAMILIES
 
+
 def names(prefix, count):
     return [f"{prefix}tensor_{i}" for i in range(count)]
+
 
 class InventoryTests(unittest.TestCase):
     def setUp(self):
@@ -138,6 +142,7 @@ class InventoryTests(unittest.TestCase):
         with self.assertRaisesRegex(inventory.InventoryError, "parameter count"):
             inventory.validate_hift(self.hift_metadata(wrong_total=True))
 
+
 class FixtureTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -153,8 +158,8 @@ class FixtureTests(unittest.TestCase):
         fixtures.official_hash_batches = lambda source, sequences: [fixtures.hashes(ids) for ids in sequences]
         self.config = self.root / "config.json"
         self.config.write_text(json.dumps({"text_vocab_size": 131072, "eos_token_id": 2,
-            "bos_token_id": 1, "ngram_vocab_size_ratio": 78,
-            "emb_neighbor_num": 4, "emb_split_num": 4}), encoding="utf-8")
+                                           "bos_token_id": 1, "ngram_vocab_size_ratio": 78,
+                                           "emb_neighbor_num": 4, "emb_split_num": 4}), encoding="utf-8")
         self.tokenizer = self.root / "tokenizer_config.json"
         self.tokenizer.write_text("{}", encoding="utf-8")
         self.original_config_hash = fixtures.CONFIG_SHA256
@@ -171,9 +176,9 @@ class FixtureTests(unittest.TestCase):
 
     def args(self, **overrides):
         values = dict(official_source=self.source, source_revision=fixtures.HF_REVISION,
-            inference_revision=fixtures.INFERENCE_REVISION, model_revision=fixtures.HF_REVISION,
-            config=self.config, tokenizer_config=self.tokenizer, output_dir=self.root / "out",
-            mode="ngram", model_dir=None, max_output_bytes=fixtures.DEFAULT_MAX_BYTES)
+                      inference_revision=fixtures.INFERENCE_REVISION, model_revision=fixtures.HF_REVISION,
+                      config=self.config, tokenizer_config=self.tokenizer, output_dir=self.root / "out",
+                      mode="ngram", model_dir=None, max_output_bytes=fixtures.DEFAULT_MAX_BYTES)
         values.update(overrides)
         return type("Args", (), values)()
 
@@ -213,6 +218,7 @@ class FixtureTests(unittest.TestCase):
         with self.assertRaisesRegex(fixtures.FixtureError, "above limit"):
             fixtures.run(self.args(max_output_bytes=100))
         self.assertFalse((self.root / "out" / "ngram-cases.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -34,15 +34,18 @@ class ParityHarnessTests(unittest.TestCase):
                               EXTRACTOR.resolve_tensor_name(NORM_EXTRACTOR.GGUF_TEMPLATE, logical, physical)),
                              expected[(logical, physical)])
         vector, transposed = NORM_EXTRACTOR.canonical_norm_weight(np.zeros((1, 3072), np.float32))
-        self.assertEqual(vector.shape, (3072,)); self.assertTrue(transposed)
+        self.assertEqual(vector.shape, (3072,))
+        self.assertTrue(transposed)
         with self.assertRaises(ValueError): NORM_EXTRACTOR.canonical_norm_weight(np.zeros((2, 1536), np.float32))
         record = NORM_EXTRACTOR.make_norm_weight_record(
             5, 10, "gguf", "blk.10.ffn_norm.weight", vector, "F32", True, "synthetic")
         self.assertEqual(record["canonical_tensor_orientation"], "hidden_vector")
-        self.assertEqual(record["canonical_shape"], [3072]); self.assertTrue(record["source_was_reshaped"])
+        self.assertEqual(record["canonical_shape"], [3072])
+        self.assertTrue(record["source_was_reshaped"])
         self.assertFalse(record["source_was_transposed"])
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td); (root / "config.json").write_text('{"rms_norm_eps": 1e-6}')
+            root = Path(td)
+            (root / "config.json").write_text('{"rms_norm_eps": 1e-6}')
             value, key = NORM_EXTRACTOR.python_epsilon(root)
             self.assertEqual((value, key), (1e-6, "rms_norm_eps"))
 
@@ -50,8 +53,10 @@ class ParityHarnessTests(unittest.TestCase):
         import torch
         from safetensors.torch import save_file
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td); shard = root / "norm.safetensors"
-            bf16 = torch.linspace(-1, 1, 3072).to(torch.bfloat16); f32 = torch.ones(3072)
+            root = Path(td)
+            shard = root / "norm.safetensors"
+            bf16 = torch.linspace(-1, 1, 3072).to(torch.bfloat16)
+            f32 = torch.ones(3072)
             save_file({"norm.bf16": bf16, "norm.f32": f32, "unrequested": torch.zeros(3072)}, shard)
             index = {"weight_map": {name: shard.name for name in ("norm.bf16", "norm.f32", "unrequested")}}
             got, dtype, _ = EXTRACTOR.safetensor_weight(root, index, "norm.bf16")
@@ -72,7 +77,8 @@ class ParityHarnessTests(unittest.TestCase):
         self.assertEqual(raw_equal["weight_representation_classification"],
                          "raw checkpoint and GGUF exactly equal")
         self.assertFalse(raw_equal["shared_components_valid"])
-        mismatch = gguf.copy(); mismatch[0] += 1
+        mismatch = gguf.copy()
+        mismatch[0] += 1
         self.assertFalse(PARITY.norm_weight_epsilon_equivalence(weight, mismatch, 1e-6, 1e-6)[
             "shared_components_valid"])
         self.assertFalse(PARITY.norm_weight_epsilon_equivalence(weight, gguf, 1e-6, 2e-6)[
@@ -86,19 +92,22 @@ class ParityHarnessTests(unittest.TestCase):
         outputs = {}
         for variant in PARITY.RMSNORM_VARIANTS:
             outputs[variant], scalars = PARITY.diagnostic_rmsnorm(value, weight, 1e-6, variant)
-            self.assertTrue(np.isfinite(outputs[variant]).all()); self.assertEqual(len(scalars["mean_square"]), 2)
+            self.assertTrue(np.isfinite(outputs[variant]).all())
+            self.assertEqual(len(scalars["mean_square"]), 2)
         manual_x = np.asarray(value, np.float32)
         ms = np.mean(np.asarray(manual_x * manual_x, np.float32), axis=-1, keepdims=True, dtype=np.float32)
         inv = np.asarray(1 / np.sqrt(np.asarray(ms + np.float32(1e-6), np.float32)), np.float32)
-        manual = PARITY.bf16_round_to_float32(PARITY.bf16_round_to_float32(manual_x * inv) *
-                                               PARITY.bf16_round_to_float32(weight))
+        manual = PARITY.bf16_round_to_float32(PARITY.bf16_round_to_float32(manual_x * inv)
+                                              * PARITY.bf16_round_to_float32(weight))
         np.testing.assert_array_equal(outputs["python_bf16_input_bf16_weight_contract"], manual)
 
     def test_torch_validates_pinned_python_rmsnorm_dtype_contracts(self):
         import torch
         epsilon = 1e-6
+
         def pinned(hidden, weight):
-            dtype = hidden.dtype; x32 = hidden.to(torch.float32)
+            dtype = hidden.dtype
+            x32 = hidden.to(torch.float32)
             variance = x32.pow(2).mean(-1, keepdim=True)
             normalized = x32 * torch.rsqrt(variance + epsilon)
             return weight * normalized.to(dtype)
@@ -106,7 +115,7 @@ class ParityHarnessTests(unittest.TestCase):
         weight_bf16 = torch.linspace(.5, 1.5, 32).to(torch.bfloat16)
         actual = pinned(hidden_bf16, weight_bf16)
         diagnostic, _ = PARITY.diagnostic_rmsnorm(hidden_bf16.float().numpy(), weight_bf16.float().numpy(),
-            epsilon, "python_bf16_input_bf16_weight_contract")
+                                                  epsilon, "python_bf16_input_bf16_weight_contract")
         self.assertEqual(actual.dtype, torch.bfloat16)
         np.testing.assert_array_equal(actual.float().numpy(), diagnostic)
         weight_f32 = weight_bf16.float() + torch.linspace(0, .001, 32)
@@ -124,7 +133,8 @@ class ParityHarnessTests(unittest.TestCase):
 
     def _write_norm_artifact(self, root):
         arrays = {key: np.ones((3072,), np.float32) for key in PARITY.FFN_RMSNORM_ARRAY_KEYS}
-        npz = root / "norm.npz"; EXTRACTOR.deterministic_npz(npz, arrays)
+        npz = root / "norm.npz"
+        EXTRACTOR.deterministic_npz(npz, arrays)
         records = []
         for logical, physical in ((5, 10), (6, 12)):
             for short, source in (("python", "python_checkpoint"), ("gguf", "gguf")):
@@ -134,63 +144,80 @@ class ParityHarnessTests(unittest.TestCase):
                     (f"model.layers.{logical}.post_attention_layernorm.0.weight" if short == "python" else
                      f"blk.{physical}.ffn_norm.weight"), arrays[key], "BF16", False, "synthetic"))
         metadata = {"schema_version": 1, "bounded_physical_blocks": [10, 12],
-            "model_instantiated": False, "inference_executed": False, "weight_records": records,
-            "python_epsilon": 1e-6, "gguf_epsilon": 1e-6, "python_epsilon_key": "rms_norm_eps",
-            "gguf_epsilon_key": "longcat-next.attention.layer_norm_rms_epsilon",
-            "npz_sha256": hashlib.sha256(npz.read_bytes()).hexdigest()}
-        js = root / "norm.json"; js.write_text(json.dumps(metadata)); return npz, js
+                    "model_instantiated": False, "inference_executed": False, "weight_records": records,
+                    "python_epsilon": 1e-6, "gguf_epsilon": 1e-6, "python_epsilon_key": "rms_norm_eps",
+                    "gguf_epsilon_key": "longcat-next.attention.layer_norm_rms_epsilon",
+                    "npz_sha256": hashlib.sha256(npz.read_bytes()).hexdigest()}
+        js = root / "norm.json"
+        js.write_text(json.dumps(metadata))
+        return npz, js
 
     def test_rmsnorm_artifact_binding(self):
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td); npz, js = self._write_norm_artifact(root)
+            root = Path(td)
+            npz, js = self._write_norm_artifact(root)
             arrays, metadata = PARITY.load_ffn_rmsnorm_artifacts(npz, js)
-            self.assertEqual(set(arrays), PARITY.FFN_RMSNORM_ARRAY_KEYS); self.assertEqual(metadata["python_epsilon"], 1e-6)
+            self.assertEqual(set(arrays), PARITY.FFN_RMSNORM_ARRAY_KEYS)
+            self.assertEqual(metadata["python_epsilon"], 1e-6)
             with self.assertRaises(ValueError): PARITY.load_ffn_rmsnorm_artifacts(js, npz)
-            damaged = json.loads(js.read_text()); damaged["npz_sha256"] = "0" * 64; js.write_text(json.dumps(damaged))
+            damaged = json.loads(js.read_text())
+            damaged["npz_sha256"] = "0" * 64
+            js.write_text(json.dumps(damaged))
             with self.assertRaises(ValueError): PARITY.load_ffn_rmsnorm_artifacts(npz, js)
             for mutation in ("extra", "missing", "shape", "dtype", "nonfinite"):
-                values = {key: value.copy() for key, value in arrays.items()}; first = next(iter(values))
+                values = {key: value.copy() for key, value in arrays.items()}
+                first = next(iter(values))
                 if mutation == "extra": values["extra"] = np.zeros(1, np.float32)
                 elif mutation == "missing": values.pop(first)
                 elif mutation == "shape": values[first] = np.zeros(3071, np.float32)
                 elif mutation == "dtype": values[first] = values[first].astype(np.float64)
                 else: values[first][0] = np.nan
-                candidate = root / f"{mutation}.npz"; EXTRACTOR.deterministic_npz(candidate, values)
+                candidate = root / f"{mutation}.npz"
+                EXTRACTOR.deterministic_npz(candidate, values)
                 candidate_metadata = json.loads(json.dumps(metadata))
                 candidate_metadata["npz_sha256"] = hashlib.sha256(candidate.read_bytes()).hexdigest()
-                candidate_json = root / f"{mutation}.json"; candidate_json.write_text(json.dumps(candidate_metadata))
+                candidate_json = root / f"{mutation}.json"
+                candidate_json.write_text(json.dumps(candidate_metadata))
                 with self.assertRaises(ValueError):
                     PARITY.load_ffn_rmsnorm_artifacts(candidate, candidate_json)
 
     def _rmsnorm_sides(self, pre_delta, norm_residual_delta, boundary_gap):
-        hidden = 32; prefix = "physical_block_10__"; weight = np.ones(hidden, np.float32)
+        hidden = 32
+        prefix = "physical_block_10__"
+        weight = np.ones(hidden, np.float32)
         inputs = {"cpp": np.ones((1, 1, hidden), np.float32),
                   "default": np.ones((1, 1, hidden), np.float32),
                   "math": np.ones((1, 1, hidden), np.float32)}
-        inputs["default"][..., 0] += pre_delta; inputs["math"][..., 0] += pre_delta
+        inputs["default"][..., 0] += pre_delta
+        inputs["math"][..., 0] += pre_delta
         inputs["default"] = PARITY.bf16_round_to_float32(inputs["default"])
         inputs["math"] = PARITY.bf16_round_to_float32(inputs["math"])
         outputs = {}
         for name in inputs:
             outputs[name], _ = PARITY.diagnostic_rmsnorm(
                 inputs[name], weight, 1e-6, "python_bf16_input_bf16_weight_contract")
-        outputs["default"][..., 0] += norm_residual_delta; outputs["math"][..., 0] += norm_residual_delta
+        outputs["default"][..., 0] += norm_residual_delta
+        outputs["math"][..., 0] += norm_residual_delta
         outputs["default"] = PARITY.bf16_round_to_float32(outputs["default"])
         outputs["math"] = PARITY.bf16_round_to_float32(outputs["math"])
-        router_weight = np.zeros((384, hidden), np.float32); router_weight[12, 0] = 1
+        router_weight = np.zeros((384, hidden), np.float32)
+        router_weight[12, 0] = 1
         cpp_linear = PARITY.diagnostic_router_linear(outputs["cpp"].reshape(1, hidden), router_weight,
                                                      "float32_matmul").reshape(1, 1, 384)
-        base = np.full((1, 1, 384), -10, np.float32); base[..., :11] = 10
-        base[..., 11] = np.float32(boundary_gap); base[..., 12] = 0
-        linear_residual = base - cpp_linear; sides = {}
+        base = np.full((1, 1, 384), -10, np.float32)
+        base[..., :11] = 10
+        base[..., 11] = np.float32(boundary_gap)
+        base[..., 12] = 0
+        linear_residual = base - cpp_linear
+        sides = {}
         for name in inputs:
             logits = PARITY.diagnostic_router_linear(outputs[name].reshape(1, hidden), router_weight,
-                "float32_matmul").reshape(1, 1, 384) + linear_residual
+                                                     "float32_matmul").reshape(1, 1, 384) + linear_residual
             probabilities = PARITY.diagnostic_softmax_stable_float32(logits)
             indices = PARITY._score_topk_indices(probabilities.reshape(384)).reshape(1, 1, 12)[..., ::-1]
             sides[name] = {prefix + "post_attention_residual": inputs[name], prefix + "ffn_norm": outputs[name],
-                prefix + "router_logits": logits, prefix + "router_probabilities": probabilities,
-                prefix + "router_selection_scores": probabilities.copy(), prefix + "router_topk_indices": indices}
+                           prefix + "router_logits": logits, prefix + "router_probabilities": probabilities,
+                           prefix + "router_selection_scores": probabilities.copy(), prefix + "router_topk_indices": indices}
         return sides, weight, router_weight
 
     def test_rmsnorm_end_to_end_membership_and_delta_projection(self):
@@ -209,8 +236,8 @@ class ParityHarnessTests(unittest.TestCase):
             self.assertEqual(report["source_lineage"]["capture_input_surface"], "post_attention_residual")
             self.assertFalse(report["source_lineage"]["block_input_is_norm_input"])
             classifications = {softmax["classification"] for norm in report["references"].values()
-                for matmul in norm["router_matmul_references"].values() for token in matmul
-                for softmax in token["softmax_references"].values()}
+                               for matmul in norm["router_matmul_references"].values() for token in matmul
+                               for softmax in token["softmax_references"].values()}
             self.assertEqual(classifications, {expected})
             for norm in report["references"].values():
                 self.assertLess(norm["ffn_norm_delta_decomposition"][0]["rms_closure_error"], 1e-6)
@@ -305,32 +332,37 @@ class ParityHarnessTests(unittest.TestCase):
                          hashlib.sha256(rounded_weight.tobytes()).hexdigest())
 
     def _side_specific_rmsnorm_sides(self, input_delta=.25):
-        hidden = 32; prefix = "physical_block_10__"
+        hidden = 32
+        prefix = "physical_block_10__"
         weight = np.linspace(.5001, 1.4999, hidden, dtype=np.float32)
         cpp_input = np.linspace(.123, 2.789, hidden, dtype=np.float32).reshape(1, hidden)
-        python_input = cpp_input.copy(); python_input[0, 0] += input_delta
+        python_input = cpp_input.copy()
+        python_input[0, 0] += input_delta
         cpp_output, _ = PARITY.diagnostic_rmsnorm_with_operational_weight(cpp_input, weight, 1e-6,
-            "float32_rmsnorm_then_final_bf16", "gguf_float32_runtime_weight")
+                                                                          "float32_rmsnorm_then_final_bf16", "gguf_float32_runtime_weight")
         python_output, _ = PARITY.diagnostic_rmsnorm_with_operational_weight(python_input, weight, 1e-6,
-            "python_bf16_input_bf16_weight_contract", "python_bf16_runtime_weight")
-        router_weight = np.zeros((384, hidden), np.float32); router_weight[12, 0] = 1
+                                                                             "python_bf16_input_bf16_weight_contract", "python_bf16_runtime_weight")
+        router_weight = np.zeros((384, hidden), np.float32)
+        router_weight[12, 0] = 1
         cpp_linear = PARITY.diagnostic_router_linear(cpp_output, router_weight, "float32_matmul")
         python_linear = PARITY.diagnostic_router_linear(python_output, router_weight, "float32_matmul")
         threshold = np.float32((cpp_linear[0, 12] + python_linear[0, 12]) / 2)
-        base = np.full((1, 384), -10, np.float32); base[:, :11] = 10; base[:, 11] = threshold
+        base = np.full((1, 384), -10, np.float32)
+        base[:, :11] = 10
+        base[:, 11] = threshold
         residual = base - cpp_linear
         sides = {}
         for name, input_value, output in (("cpp", cpp_input, cpp_output),
-                ("default", python_input, python_output), ("math", python_input, python_output)):
+                                          ("default", python_input, python_output), ("math", python_input, python_output)):
             logits = PARITY.diagnostic_router_linear(output, router_weight, "float32_matmul") + residual
             probabilities = PARITY.diagnostic_softmax_stable_float32(logits)
             indices = PARITY._score_topk_indices(probabilities[0]).reshape(1, 1, 12)[..., ::-1]
             sides[name] = {prefix + "post_attention_residual": input_value.reshape(1, 1, hidden),
-                prefix + "ffn_norm": output.reshape(1, 1, hidden),
-                prefix + "router_logits": logits.reshape(1, 1, 384),
-                prefix + "router_probabilities": probabilities.reshape(1, 1, 384),
-                prefix + "router_selection_scores": probabilities.reshape(1, 1, 384),
-                prefix + "router_topk_indices": indices}
+                           prefix + "ffn_norm": output.reshape(1, 1, hidden),
+                           prefix + "router_logits": logits.reshape(1, 1, 384),
+                           prefix + "router_probabilities": probabilities.reshape(1, 1, 384),
+                           prefix + "router_selection_scores": probabilities.reshape(1, 1, 384),
+                           prefix + "router_topk_indices": indices}
         return sides, weight, router_weight
 
     def test_side_specific_rmsnorm_paths_and_native_contracts(self):
@@ -357,7 +389,7 @@ class ParityHarnessTests(unittest.TestCase):
                         self.assertTrue(softmax["classification_decisive"])
                     else:
                         self.assertEqual(softmax["classification"],
-                            "analysis not decisive — native C++ surface not reconstructed")
+                                         "analysis not decisive — native C++ surface not reconstructed")
                     self.assertEqual(len(softmax["coalitions"]["native_cpp"]["selected_expert_set"]), 12)
         broken = {side: dict(values) for side, values in sides.items()}
         broken["default"] = dict(broken["default"])
@@ -373,7 +405,8 @@ class ParityHarnessTests(unittest.TestCase):
 
     def test_side_specific_float64_references_are_distinct(self):
         names = PARITY.SIDE_SPECIFIC_CPP_ARITHMETIC_REFERENCES
-        self.assertEqual(len(names), 3); self.assertEqual(len(set(names)), 3)
+        self.assertEqual(len(names), 3)
+        self.assertEqual(len(set(names)), 3)
         value = np.linspace(.123, 2.789, 3072, dtype=np.float32).reshape(1, 3072)
         weight = np.linspace(.5001, 1.4999, 3072, dtype=np.float32)
         before_multiply, _ = PARITY.diagnostic_rmsnorm_with_operational_weight(
@@ -399,32 +432,33 @@ class ParityHarnessTests(unittest.TestCase):
         for index, name in enumerate(names):
             applicable = not no_applicable and (index == 0 or not include_non_applicable)
             rows = []
-            cpp_native = []; python_native = []
+            cpp_native = []
+            python_native = []
             for token, classification in classifications.items():
                 report = {"reference_applicable_to_token": applicable,
-                    "classification_decisive": applicable,
-                    "classification": (classification if applicable else
-                        "analysis not decisive — native C++ surface not reconstructed"),
-                    "classification_before_required_reference_agreement": (classification if applicable else
-                        "analysis not decisive — native C++ surface not reconstructed"),
-                    "captured_topk_membership_reconstruction_valid": True,
-                    "native_python_ffn_norm_reconstruction_valid": True}
+                          "classification_decisive": applicable,
+                          "classification": (classification if applicable else
+                                             "analysis not decisive — native C++ surface not reconstructed"),
+                          "classification_before_required_reference_agreement": (classification if applicable else
+                                                                                 "analysis not decisive — native C++ surface not reconstructed"),
+                          "captured_topk_membership_reconstruction_valid": True,
+                          "native_python_ffn_norm_reconstruction_valid": True}
                 rows.append({"attended_token": token, "softmax_references": {
                     "stable_float32": dict(report), "stable_float64_then_float32": dict(report)},
                     "router_projected_path_decomposition": {}})
                 cpp_native.append({"attended_token": token,
-                    "native_cpp_ffn_norm_exact_for_token": applicable})
+                                   "native_cpp_ffn_norm_exact_for_token": applicable})
                 python_native.append({"attended_token": token,
-                    "native_python_ffn_norm_exact_for_token": True})
+                                      "native_python_ffn_norm_exact_for_token": True})
             references[name] = {"native_cpp_ffn_norm_reconstruction_by_token": cpp_native,
-                "native_python_ffn_norm_reconstruction_by_token": python_native,
-                "exact_path_decompositions": [], "router_matmul_references": {
-                    "float32_matmul": rows, "float64_matmul_then_float32": copy.deepcopy(rows)}}
+                                "native_python_ffn_norm_reconstruction_by_token": python_native,
+                                "exact_path_decompositions": [], "router_matmul_references": {
+                                    "float32_matmul": rows, "float64_matmul_then_float32": copy.deepcopy(rows)}}
         applicability = [{"attended_token": token,
-            "applicable_cpp_arithmetic_references": ([] if no_applicable else [names[0]]),
-            "non_applicable_cpp_arithmetic_references": (list(names) if no_applicable else list(names[1:])),
-            "applicable_reference_classification_agreement": not no_applicable}
-            for token in classifications]
+                          "applicable_cpp_arithmetic_references": ([] if no_applicable else [names[0]]),
+                          "non_applicable_cpp_arithmetic_references": (list(names) if no_applicable else list(names[1:])),
+                          "applicable_reference_classification_agreement": not no_applicable}
+                         for token in classifications]
         return {"status": "complete", "cpp_arithmetic_references": references,
                 "per_token_applicability": applicability}
 
@@ -496,39 +530,47 @@ class ParityHarnessTests(unittest.TestCase):
         self.assertEqual(invalid_equal, "analysis not decisive")
 
     def _residual_three_factor_sides(self):
-        hidden = 32; prefix = "physical_block_10__"; weight = np.ones(hidden, np.float32)
+        hidden = 32
+        prefix = "physical_block_10__"
+        weight = np.ones(hidden, np.float32)
         cpp_block = np.linspace(.2, 1.8, hidden, dtype=np.float32).reshape(1, hidden)
         cpp_attention = np.linspace(-.1, .1, hidden, dtype=np.float32).reshape(1, hidden)
-        python_block = cpp_block.copy(); python_block[0, 0] += .5
-        python_attention = cpp_attention.copy(); python_attention[0, 0] += .25
+        python_block = cpp_block.copy()
+        python_block[0, 0] += .5
+        python_attention = cpp_attention.copy()
+        python_attention[0, 0] += .25
         cpp_post = PARITY.residual_add_contract(cpp_block, cpp_attention, "cpp_float32_add")
         python_post = PARITY.residual_add_contract(
             python_block, python_attention, "python_final_bf16_rne_add")
         cpp_ffn, _ = PARITY.diagnostic_rmsnorm_with_operational_weight(cpp_post, weight, 1e-6,
-            PARITY.SIDE_SPECIFIC_CPP_ARITHMETIC_REFERENCES[0], "gguf_float32_runtime_weight")
+                                                                       PARITY.SIDE_SPECIFIC_CPP_ARITHMETIC_REFERENCES[0], "gguf_float32_runtime_weight")
         python_downstream_ffn, _ = PARITY.diagnostic_rmsnorm_with_operational_weight(
             python_post, weight, 1e-6, PARITY.SIDE_SPECIFIC_CPP_ARITHMETIC_REFERENCES[0],
             "gguf_float32_runtime_weight")
-        router_weight = np.zeros((384, hidden), np.float32); router_weight[12, 0] = 1
+        router_weight = np.zeros((384, hidden), np.float32)
+        router_weight[12, 0] = 1
         cpp_linear = PARITY.diagnostic_router_linear(cpp_ffn, router_weight, "float32_matmul")
         python_linear = PARITY.diagnostic_router_linear(python_downstream_ffn, router_weight, "float32_matmul")
         threshold = np.float32((cpp_linear[0, 12] + python_linear[0, 12]) / 2)
-        base = np.full((1, 384), -10, np.float32); base[:, :11] = 10; base[:, 11] = threshold
-        residual = base - cpp_linear; sides = {}
+        base = np.full((1, 384), -10, np.float32)
+        base[:, :11] = 10
+        base[:, 11] = threshold
+        residual = base - cpp_linear
+        sides = {}
         for name, block, attention, post, ffn in (("cpp", cpp_block, cpp_attention, cpp_post, cpp_ffn),
-                ("default", python_block, python_attention, python_post, python_downstream_ffn),
-                ("math", python_block, python_attention, python_post, python_downstream_ffn)):
+                                                  ("default", python_block, python_attention, python_post, python_downstream_ffn),
+                                                  ("math", python_block, python_attention, python_post, python_downstream_ffn)):
             logits = PARITY.diagnostic_router_linear(ffn, router_weight, "float32_matmul") + residual
             probabilities = PARITY.diagnostic_softmax_stable_float32(logits)
             indices = PARITY._score_topk_indices(probabilities[0]).reshape(1, 1, 12)[..., ::-1]
             sides[name] = {prefix + "block_input": block.reshape(1, 1, hidden),
-                prefix + "attention_output": attention.reshape(1, 1, hidden),
-                prefix + "post_attention_residual": post.reshape(1, 1, hidden),
-                prefix + "ffn_norm": ffn.reshape(1, 1, hidden),
-                prefix + "router_logits": logits.reshape(1, 1, 384),
-                prefix + "router_probabilities": probabilities.reshape(1, 1, 384),
-                prefix + "router_selection_scores": probabilities.reshape(1, 1, 384),
-                prefix + "router_topk_indices": indices}
+                           prefix + "attention_output": attention.reshape(1, 1, hidden),
+                           prefix + "post_attention_residual": post.reshape(1, 1, hidden),
+                           prefix + "ffn_norm": ffn.reshape(1, 1, hidden),
+                           prefix + "router_logits": logits.reshape(1, 1, 384),
+                           prefix + "router_probabilities": probabilities.reshape(1, 1, 384),
+                           prefix + "router_selection_scores": probabilities.reshape(1, 1, 384),
+                           prefix + "router_topk_indices": indices}
         return sides, weight, router_weight
 
     @staticmethod
@@ -590,7 +632,8 @@ class ParityHarnessTests(unittest.TestCase):
         prefix = "physical_block_10__"
         for target in ("default", "math"):
             probabilities = sides[target][prefix + "router_probabilities"].copy()
-            bias = np.zeros((1, 1, 384), np.float32); bias[0, 0, 100:112] = 20
+            bias = np.zeros((1, 1, 384), np.float32)
+            bias[0, 0, 100:112] = 20
             selection = probabilities + bias
             sides[target][prefix + "router_selection_scores"] = selection
             indices = PARITY._score_topk_indices(selection[0, 0]).reshape(1, 1, 12)[..., ::-1]
@@ -720,8 +763,8 @@ class ParityHarnessTests(unittest.TestCase):
                 self.assertFalse(row["native_python_endpoint_membership_reconstruction_valid"])
                 self.assertFalse(row["target_token_causally_decisive"])
                 self.assertEqual(row["non_decisive_reason"],
-                    "native Python operand endpoint does not reproduce captured Python routing membership "
-                    "under the fixed C++ downstream contract")
+                                 "native Python operand endpoint does not reproduce captured Python routing membership "
+                                 "under the fixed C++ downstream contract")
 
     def test_own_side_bias_reconstruction_is_separate_from_fixed_cpp_cross_evaluation(self):
         analysis = self._bias_provenance_analysis()
@@ -731,7 +774,7 @@ class ParityHarnessTests(unittest.TestCase):
             self.assertGreater(target["native_correction_bias_rms_difference"], 0)
             self.assertIn("candidates", target["native_correction_bias_dtype_grid_audit"])
             self.assertEqual(set(target["probability_bias_decomposition"]["tokens"][0]["coalitions"]),
-                {"native_left", "right_probabilities_only", "right_bias_only", "native_right"})
+                             {"native_left", "right_probabilities_only", "right_bias_only", "native_right"})
             applicability = target["per_token_applicability"][0]
             for name in applicability["applicable_cpp_rmsnorm_references"]:
                 for rows in target["references"][name]["router_matmul_references"].values():
@@ -743,7 +786,7 @@ class ParityHarnessTests(unittest.TestCase):
                             "fixed_cpp_bias_applied_to_captured_python_probabilities_matches_python_membership"])
                         self.assertTrue(report["structural_prerequisites_valid"])
                         self.assertEqual(report["diagnostic_outcome"],
-                            "full Python operand coalition does not reproduce Python membership")
+                                         "full Python operand coalition does not reproduce Python membership")
                         self.assertFalse(report["causal_classification_decisive"])
         invalid = self._bias_provenance_analysis(True)
         for target in invalid["python_targets"].values():
@@ -826,13 +869,15 @@ class ParityHarnessTests(unittest.TestCase):
         self.assertEqual(summary["definitive_localization_factors"], [])
 
         def control_flag(mutator):
-            control = copy.deepcopy(analysis); mutator(control)
+            control = copy.deepcopy(analysis)
+            mutator(control)
             return PARITY.primary_post_attention_residual_three_factor_summary([
                 {"physical_block": 10, "analysis": analysis},
                 {"physical_block": 12, "analysis": control}], 10)[
                     "physical_block_12_remains_aligned_control"]
         self.assertFalse(control_flag(lambda control: control["python_targets"]["default"][
             "per_token_applicability"][0].update({"applicable_cpp_rmsnorm_references": []})))
+
         def mutate_report(control, operation):
             applicability = control["python_targets"]["default"]["per_token_applicability"][0]
             name = applicability["applicable_cpp_rmsnorm_references"][0]
@@ -840,9 +885,9 @@ class ParityHarnessTests(unittest.TestCase):
                 "router_matmul_references"].values()))
             operation(next(iter(rows[0]["softmax_references"].values())))
         self.assertFalse(control_flag(lambda control: mutate_report(control,
-            lambda report: report["coalitions"]["111"].update({"equals_captured_python_membership": False}))))
+                                                                    lambda report: report["coalitions"]["111"].update({"equals_captured_python_membership": False}))))
         self.assertFalse(control_flag(lambda control: mutate_report(control,
-            lambda report: report.update({"captured_topk_membership_reconstruction_valid": False}))))
+                                                                    lambda report: report.update({"captured_topk_membership_reconstruction_valid": False}))))
         self.assertFalse(control_flag(lambda control: control["python_targets"]["default"][
             "native_residual_add_reconstruction"][0].update({"python_native_exact": False})))
         self.assertTrue(control_flag(lambda control: control["python_targets"]["default"][
@@ -852,6 +897,7 @@ class ParityHarnessTests(unittest.TestCase):
         analysis = self._equal_contract_residual_analysis()
         self.assertEqual((analysis["native_cpp_coalition_key"], analysis["native_python_coalition_key"]),
                          ("00", "11"))
+
         def control_flag(control):
             return PARITY.primary_post_attention_residual_three_factor_summary([
                 {"physical_block": 10, "analysis": analysis},
@@ -920,13 +966,13 @@ class ParityHarnessTests(unittest.TestCase):
                     for rows in target["references"][name]["router_matmul_references"].values():
                         for report in rows[0]["softmax_references"].values():
                             report.update({"diagnostic_outcome": classification,
-                                "classification": classification,
-                                "definitive_causal_classification": classification,
-                                "minimal_sufficient_factor_sets": factors,
-                                "structural_prerequisites_valid": True,
-                                "native_python_endpoint_membership_reconstruction_valid": True,
-                                "causal_classification_decisive": True,
-                                "classification_decisive": True})
+                                           "classification": classification,
+                                           "definitive_causal_classification": classification,
+                                           "minimal_sufficient_factor_sets": factors,
+                                           "structural_prerequisites_valid": True,
+                                           "native_python_endpoint_membership_reconstruction_valid": True,
+                                           "causal_classification_decisive": True,
+                                           "classification_decisive": True})
         summary = PARITY.primary_post_attention_residual_three_factor_summary([
             {"physical_block": 10, "analysis": analysis},
             {"physical_block": 12, "analysis": control}], 10)
@@ -943,7 +989,8 @@ class ParityHarnessTests(unittest.TestCase):
     def test_block12_requires_exact_nonempty_default_and_math_targets(self):
         pristine = self._equal_contract_residual_analysis()
         for missing_target in ("default", "math"):
-            control = copy.deepcopy(pristine); control["python_targets"].pop(missing_target)
+            control = copy.deepcopy(pristine)
+            control["python_targets"].pop(missing_target)
             summary = PARITY.primary_post_attention_residual_three_factor_summary([
                 {"physical_block": 10, "analysis": pristine},
                 {"physical_block": 12, "analysis": control}], 10)
@@ -956,7 +1003,8 @@ class ParityHarnessTests(unittest.TestCase):
             self.assertIn("required block-12 Python target is missing", status["failure_reasons"])
             self.assertIsNone(summary["global_definitive_result"])
         for empty_target in ("default", "math"):
-            control = copy.deepcopy(pristine); control["python_targets"][empty_target] = {}
+            control = copy.deepcopy(pristine)
+            control["python_targets"][empty_target] = {}
             summary = PARITY.primary_post_attention_residual_three_factor_summary([
                 {"physical_block": 10, "analysis": pristine},
                 {"physical_block": 12, "analysis": control}], 10)
@@ -1018,45 +1066,64 @@ class ParityHarnessTests(unittest.TestCase):
             applicability = target["per_token_applicability"][0]
             rmsnorm = applicability["applicable_cpp_rmsnorm_references"][0]
             matmuls = target["references"][rmsnorm]["router_matmul_references"]
-            matmul = next(iter(matmuls)); rows = matmuls[matmul]
+            matmul = next(iter(matmuls))
+            rows = matmuls[matmul]
             row = next(item for item in rows if item["attended_token"] == 1)
             softmax = next(iter(row["softmax_references"]))
             return applicability, rmsnorm, matmuls, matmul, rows, row, softmax
 
         def missing_rmsnorm(target):
-            _, rmsnorm, *_ = coordinates(target); target["references"].pop(rmsnorm)
+            _, rmsnorm, *_ = coordinates(target)
+            target["references"].pop(rmsnorm)
+
         def missing_matmul(target):
-            _, _, matmuls, matmul, *_ = coordinates(target); matmuls.pop(matmul)
+            _, _, matmuls, matmul, *_ = coordinates(target)
+            matmuls.pop(matmul)
+
         def missing_softmax(target):
-            *_, row, softmax = coordinates(target); row["softmax_references"].pop(softmax)
+            *_, row, softmax = coordinates(target)
+            row["softmax_references"].pop(softmax)
+
         def missing_row(target):
-            _, _, _, _, rows, _, _ = coordinates(target); rows[:] = []
+            _, _, _, _, rows, _, _ = coordinates(target)
+            rows[:] = []
+
         def duplicate_row(target):
-            _, _, _, _, rows, row, _ = coordinates(target); rows.append(copy.deepcopy(row))
+            _, _, _, _, rows, row, _ = coordinates(target)
+            rows.append(copy.deepcopy(row))
+
         def replace_matmul(target):
-            _, _, matmuls, matmul, *_ = coordinates(target); matmuls["unexpected_matmul"] = matmuls.pop(matmul)
+            _, _, matmuls, matmul, *_ = coordinates(target)
+            matmuls["unexpected_matmul"] = matmuls.pop(matmul)
+
         def replace_softmax(target):
             *_, row, softmax = coordinates(target)
             row["softmax_references"]["unexpected_softmax"] = row["softmax_references"].pop(softmax)
+
         def unknown_rmsnorm(target):
             applicability, *_ = coordinates(target)
             applicability["applicable_cpp_rmsnorm_references"].append("unknown_rmsnorm")
+
         def populated_unknown_rmsnorm(target):
             applicability, rmsnorm, *_ = coordinates(target)
             target["references"]["unknown_rmsnorm"] = copy.deepcopy(target["references"][rmsnorm])
             applicability["applicable_cpp_rmsnorm_references"].append("unknown_rmsnorm")
+
         def replace_with_unknown_rmsnorm(target):
             applicability, rmsnorm, *_ = coordinates(target)
             target["references"]["unknown_rmsnorm"] = target["references"].pop(rmsnorm)
             applicability["applicable_cpp_rmsnorm_references"] = [
                 "unknown_rmsnorm" if name == rmsnorm else name
                 for name in applicability["applicable_cpp_rmsnorm_references"]]
+
         def duplicate_rmsnorm(target):
             applicability, rmsnorm, *_ = coordinates(target)
             applicability["applicable_cpp_rmsnorm_references"].append(rmsnorm)
+
         def extra_matmul(target):
             _, _, matmuls, matmul, *_ = coordinates(target)
             matmuls["unexpected_matmul"] = copy.deepcopy(matmuls[matmul])
+
         def extra_softmax(target):
             *_, row, softmax = coordinates(target)
             row["softmax_references"]["unexpected_softmax"] = copy.deepcopy(
@@ -1116,13 +1183,13 @@ class ParityHarnessTests(unittest.TestCase):
                     reports.extend(rows[0]["softmax_references"].values())
         for report in reports:
             report.update({"diagnostic_outcome": "multiple single components independently sufficient",
-                "classification": "multiple single components independently sufficient",
-                "definitive_causal_classification": "multiple single components independently sufficient",
-                "minimal_sufficient_factor_sets": [["block_input"], ["attention_output"]],
-                "structural_prerequisites_valid": True,
-                "native_python_endpoint_membership_reconstruction_valid": True,
-                "causal_classification_decisive": True,
-                "classification_decisive": True})
+                           "classification": "multiple single components independently sufficient",
+                           "definitive_causal_classification": "multiple single components independently sufficient",
+                           "minimal_sufficient_factor_sets": [["block_input"], ["attention_output"]],
+                           "structural_prerequisites_valid": True,
+                           "native_python_endpoint_membership_reconstruction_valid": True,
+                           "causal_classification_decisive": True,
+                           "classification_decisive": True})
         reports[-1]["minimal_sufficient_factor_sets"] = [
             ["block_input"], ["residual_add_contract"]]
         summary = PARITY.primary_post_attention_residual_three_factor_summary([
@@ -1152,14 +1219,14 @@ class ParityHarnessTests(unittest.TestCase):
                     math_reports.extend(rows[0]["softmax_references"].values())
         for report in math_reports:
             report.update({"diagnostic_outcome": "multiple minimal sufficient coalitions",
-                "classification": "multiple minimal sufficient coalitions",
-                "definitive_causal_classification": "multiple minimal sufficient coalitions",
-                "minimal_sufficient_factor_sets": [["block_input", "attention_output"],
-                                                     ["block_input", "residual_add_contract"]],
-                "structural_prerequisites_valid": True,
-                "native_python_endpoint_membership_reconstruction_valid": True,
-                "causal_classification_decisive": True,
-                "classification_decisive": True})
+                           "classification": "multiple minimal sufficient coalitions",
+                           "definitive_causal_classification": "multiple minimal sufficient coalitions",
+                           "minimal_sufficient_factor_sets": [["block_input", "attention_output"],
+                                                              ["block_input", "residual_add_contract"]],
+                           "structural_prerequisites_valid": True,
+                           "native_python_endpoint_membership_reconstruction_valid": True,
+                           "causal_classification_decisive": True,
+                           "classification_decisive": True})
         math_reports[-1]["minimal_sufficient_factor_sets"] = [
             ["block_input", "attention_output"], ["attention_output", "residual_add_contract"]]
         summary = PARITY.primary_post_attention_residual_three_factor_summary([
@@ -1173,19 +1240,25 @@ class ParityHarnessTests(unittest.TestCase):
         pristine = self._equal_contract_residual_analysis()
 
         def remove_applicability(target): target["per_token_applicability"] = []
+
         def duplicate_applicability(target):
             target["per_token_applicability"].append(copy.deepcopy(target["per_token_applicability"][0]))
+
         def unexpected_applicability(target):
-            row = copy.deepcopy(target["per_token_applicability"][0]); row["attended_token"] = 99
+            row = copy.deepcopy(target["per_token_applicability"][0])
+            row["attended_token"] = 99
             target["per_token_applicability"].append(row)
+
         def remove_native(target): target["native_residual_add_reconstruction"] = []
+
         def duplicate_native(target):
             target["native_residual_add_reconstruction"].append(
                 copy.deepcopy(target["native_residual_add_reconstruction"][0]))
 
         # Removing either oracle's whole row is visible and cannot disappear globally.
         for target_name in ("default", "math"):
-            malformed = copy.deepcopy(pristine); remove_applicability(malformed["python_targets"][target_name])
+            malformed = copy.deepcopy(pristine)
+            remove_applicability(malformed["python_targets"][target_name])
             summary = PARITY.primary_post_attention_residual_three_factor_summary([
                 {"physical_block": 10, "analysis": malformed},
                 {"physical_block": 12, "analysis": pristine}], 10)
@@ -1200,6 +1273,7 @@ class ParityHarnessTests(unittest.TestCase):
 
     def test_report_schema_validation_excludes_malformed_safe_reports(self):
         pristine = self._equal_contract_residual_analysis()
+
         def mutate_reports(analysis, operation):
             for target in analysis["python_targets"].values():
                 name = target["per_token_applicability"][0]["applicable_cpp_rmsnorm_references"][0]
@@ -1212,13 +1286,14 @@ class ParityHarnessTests(unittest.TestCase):
                       "native_python_endpoint_membership_reconstruction_valid"):
             cases.append((f"missing_{field}", lambda report, field=field: report.pop(field)))
         cases.extend((("unhashable_classification", lambda report: report.update(
-                          {"definitive_causal_classification": ["malformed"]})),
-                      ("malformed_factor_container", lambda report: report.update(
-                          {"minimal_sufficient_factor_sets": {"block_input"}})),
-                      ("malformed_factor_entry", lambda report: report.update(
-                          {"minimal_sufficient_factor_sets": [["block_input", 7]]}))))
+            {"definitive_causal_classification": ["malformed"]})),
+            ("malformed_factor_container", lambda report: report.update(
+                {"minimal_sufficient_factor_sets": {"block_input"}})),
+            ("malformed_factor_entry", lambda report: report.update(
+                {"minimal_sufficient_factor_sets": [["block_input", 7]]}))))
         for label, operation in cases:
-            malformed = copy.deepcopy(pristine); mutate_reports(malformed, operation)
+            malformed = copy.deepcopy(pristine)
+            mutate_reports(malformed, operation)
             summary = PARITY.primary_post_attention_residual_three_factor_summary([
                 {"physical_block": 10, "analysis": malformed},
                 {"physical_block": 12, "analysis": malformed}], 10)
@@ -1258,34 +1333,46 @@ class ParityHarnessTests(unittest.TestCase):
     def test_malformed_reference_containers_are_non_throwing_inventory_failures(self):
         pristine = self._equal_contract_residual_analysis()
         def remove_applicability(target): target["per_token_applicability"] = []
+
         def duplicate_applicability(target):
             target["per_token_applicability"].append(copy.deepcopy(target["per_token_applicability"][0]))
+
         def unexpected_applicability(target):
-            row = copy.deepcopy(target["per_token_applicability"][0]); row["attended_token"] = 99
+            row = copy.deepcopy(target["per_token_applicability"][0])
+            row["attended_token"] = 99
             target["per_token_applicability"].append(row)
+
         def remove_native(target): target["native_residual_add_reconstruction"] = []
+
         def duplicate_native(target):
             target["native_residual_add_reconstruction"].append(
                 copy.deepcopy(target["native_residual_add_reconstruction"][0]))
+
         def parts(target):
             applicability = target["per_token_applicability"][0]
             rmsnorm = applicability["applicable_cpp_rmsnorm_references"][0]
             reference = target["references"][rmsnorm]
             matmul = next(iter(reference["router_matmul_references"]))
             rows = reference["router_matmul_references"][matmul]
-            row = rows[0]; softmax = next(iter(row["softmax_references"]))
+            row = rows[0]
+            softmax = next(iter(row["softmax_references"]))
             return applicability, rmsnorm, reference, matmul, rows, row, softmax
+
         def applicability_container(target): target["per_token_applicability"] = "malformed"
         def applicability_row(target): target["per_token_applicability"] = ["malformed"]
         def applicable_rmsnorm_value(target): parts(target)[0]["applicable_cpp_rmsnorm_references"] = "malformed"
         def references_container(target): target["references"] = "malformed"
         def matmul_map(target): parts(target)[2]["router_matmul_references"] = "malformed"
+
         def row_container(target):
             _, _, reference, matmul, *_ = parts(target)
             reference["router_matmul_references"][matmul] = "malformed"
+
         def softmax_map(target): parts(target)[5]["softmax_references"] = "malformed"
+
         def report_value(target):
-            *_, row, softmax = parts(target); row["softmax_references"][softmax] = "malformed"
+            *_, row, softmax = parts(target)
+            row["softmax_references"][softmax] = "malformed"
         for mutate in (applicability_container, applicability_row, applicable_rmsnorm_value,
                        references_container, matmul_map, row_container, softmax_map, report_value):
             malformed = copy.deepcopy(pristine)
@@ -1306,8 +1393,8 @@ class ParityHarnessTests(unittest.TestCase):
                 {"physical_block": 10, "analysis": selected_analysis},
                 {"physical_block": 12, "analysis": pristine}], 10)
             self.assertIsNone(summary["global_definitive_result"])
-            self.assertTrue(summary["malformed_primary_summary_paths"] or
-                            summary["target_attended_token_inventories"])
+            self.assertTrue(summary["malformed_primary_summary_paths"]
+                            or summary["target_attended_token_inventories"])
 
         malformed_control = copy.deepcopy(pristine)
         malformed_control["python_targets"]["default"] = "malformed"
@@ -1379,10 +1466,13 @@ class ParityHarnessTests(unittest.TestCase):
         cases.append((logits_bad, "router_logits_finite", None))
         original_norm = PARITY.diagnostic_rmsnorm_with_operational_weight
         original_softmax = dict(PARITY.DIAGNOSTIC_SOFTMAX_REFERENCES)
+
         def nan_norm(value, *args, **kwargs):
             result, metadata = original_norm(value, *args, **kwargs)
-            result = result.copy(); result[..., 0] = np.nan
+            result = result.copy()
+            result[..., 0] = np.nan
             return result, metadata
+
         def nan_softmax(value): return np.full_like(np.asarray(value, np.float32), np.nan)
         try:
             for source, field, patch_stage in cases + [
@@ -1398,8 +1488,8 @@ class ParityHarnessTests(unittest.TestCase):
                     router_weight, self._residual_profile())
                 target = report["python_targets"]["default"]
                 evidence_rows = [softmax for reference in target["references"].values()
-                    for rows in reference["router_matmul_references"].values()
-                    for softmax in rows[0]["softmax_references"].values()]
+                                 for rows in reference["router_matmul_references"].values()
+                                 for softmax in rows[0]["softmax_references"].values()]
                 self.assertTrue(any(not coalition[field] for evidence in evidence_rows
                                     for coalition in evidence["coalitions"].values()))
                 self.assertTrue(any(not evidence["classification_decisive"] for evidence in evidence_rows))
@@ -1426,7 +1516,8 @@ class ParityHarnessTests(unittest.TestCase):
                 f"L{logical}-P{physical}-A{logical}")
         physical_source = np.zeros((3072, 384), np.float32)
         canonical, transposed = EXTRACTOR.canonical_router_weight(physical_source)
-        self.assertEqual(canonical.shape, (384, 3072)); self.assertTrue(transposed)
+        self.assertEqual(canonical.shape, (384, 3072))
+        self.assertTrue(transposed)
         for logical, physical in EXTRACTOR.LAYERS:
             record = EXTRACTOR.make_weight_record(
                 logical, physical, "gguf",
@@ -1465,13 +1556,14 @@ class ParityHarnessTests(unittest.TestCase):
         except ImportError as exc:
             self.fail(f"checkpoint-free extractor dependencies unavailable: {exc}")
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td); shard = root / "router.safetensors"
+            root = Path(td)
+            shard = root / "router.safetensors"
             bf16 = torch.arange(32, dtype=torch.float32).reshape(4, 8).to(torch.bfloat16)
             f16 = torch.arange(24, dtype=torch.float32).reshape(3, 8).to(torch.float16)
             untouched = torch.ones((2, 2), dtype=torch.float32)
             save_file({"wanted.bf16": bf16, "wanted.f16": f16, "unrequested": untouched}, shard)
             index = {"weight_map": {name: shard.name for name in
-                ("wanted.bf16", "wanted.f16", "unrequested")}}
+                                    ("wanted.bf16", "wanted.f16", "unrequested")}}
             got, dtype, location = EXTRACTOR.safetensor_weight(root, index, "wanted.bf16")
             self.assertEqual((dtype, location, got.dtype), ("torch.bfloat16", shard.name, np.float32))
             self.assertTrue(got.flags.c_contiguous)
@@ -1489,23 +1581,25 @@ class ParityHarnessTests(unittest.TestCase):
         audit = PARITY.router_weight_equivalence_audit(python, gguf)
         self.assertTrue(audit["orientation_validated"])
         self.assertTrue(audit["gguf_equals_bf16_rounded_python_exactly"])
-        mismatch = gguf.copy(); mismatch[0, 0] += 1
+        mismatch = gguf.copy()
+        mismatch[0, 0] += 1
         self.assertFalse(PARITY.router_weight_equivalence_audit(
             python, mismatch)["weights_equivalent_for_shared_weight_analysis"])
         with self.assertRaisesRegex(ValueError, "canonical"):
             PARITY.router_weight_equivalence_audit(python, python.T)
 
     def test_router_input_lineage_uses_ffn_norm_not_block_input(self):
-        prefix = "physical_block_10__"; attended = [1, 3]
+        prefix = "physical_block_10__"
+        attended = [1, 3]
         sides = {}
         for name in ("cpp", "default", "math"):
             norm = PARITY.bf16_round_to_float32(
                 np.linspace(-1.3, 1.7, 16, dtype=np.float32).reshape(1, 2, 8))
             weight = np.array([[[0.37], [0.61]]], np.float32)
             sides[name] = {prefix + "ffn_norm": norm,
-                prefix + "block_input": norm + 2,
-                prefix + "identity_weight_sum": weight,
-                prefix + "identity_residual": norm * weight}
+                           prefix + "block_input": norm + 2,
+                           prefix + "identity_weight_sum": weight,
+                           prefix + "identity_residual": norm * weight}
         report = PARITY.router_input_lineage_audit(sides, prefix, attended)
         self.assertEqual(report["status"], "established")
         self.assertEqual(report["router_input_canonical_surface"], "ffn_norm")
@@ -1521,14 +1615,18 @@ class ParityHarnessTests(unittest.TestCase):
                          "not established")
 
     def _linear_sides(self, input_effect=0.0, residual_effect=0.0):
-        prefix = "physical_block_10__"; hidden = 512
-        weight = np.zeros((384, hidden), np.float32); weight[12, 0] = np.float32(input_effect)
+        prefix = "physical_block_10__"
+        hidden = 512
+        weight = np.zeros((384, hidden), np.float32)
+        weight[12, 0] = np.float32(input_effect)
         inputs = {"cpp": np.zeros((1, 1, hidden), np.float32),
                   "default": np.zeros((1, 1, hidden), np.float32),
                   "math": np.zeros((1, 1, hidden), np.float32)}
         inputs["default"][0, 0, 0] = inputs["math"][0, 0, 0] = 1
-        base = np.full((1, 1, 384), -10, np.float32); base[..., :11] = 10
-        base[..., 11] = np.float32(0.1); base[..., 12] = 0
+        base = np.full((1, 1, 384), -10, np.float32)
+        base[..., :11] = 10
+        base[..., 11] = np.float32(0.1)
+        base[..., 12] = 0
         residuals = {"cpp": base.copy(), "default": base.copy(), "math": base.copy()}
         residuals["default"][..., 12] += np.float32(residual_effect)
         residuals["math"][..., 12] += np.float32(residual_effect)
@@ -1539,11 +1637,11 @@ class ParityHarnessTests(unittest.TestCase):
             indices = PARITY._score_topk_indices(probabilities.reshape(384)).reshape(1, 1, 12)[..., ::-1]
             identity_weight = np.array([[[0.37]]], np.float32)
             sides[name] = {prefix + "ffn_norm": inputs[name], prefix + "block_input": inputs[name] + 2,
-                prefix + "identity_weight_sum": identity_weight,
-                prefix + "identity_residual": inputs[name] * identity_weight,
-                prefix + "router_logits": logits, prefix + "router_probabilities": probabilities,
-                prefix + "router_selection_scores": probabilities.copy(),
-                prefix + "router_topk_indices": indices}
+                           prefix + "identity_weight_sum": identity_weight,
+                           prefix + "identity_residual": inputs[name] * identity_weight,
+                           prefix + "router_logits": logits, prefix + "router_probabilities": probabilities,
+                           prefix + "router_selection_scores": probabilities.copy(),
+                           prefix + "router_topk_indices": indices}
         return sides, weight
 
     def test_router_linear_decomposition_end_to_end_classifications(self):
@@ -1555,7 +1653,7 @@ class ParityHarnessTests(unittest.TestCase):
         for input_effect, residual_effect, expected in cases:
             sides, weight = self._linear_sides(input_effect, residual_effect)
             report = PARITY.router_linear_decomposition(sides, "physical_block_10__", [0], weight,
-                                                         PARITY.bf16_round_to_float32(weight))
+                                                        PARITY.bf16_round_to_float32(weight))
             self.assertEqual(report["status"], "complete")
             classifications = {softmax["classification"] for variant in report["variants"].values()
                                for softmax in variant["tokens"][0]["softmax_references"].values()}
@@ -1571,7 +1669,8 @@ class ParityHarnessTests(unittest.TestCase):
 
     def test_weight_mismatch_fallback_contains_logits_and_membership(self):
         sides, python_weight = self._linear_sides(0.25, 0)
-        gguf_weight = python_weight.copy(); gguf_weight[13, 0] = 0.5
+        gguf_weight = python_weight.copy()
+        gguf_weight[13, 0] = 0.5
         report = PARITY.router_linear_decomposition(
             sides, "physical_block_10__", [0], python_weight, gguf_weight)
         self.assertEqual(report["status"], "weight representation differs")
@@ -1582,15 +1681,17 @@ class ParityHarnessTests(unittest.TestCase):
             for combination in variant["combinations"].values():
                 self.assertIn("captured_logit_comparisons", combination)
                 self.assertEqual(set(combination["softmax_membership_evidence"]),
-                    set(PARITY.DIAGNOSTIC_SOFTMAX_REFERENCES))
+                                 set(PARITY.DIAGNOSTIC_SOFTMAX_REFERENCES))
                 self.assertEqual(len(combination["softmax_membership_evidence"]["stable_float32"][0][
                     "selected_expert_set"]), 12)
 
     def test_linear_decomposition_surfaces_reference_disagreement_and_primary_alignment(self):
         sides, weight = self._linear_sides(0.25, 0)
         original_softmax = PARITY.DIAGNOSTIC_SOFTMAX_REFERENCES["stable_float64_then_float32"]
+
         def shifted(logits):
-            value = original_softmax(logits).copy(); value[..., 13] += 0.5
+            value = original_softmax(logits).copy()
+            value[..., 13] += 0.5
             return value
         PARITY.DIAGNOSTIC_SOFTMAX_REFERENCES["stable_float64_then_float32"] = shifted
         try:
@@ -1601,10 +1702,12 @@ class ParityHarnessTests(unittest.TestCase):
         self.assertTrue(any(not row["tokens"][0]["cross_softmax_classification_agreement"]
                             for row in report["variants"].values()))
         original_linear = PARITY.diagnostic_router_linear
+
         def variant_shift(router_input, router_weight, variant):
             value = original_linear(router_input, router_weight, variant)
             if variant == "float64_matmul_then_float32":
-                value = value.copy(); value[..., 13] += router_input[..., 0] * 20
+                value = value.copy()
+                value[..., 13] += router_input[..., 0] * 20
             return value
         PARITY.diagnostic_router_linear = variant_shift
         try:
@@ -1614,7 +1717,7 @@ class ParityHarnessTests(unittest.TestCase):
             PARITY.diagnostic_router_linear = original_linear
         aligned_sides, aligned_weight = self._linear_sides(0, 0)
         aligned = PARITY.router_linear_decomposition(aligned_sides, "physical_block_10__", [0],
-            aligned_weight, PARITY.bf16_round_to_float32(aligned_weight))
+                                                     aligned_weight, PARITY.bf16_round_to_float32(aligned_weight))
         summary = PARITY.primary_router_linear_summary([
             {"physical_block": 10, "analysis": matmul_report}, {"physical_block": 12, "analysis": aligned}], 10)
         self.assertTrue(summary["block_12_remains_available_as_aligned_comparison"])
@@ -1623,41 +1726,45 @@ class ParityHarnessTests(unittest.TestCase):
     def _write_router_artifacts(self, root, arrays=None):
         if arrays is None:
             arrays = {key: np.zeros((384, 3072), np.float32) for key in PARITY.ROUTER_LINEAR_ARRAY_KEYS}
-        npz = root / "router.npz"; metadata_path = root / "router.json"
+        npz = root / "router.npz"
+        metadata_path = root / "router.json"
         EXTRACTOR.deterministic_npz(npz, arrays)
         records = []
         for block in (10, 12):
             for short, source in (("python", "python_checkpoint"), ("gguf", "gguf")):
-                key = f"physical_block_{block:02d}__{short}_weight"; value = arrays[key]
+                key = f"physical_block_{block:02d}__{short}_weight"
+                value = arrays[key]
                 records.append({"logical_layer": block // 2, "physical_even_block": block,
-                    "source": source, "source_tensor_name": key, "canonical_tensor_orientation": "experts_by_hidden",
-                    "shape": list(value.shape), "source_dtype": "torch.bfloat16" if short == "python" else "BF16",
-                    "serialized_dtype": str(value.dtype), "sha256": hashlib.sha256(value.tobytes()).hexdigest(),
-                    "finite_audit": {"finite": bool(np.isfinite(value).all()), "element_count": int(value.size)}})
+                                "source": source, "source_tensor_name": key, "canonical_tensor_orientation": "experts_by_hidden",
+                                "shape": list(value.shape), "source_dtype": "torch.bfloat16" if short == "python" else "BF16",
+                                "serialized_dtype": str(value.dtype), "sha256": hashlib.sha256(value.tobytes()).hexdigest(),
+                                "finite_audit": {"finite": bool(np.isfinite(value).all()), "element_count": int(value.size)}})
         equivalence = []
         for block in (10, 12):
             py = arrays[f"physical_block_{block:02d}__python_weight"]
             gg = arrays[f"physical_block_{block:02d}__gguf_weight"]
             equivalence.append({"logical_layer": block // 2, "physical_even_block": block,
-                "python_array_key": f"physical_block_{block:02d}__python_weight",
-                "gguf_array_key": f"physical_block_{block:02d}__gguf_weight",
-                "weight_equivalence_audit": PARITY.router_weight_equivalence_audit(py, gg)})
+                                "python_array_key": f"physical_block_{block:02d}__python_weight",
+                                "gguf_array_key": f"physical_block_{block:02d}__gguf_weight",
+                                "weight_equivalence_audit": PARITY.router_weight_equivalence_audit(py, gg)})
         metadata = {"schema_version": 2, "model_instantiated": False, "inference_executed": False,
-            "bounded_physical_blocks": [10, 12], "weight_records": records,
-            "weight_equivalence_records": equivalence,
-            "npz_sha256": hashlib.sha256(npz.read_bytes()).hexdigest()}
+                    "bounded_physical_blocks": [10, 12], "weight_records": records,
+                    "weight_equivalence_records": equivalence,
+                    "npz_sha256": hashlib.sha256(npz.read_bytes()).hexdigest()}
         metadata_path.write_text(json.dumps(metadata), encoding="ascii")
         return npz, metadata_path, metadata
 
     def test_router_artifact_json_npz_binding_rejections(self):
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td); npz, metadata_path, metadata = self._write_router_artifacts(root)
+            root = Path(td)
+            npz, metadata_path, metadata = self._write_router_artifacts(root)
             arrays, _ = PARITY.load_router_linear_artifacts(npz, metadata_path)
             self.assertEqual(set(arrays), PARITY.ROUTER_LINEAR_ARRAY_KEYS)
             # Swapped artifacts are diagnosed before analysis.
             with self.assertRaises(ValueError): PARITY.load_router_linear_artifacts(metadata_path, npz)
             # Metadata-to-array hash mismatch.
-            damaged = json.loads(json.dumps(metadata)); damaged["weight_records"][0]["sha256"] = "0" * 64
+            damaged = json.loads(json.dumps(metadata))
+            damaged["weight_records"][0]["sha256"] = "0" * 64
             metadata_path.write_text(json.dumps(damaged), encoding="ascii")
             with self.assertRaisesRegex(ValueError, "array SHA-256"):
                 PARITY.load_router_linear_artifacts(npz, metadata_path)
@@ -1668,9 +1775,12 @@ class ParityHarnessTests(unittest.TestCase):
                 elif mutation == "missing": values.pop(next(iter(values)))
                 elif mutation == "shape": values[next(iter(values))] = np.zeros((384, 3071), np.float32)
                 else: values[next(iter(values))][0, 0] = np.nan
-                candidate = root / f"{mutation}.npz"; EXTRACTOR.deterministic_npz(candidate, values)
-                rebound = json.loads(json.dumps(metadata)); rebound["npz_sha256"] = hashlib.sha256(candidate.read_bytes()).hexdigest()
-                candidate_json = root / f"{mutation}.json"; candidate_json.write_text(json.dumps(rebound), encoding="ascii")
+                candidate = root / f"{mutation}.npz"
+                EXTRACTOR.deterministic_npz(candidate, values)
+                rebound = json.loads(json.dumps(metadata))
+                rebound["npz_sha256"] = hashlib.sha256(candidate.read_bytes()).hexdigest()
+                candidate_json = root / f"{mutation}.json"
+                candidate_json.write_text(json.dumps(rebound), encoding="ascii")
                 with self.assertRaises(ValueError):
                     PARITY.load_router_linear_artifacts(candidate, candidate_json)
 
@@ -1680,10 +1790,11 @@ class ParityHarnessTests(unittest.TestCase):
         weight = rng.normal(size=(384, 512)).astype(np.float32)
         for variant in PARITY.DIAGNOSTIC_LINEAR_VARIANTS:
             logits = PARITY.diagnostic_router_linear(x, weight, variant)
-            self.assertEqual(logits.shape, (2, 384)); self.assertTrue(np.isfinite(logits).all())
+            self.assertEqual(logits.shape, (2, 384))
+            self.assertTrue(np.isfinite(logits).all())
         delta = PARITY.diagnostic_router_linear(x[:1] - x[1:], weight, "float32_matmul")[0]
         captured = PARITY.diagnostic_router_linear(x[:1], weight, "float32_matmul")[0] - \
-                   PARITY.diagnostic_router_linear(x[1:], weight, "float32_matmul")[0]
+            PARITY.diagnostic_router_linear(x[1:], weight, "float32_matmul")[0]
         exact = PARITY._linear_projection_metrics(captured, delta)
         self.assertLess(exact["residual_rms"], 1e-5)
         inexact = PARITY._linear_projection_metrics(captured + 1, delta)
@@ -1721,25 +1832,34 @@ class ParityHarnessTests(unittest.TestCase):
         for args in ((11, 4), (10, 3), (26, 4)):
             with self.assertRaises(ValueError): PARITY.component_window_names(*args)
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td); rows = []; default = {}; math = {}
+            root = Path(td)
+            rows = []
+            default = {}
+            math = {}
             reverse = {value: key for key, value in PARITY.COMPONENT_CPP_BASE.items()}
             for name in names:
-                block = int(name[15:17]); suffix = name.split("__", 1)[1]
+                block = int(name[15:17])
+                suffix = name.split("__", 1)[1]
                 width = (384 if suffix in {"router_logits", "router_probabilities", "router_selection_scores"}
                          else 12 if suffix in {"router_topk_indices", "router_topk_weights"}
                          else 1 if suffix == "identity_weight_sum" else 3072)
                 integer = suffix == "router_topk_indices"
                 value = np.zeros((1, 2, width), np.int32 if integer else np.float32)
                 if integer: value[:] = np.arange(12)
-                default[name] = value.copy(); math[name] = value.copy()
-                raw = root / f"{reverse[suffix]}-{block}.raw"; value.tofile(raw)
+                default[name] = value.copy()
+                math[name] = value.copy()
+                raw = root / f"{reverse[suffix]}-{block}.raw"
+                value.tofile(raw)
                 dims = "1,12,2,1" if suffix == "router_topk_weights" else f"{width},2,1,1"
                 rows.append(f"{reverse[suffix]}-{block}\t{'i32' if integer else 'f32'}\t{dims}\t{raw.name}")
             (root / "block-components-window-diagnostics.tsv").write_text("\n".join(rows) + "\n")
-            dp = root / "d.npz"; mp = root / "m.npz"; np.savez(dp, **default); np.savez(mp, **math)
+            dp = root / "d.npz"
+            mp = root / "m.npz"
+            np.savez(dp, **default)
+            np.savez(mp, **math)
             with np.load(dp) as d, np.load(mp) as m:
                 report = PARITY.compare_component_window(d, m, root, [1, 1],
-                                                          {"atol": .125, "rtol": .03125})
+                                                         {"atol": .125, "rtol": .03125})
             self.assertEqual(report["array_count"], 44)
             self.assertEqual(report["primary_oracle"], "python_default")
             self.assertEqual(len(report["even_block_shortcut_analysis"]), 2)
@@ -1762,7 +1882,8 @@ class ParityHarnessTests(unittest.TestCase):
                 oracle["physical_block_10__moe_shortcut"][:] = 1.0
                 oracle["physical_block_11__block_output"][:] = 1.0
                 oracle["physical_block_10__router_topk_indices"][..., -1] = 256
-            np.savez(dp, **default); np.savez(mp, **math)
+            np.savez(dp, **default)
+            np.savez(mp, **math)
             with np.load(dp) as d, np.load(mp) as m:
                 events = PARITY.compare_component_window(
                     d, m, root, [1, 1], {"atol": .125, "rtol": .03125})
@@ -1777,13 +1898,16 @@ class ParityHarnessTests(unittest.TestCase):
             self.assertEqual(events["primary_oracle_router_probability_bias_decomposition"][
                 "physical_block"], 10)
             self.assertEqual(len(events["router_probability_bias_decomposition"]), 2)
-            default[names[0]][0, 0, 0] = np.nan; np.savez(dp, **default)
+            default[names[0]][0, 0, 0] = np.nan
+            np.savez(dp, **default)
             with np.load(dp) as d, np.load(mp) as m, self.assertRaisesRegex(ValueError, "non-finite"):
                 PARITY.compare_component_window(d, m, root, [1, 1], {"atol": .125, "rtol": .03125})
 
     def test_odd_cross_substitution_branch_attribution(self):
         def arrays(cpp_trunk, py_trunk, cpp_shortcut, py_shortcut):
-            cpp = {}; py = {}; p = lambda b, s: f"physical_block_{b:02d}__{s}"
+            cpp = {}
+            py = {}
+            def p(b, s): return f"physical_block_{b:02d}__{s}"
             for side, trunk, shortcut in ((cpp, cpp_trunk, cpp_shortcut), (py, py_trunk, py_shortcut)):
                 side[p(11, "post_attention_residual")] = np.array([[[trunk]]], np.float32)
                 side[p(11, "dense_output")] = np.zeros((1, 1, 1), np.float32)
@@ -1803,15 +1927,17 @@ class ParityHarnessTests(unittest.TestCase):
 
     def test_three_component_coalitions_shapley_and_pass_restoration(self):
         def arrays(cpp_values, python_values):
-            cpp = {}; python = {}; p = lambda b, s: f"physical_block_{b:02d}__{s}"
+            cpp = {}
+            python = {}
+            def p(b, s): return f"physical_block_{b:02d}__{s}"
             for side, values in ((cpp, cpp_values), (python, python_values)):
                 side[p(11, "post_attention_residual")] = np.array([[[values[0]]]], np.float32)
                 side[p(11, "dense_output")] = np.array([[[values[1]]]], np.float32)
                 side[p(10, "moe_shortcut")] = np.array([[[values[2]]]], np.float32)
             python[p(11, "block_output")] = PARITY.bf16_round_to_float32(
                 PARITY.bf16_round_to_float32(
-                    python[p(11, "post_attention_residual")] + python[p(11, "dense_output")]) +
-                python[p(10, "moe_shortcut")])
+                    python[p(11, "post_attention_residual")] + python[p(11, "dense_output")])
+                + python[p(10, "moe_shortcut")])
             return cpp, python
 
         criterion = {"atol": 0.001, "rtol": 0.0}
@@ -1820,7 +1946,8 @@ class ParityHarnessTests(unittest.TestCase):
             "shapley_rms_reduction_dense_output",
             "shapley_rms_reduction_previous_even_moe_shortcut")
         for changed, field in enumerate(player_fields):
-            python_values = [0.0, 0.0, 0.0]; python_values[changed] = 1.0
+            python_values = [0.0, 0.0, 0.0]
+            python_values[changed] = 1.0
             report = PARITY.odd_cross_substitution(
                 *arrays((0.0, 0.0, 0.0), python_values), 11, criterion)
             self.assertEqual(report["coalition_count"], 8)
@@ -1836,7 +1963,7 @@ class ParityHarnessTests(unittest.TestCase):
             interaction["shapley_rms_reduction_post_attention_residual"],
             interaction["shapley_rms_reduction_dense_output"], places=12)
         self.assertAlmostEqual(interaction["shapley_sum"],
-            interaction["total_all_cpp_to_all_python_rms_reduction"], places=12)
+                               interaction["total_all_cpp_to_all_python_rms_reduction"], places=12)
         self.assertLessEqual(abs(interaction["shapley_additivity_error"]), 1e-12)
 
         multiple = PARITY.odd_cross_substitution(
@@ -1859,6 +1986,7 @@ class ParityHarnessTests(unittest.TestCase):
     def test_odd_coalition_rounds_after_both_official_additions(self):
         original = PARITY.bf16_round_to_float32
         calls = []
+
         def observed(value):
             calls.append(np.asarray(value).copy())
             return original(value)
@@ -1889,7 +2017,8 @@ class ParityHarnessTests(unittest.TestCase):
         self.assertEqual([row["rank"] for row in report["ranked_experts_around_cutoff"]],
                          list(range(8, 17)))
 
-        identity_scores = scores.copy(); identity_scores[300] = -7.5
+        identity_scores = scores.copy()
+        identity_scores[300] = -7.5
         identity_selected = np.array(list(range(11)) + [300], np.int32)
         identity = PARITY.router_token_cutoff(identity_scores, identity_selected, 7)
         identity_row = next(row for row in identity["ranked_experts_around_cutoff"]
@@ -1903,7 +2032,7 @@ class ParityHarnessTests(unittest.TestCase):
         right_scores[11], right_scores[12] = right_scores[12], right_scores[11]
         left = PARITY.router_token_cutoff(left_scores, np.arange(12), 3)
         right = PARITY.router_token_cutoff(right_scores,
-            np.array(list(range(11)) + [12]), 3)
+                                           np.array(list(range(11)) + [12]), 3)
         disputed = PARITY.disputed_router_token(left, right, "cpp", "default")
         self.assertEqual(disputed["experts_selected_only_by_left"], [11])
         self.assertEqual(disputed["experts_selected_only_by_right"], [12])
@@ -1911,8 +2040,8 @@ class ParityHarnessTests(unittest.TestCase):
         self.assertTrue(disputed["has_ordering_inversion"])
         self.assertEqual(disputed["numerical_scale"]["left_cutoff_margin"], 1.0)
         self.assertEqual(disputed["numerical_scale"]["right_cutoff_margin"], 1.0)
-        self.assertTrue(all("left_rank_distance_from_top12_boundary" in row and
-                            "right_rank_distance_from_top12_boundary" in row
+        self.assertTrue(all("left_rank_distance_from_top12_boundary" in row
+                            and "right_rank_distance_from_top12_boundary" in row
                             for row in disputed["disputed_experts"]))
         reordered = PARITY.router_token_cutoff(left_scores, np.arange(11, -1, -1), 3)
         self.assertIsNone(PARITY.disputed_router_token(left, reordered, "cpp", "default"))
@@ -1949,7 +2078,7 @@ class ParityHarnessTests(unittest.TestCase):
                     "router_topk_weights", "identity_weight_sum", "identity_residual", "moe_shortcut")
         components = [{"physical_block": 10, "suffix": suffix,
                        "cpp_vs_python_default": {"within_diagnostic_criterion":
-                           suffix != "router_topk_weights"}}
+                                                 suffix != "router_topk_weights"}}
                       for suffix in suffixes]
         even = [{"physical_block": 10, "expert_id_aligned_topk_weights": {
             "cpp_vs_python_default": {"within_diagnostic_criterion": True}}}]
@@ -1969,8 +2098,10 @@ class ParityHarnessTests(unittest.TestCase):
             return {"router_probabilities": probabilities[None, None, :],
                     "router_selection_scores": scores[None, None, :],
                     "router_topk_indices": indices[None, None, :]}
+
         def run(left_probability, left_bias, right_probability, right_bias):
-            left = make_side(left_probability, left_bias); right = make_side(right_probability, right_bias)
+            left = make_side(left_probability, left_bias)
+            right = make_side(right_probability, right_bias)
             sides = {"cpp": {"p" + key: value for key, value in left.items()},
                      "default": {"p" + key: value for key, value in right.items()}}
             return PARITY.probability_bias_pair_decomposition(
@@ -1978,7 +2109,9 @@ class ParityHarnessTests(unittest.TestCase):
 
         base = np.full(PARITY.ROUTED_EXPERT_COUNT, -10.0, np.float32)
         base[:11] = np.arange(20, 9, -1, dtype=np.float32)
-        left_probability = base.copy(); left_probability[11] = 1.0; left_probability[12] = -1.0
+        left_probability = base.copy()
+        left_probability[11] = 1.0
+        left_probability[12] = -1.0
         zero_bias = np.zeros_like(base)
 
         right_probability = left_probability.copy()
@@ -1992,7 +2125,8 @@ class ParityHarnessTests(unittest.TestCase):
         self.assertFalse(probability["ordering_inversion_decomposition"][0][
             "bias_component_alone_reverses_ordering"])
 
-        right_bias = zero_bias.copy(); right_bias[11], right_bias[12] = -2.0, 2.0
+        right_bias = zero_bias.copy()
+        right_bias[11], right_bias[12] = -2.0, 2.0
         bias = run(left_probability, zero_bias, left_probability, right_bias)
         self.assertEqual(bias["membership_classification"], "bias component sufficient")
         self.assertTrue(bias["right_bias_only_restores_right_membership"])
@@ -2004,7 +2138,8 @@ class ParityHarnessTests(unittest.TestCase):
 
         interaction_probability = left_probability.copy()
         interaction_probability[11], interaction_probability[12] = 0.25, -0.25
-        interaction_bias = zero_bias.copy(); interaction_bias[11], interaction_bias[12] = -0.5, 0.5
+        interaction_bias = zero_bias.copy()
+        interaction_bias[11], interaction_bias[12] = -0.5, 0.5
         interaction = run(left_probability, zero_bias, interaction_probability, interaction_bias)
         self.assertEqual(interaction["membership_classification"], "requires both components")
         self.assertTrue(interaction["both_required_for_right_membership"])
@@ -2060,6 +2195,7 @@ class ParityHarnessTests(unittest.TestCase):
 
     def test_logit_softmax_residual_coalitions_cover_logit_residual_and_interaction(self):
         reference = PARITY.diagnostic_softmax_stable_float32
+
         def side(logits, residual):
             logits = np.asarray(logits, np.float32)
             probabilities = np.asarray(reference(logits[None, :])[0] + residual, np.float32)
@@ -2069,8 +2205,10 @@ class ParityHarnessTests(unittest.TestCase):
                     "router_probabilities": probabilities[None, None, :],
                     "router_selection_scores": scores[None, None, :],
                     "router_topk_indices": PARITY._score_topk_indices(scores)[None, None, :]}
+
         def run(left_logits, left_residual, right_logits, right_residual):
-            left = side(left_logits, left_residual); right = side(right_logits, right_residual)
+            left = side(left_logits, left_residual)
+            right = side(right_logits, right_residual)
             sides = {"cpp": {"p" + key: value for key, value in left.items()},
                      "default": {"p" + key: value for key, value in right.items()}}
             return PARITY.logit_softmax_pair_variant(
@@ -2079,7 +2217,8 @@ class ParityHarnessTests(unittest.TestCase):
         base = np.full(PARITY.ROUTED_EXPERT_COUNT, -10.0, np.float32)
         base[:11] = np.linspace(6.0, 5.0, 11, dtype=np.float32)
         base[11], base[12] = 1.0, 0.0
-        swapped = base.copy(); swapped[11], swapped[12] = 0.0, 1.0
+        swapped = base.copy()
+        swapped[11], swapped[12] = 0.0, 1.0
         zero = np.zeros_like(base)
         logit = run(base, zero, swapped, zero)
         self.assertEqual(logit["membership_classification"], "logit component sufficient")
@@ -2095,7 +2234,8 @@ class ParityHarnessTests(unittest.TestCase):
                          "softmax-reconstruction residual sufficient")
         self.assertTrue(residual_case["right_softmax_residual_only_restores_right_probability_outcome"])
 
-        narrowed = base.copy(); narrowed[11], narrowed[12] = 0.6, 0.5
+        narrowed = base.copy()
+        narrowed[11], narrowed[12] = 0.6, 0.5
         narrowed_probability = reference(narrowed[None, :])[0]
         left_gap = float(left_probability[11] - left_probability[12])
         right_gap = float(narrowed_probability[11] - narrowed_probability[12])
@@ -2147,7 +2287,7 @@ class ParityHarnessTests(unittest.TestCase):
             "stable_float32": {"tokens": [token("logit component sufficient")],
                                "softmax_reconstruction_metrics": {}},
             "stable_float64_then_float32": {"tokens": [token("requires both components")],
-                                             "softmax_reconstruction_metrics": {}}}
+                                            "softmax_reconstruction_metrics": {}}}
         aligned_variants = {name: {"tokens": [token("native probability outcomes already equal")],
                                    "softmax_reconstruction_metrics": {}}
                             for name in PARITY.DIAGNOSTIC_SOFTMAX_REFERENCES}
@@ -2160,17 +2300,24 @@ class ParityHarnessTests(unittest.TestCase):
         self.assertFalse(summary["all_affected_tokens_have_reference_variant_agreement"])
         self.assertIn("diagnostic reference choice changes the categorical result",
                       summary["descriptive_evidence"])
+
     def _write_profile(self, root, values, legacy_indices, rounding):
-        case = root / "eos_window_position_2"; case.mkdir(parents=True)
+        case = root / "eos_window_position_2"
+        case.mkdir(parents=True)
         direct = [f"{name}\tf32\t1,1,1,1\t{name}.raw" for name in sorted(PARITY.DIRECT_NAMES)]
         (case / "captures.tsv").write_text("\n".join(direct) + "\n", encoding="ascii")
-        rows = []; reverse = {value: key for key, value in PARITY.COMPONENT_CPP_BASE.items()}
+        rows = []
+        reverse = {value: key for key, value in PARITY.COMPONENT_CPP_BASE.items()}
         for name in PARITY.component_names():
-            block = int(name[15:17]); suffix = name.split("__", 1)[1]; value = values[name]
-            base = reverse[suffix]; raw = case / f"{base}-{block}.raw"
+            block = int(name[15:17])
+            suffix = name.split("__", 1)[1]
+            value = values[name]
+            base = reverse[suffix]
+            raw = case / f"{base}-{block}.raw"
             if suffix == "router_topk_indices" and legacy_indices:
                 packed = np.full(PARITY.ROUTED_EXPERT_COUNT + 12, -1, np.int32)
-                packed[:12] = value[0, 0]; packed[PARITY.ROUTED_EXPERT_COUNT:] = value[0, 1]
+                packed[:12] = value[0, 0]
+                packed[PARITY.ROUTED_EXPERT_COUNT:] = value[0, 1]
                 packed.tofile(raw)
             else:
                 value.reshape(-1).tofile(raw)
@@ -2180,7 +2327,7 @@ class ParityHarnessTests(unittest.TestCase):
         (case / "block-components-diagnostics.tsv").write_text(
             "\n".join(rows) + "\n", encoding="ascii")
         (case / "inputs.json").write_text(json.dumps({"input_ids": [1, 2], "attention_mask": [1, 1],
-            "position_ids": [0, 1], "cache_position": [0, 1]}), encoding="ascii")
+                                                      "position_ids": [0, 1], "cache_position": [0, 1]}), encoding="ascii")
         (case / "decoding.json").write_text(json.dumps({"argmax_id": 2909}), encoding="ascii")
         if rounding:
             (root / "capture-run-metadata.json").write_text(json.dumps({
@@ -2188,7 +2335,11 @@ class ParityHarnessTests(unittest.TestCase):
                 "longcat_bf16_hidden_surface_rounding": True}), encoding="ascii")
 
     def test_profile_diff_legacy_compact_dtype_metrics_routing_and_validation(self):
-        names = PARITY.component_names(); default = {}; math = {}; baseline = {}; rounded = {}
+        names = PARITY.component_names()
+        default = {}
+        math = {}
+        baseline = {}
+        rounded = {}
         for name in names:
             suffix = name.split("__", 1)[1]
             width = (384 if suffix in {"router_logits", "router_probabilities", "router_selection_scores"}
@@ -2197,17 +2348,27 @@ class ParityHarnessTests(unittest.TestCase):
             dtype = np.int32 if suffix == "router_topk_indices" else np.float32
             value = np.zeros((1, 2, width), dtype)
             if suffix == "router_topk_indices": value[:] = np.arange(12)
-            default[name] = value.copy(); math[name] = value.copy(); baseline[name] = value.copy(); rounded[name] = value.copy()
+            default[name] = value.copy()
+            math[name] = value.copy()
+            baseline[name] = value.copy()
+            rounded[name] = value.copy()
         baseline["physical_block_00__attention_output"][..., 0] = .25
         rounded["physical_block_00__attention_output"][..., 0] = .125
         baseline["physical_block_01__dense_output"][..., 0] = .125
         rounded["physical_block_01__dense_output"][..., 0] = .25
         rounded["physical_block_00__router_topk_indices"][..., 0] = 7
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td); b = root / "baseline"; r = root / "rounded"; b.mkdir(); r.mkdir()
-            self._write_profile(b, baseline, True, False); self._write_profile(r, rounded, False, True)
-            default_path = root / "default.npz"; math_path = root / "math.npz"
-            np.savez(default_path, **default); np.savez(math_path, **math)
+            root = Path(td)
+            b = root / "baseline"
+            r = root / "rounded"
+            b.mkdir()
+            r.mkdir()
+            self._write_profile(b, baseline, True, False)
+            self._write_profile(r, rounded, False, True)
+            default_path = root / "default.npz"
+            math_path = root / "math.npz"
+            np.savez(default_path, **default)
+            np.savez(math_path, **math)
             dtype_path = root / "dtypes.json"
             dtype_path.write_text(json.dumps({"components": [
                 {"name": name, "source_torch_dtype":
@@ -2261,10 +2422,14 @@ class ParityHarnessTests(unittest.TestCase):
         names = PARITY.component_names()
         self.assertEqual(len(names), 110)
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td); rows = []; default = {}; math = {}
+            root = Path(td)
+            rows = []
+            default = {}
+            math = {}
             cpp_values = {}
             for name in names:
-                block = int(name[15:17]); suffix = name.split("__", 1)[1]
+                block = int(name[15:17])
+                suffix = name.split("__", 1)[1]
                 width = (384 if suffix in {"router_logits", "router_probabilities", "router_selection_scores"}
                          else 12 if suffix in {"router_topk_indices", "router_topk_weights"}
                          else 1 if suffix == "identity_weight_sum" else 3072)
@@ -2272,7 +2437,9 @@ class ParityHarnessTests(unittest.TestCase):
                 value = np.zeros((1, 2, width), np.int32 if is_indices else np.float32)
                 if is_indices:
                     value[:] = np.arange(12)
-                default[name] = value.copy(); math[name] = value.copy(); cpp = value.copy()
+                default[name] = value.copy()
+                math[name] = value.copy()
+                cpp = value.copy()
                 if name == "physical_block_00__router_topk_indices":
                     cpp[..., [0, 1]] = cpp[..., [1, 0]]  # ordered mismatch, identical set
                 if name == "physical_block_00__router_topk_weights":
@@ -2292,10 +2459,12 @@ class ParityHarnessTests(unittest.TestCase):
                 rows.append(f"{cpp_name}\t{'i32' if is_indices else 'f32'}\t{dims}\t{raw.name}")
             (root / "block-components-diagnostics.tsv").write_text(
                 "\n".join(rows) + "\n", encoding="ascii")
-            default_path = root / "default.npz"; math_path = root / "math.npz"
-            np.savez(default_path, **default); np.savez(math_path, **math)
+            default_path = root / "default.npz"
+            math_path = root / "math.npz"
+            np.savez(default_path, **default)
+            np.savez(math_path, **math)
             with np.load(default_path, allow_pickle=False) as default_npz, \
-                 np.load(math_path, allow_pickle=False) as math_npz:
+                    np.load(math_path, allow_pickle=False) as math_npz:
                 report = PARITY.compare_block_components(
                     default_npz, math_npz, root, [0, 1], {"atol": .125, "rtol": .03125})
             indices = next(row for row in report["components"]
@@ -2312,7 +2481,7 @@ class ParityHarnessTests(unittest.TestCase):
             self.assertTrue(all(row["representation"] == "compact_logical"
                                 for row in report["component_decode_provenance"]))
             with np.load(default_path, allow_pickle=False) as default_npz, \
-                 np.load(math_path, allow_pickle=False) as math_npz:
+                    np.load(math_path, allow_pickle=False) as math_npz:
                 attribution = PARITY.numerical_attribution_report(
                     default_npz, math_npz, root, [0, 1], {"atol": .125, "rtol": .03125})
             self.assertEqual(len(attribution["router_semantics"]), 5)
@@ -2332,7 +2501,7 @@ class ParityHarnessTests(unittest.TestCase):
                 legacy[PARITY.ROUTED_EXPERT_COUNT:PARITY.ROUTED_EXPERT_COUNT + 12] = values[1]
                 legacy.tofile(root / f"ffn_moe_topk-{block}.raw")
             with np.load(default_path, allow_pickle=False) as default_npz, \
-                 np.load(math_path, allow_pickle=False) as math_npz:
+                    np.load(math_path, allow_pickle=False) as math_npz:
                 legacy_report = PARITY.compare_block_components(
                     default_npz, math_npz, root, [0, 1], {"atol": .125, "rtol": .03125})
             self.assertTrue(all(row["representation"] == "legacy_strided_argsort_view"
@@ -2459,13 +2628,13 @@ class ParityHarnessTests(unittest.TestCase):
                 PARITY.validate_all_blocks_options(parser.parse_args(required + extra))
         enabled = parser.parse_args(required + ["--all-blocks-diagnostic", "1",
                                     "--all-blocks-reference-npz", "blocks.npz",
-                                    "--case", "eos_window_position_2"])
+                                                "--case", "eos_window_position_2"])
         PARITY.validate_all_blocks_options(enabled)
         with self.assertRaisesRegex(ValueError, "requires boundary rounding"):
             PARITY.validate_all_blocks_options(parser.parse_args(
                 required + ["--longcat-bf16-hidden-surface-rounding", "1"]))
         both = parser.parse_args(required + ["--longcat-bf16-boundary-rounding", "1",
-                                              "--longcat-bf16-hidden-surface-rounding", "1"])
+                                             "--longcat-bf16-hidden-surface-rounding", "1"])
         PARITY.validate_all_blocks_options(both)
 
     def test_component_replay_mode_forbids_capture_invocation_arguments(self):
@@ -2502,6 +2671,7 @@ class ParityHarnessTests(unittest.TestCase):
                       ["--block-components-diagnostic", "1"]):
             with self.assertRaises(ValueError):
                 PARITY.validate_all_blocks_options(parser.parse_args(window + extra))
+
         def without_pair(argv, option):
             index = argv.index(option)
             return argv[:index] + argv[index + 2:]
@@ -2518,7 +2688,8 @@ class ParityHarnessTests(unittest.TestCase):
 
     def test_component_window_replay_metadata_binds_exact_window(self):
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td); path = root / "capture-run-metadata.json"
+            root = Path(td)
+            path = root / "capture-run-metadata.json"
             payload = {"block_components_diagnostic": False,
                        "block_components_window_diagnostic": True,
                        "block_components_window_start": 10,
@@ -2531,7 +2702,8 @@ class ParityHarnessTests(unittest.TestCase):
                                ("block_components_window_count", 2),
                                ("block_components_window_diagnostic", False),
                                ("block_components_diagnostic", True)):
-                invalid = dict(payload); invalid[key] = value
+                invalid = dict(payload)
+                invalid[key] = value
                 path.write_text(json.dumps(invalid), encoding="ascii")
                 with self.subTest(key=key), self.assertRaises(ValueError):
                     PARITY.validate_component_window_capture_metadata(root, 10, 4)
@@ -2539,7 +2711,8 @@ class ParityHarnessTests(unittest.TestCase):
                                          "longcat_bf16_hidden_surface_rounding": True},
                                     {"longcat_bf16_boundary_rounding": False,
                                      "longcat_bf16_hidden_surface_rounding": True}):
-                invalid = dict(payload); invalid.update(invalid_profile)
+                invalid = dict(payload)
+                invalid.update(invalid_profile)
                 if not invalid_profile: invalid.pop("longcat_bf16_boundary_rounding")
                 path.write_text(json.dumps(invalid), encoding="ascii")
                 with self.assertRaises(ValueError):
@@ -2685,6 +2858,7 @@ class ParityHarnessTests(unittest.TestCase):
             files = ["finite", "invalid", "integer"]
             data = {"finite": np.array([1.0]), "invalid": np.array([0.0, np.nan]),
                     "integer": np.array([1], dtype=np.int64)}
+
             def __getitem__(self, key): return self.data[key]
         with tempfile.TemporaryDirectory() as td:
             report = PARITY.validate_reference_finiteness(Fixture(), Path(td))
@@ -2786,12 +2960,16 @@ class ParityHarnessTests(unittest.TestCase):
     def test_case_manifest_preserves_reference_inputs_and_multiple_cases(self):
         class FakeNPZ:
             files = []
+
             def __init__(self):
                 self.data = {}
                 for case in ("a", "bos_left_zero"):
                     for suffix, value in {"input_ids": [[0, 7]], "attention_mask": [[0, 1]],
                                           "position_ids": [[1, 0]], "cache_position": [0, 1]}.items():
-                        key = f"{case}/{suffix}"; self.files.append(key); self.data[key] = np.asarray(value)
+                        key = f"{case}/{suffix}"
+                        self.files.append(key)
+                        self.data[key] = np.asarray(value)
+
             def __getitem__(self, key): return self.data[key]
         with tempfile.TemporaryDirectory() as td:
             out = Path(td) / "cases.json"

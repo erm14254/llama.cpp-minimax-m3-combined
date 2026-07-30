@@ -17,6 +17,7 @@ class LongCatNextInventoryTests(unittest.TestCase):
         self.assertEqual(inventory.CORE_VOCAB_SIZE, 131125)
         self.assertEqual(inventory.SOURCE_VOCAB_SIZE, 282624)
         self.assertEqual((inventory.IGNORED_START, inventory.IGNORED_COUNT), (131072, 53))
+
     def names(self):
         names = {f"model.core.synthetic_{i}" for i in range(11143)}
         for prefix, count in inventory.MODAL_PREFIX_COUNTS.items():

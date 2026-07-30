@@ -5,7 +5,6 @@ import argparse
 import hashlib
 import importlib.metadata
 import json
-import os
 import importlib.util
 import platform
 import random
@@ -24,12 +23,14 @@ CONFIG_SHA256 = "9115e9785603b04382a45ebece9092235281f309f56f35eb4e43bcf53150b2a
 TOKENIZER_CONFIG_SHA256 = "22dddd0eb59965adf6e4861a7c8a9ed803595cd16bc86ed6e2d4ed915b9718d4"
 SEEDS = {"python": 20260725, "torch": 20260725, "numpy": 20260725}
 
+
 def load_core_reference():
     path = Path(__file__).with_name("core_reference.py")
     spec = importlib.util.spec_from_file_location("longcat_next_core_reference", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
 
 class FixtureError(ValueError):
     pass
@@ -240,7 +241,7 @@ def parse_args(argv=None):
     parser.add_argument("--tokenizer-config", type=Path)
     parser.add_argument("--output-dir", type=Path, default=Path("longcat-next-reference-output"))
     parser.add_argument("--mode", choices=("ngram", "inspect", "preflight", "core",
-                                            "core-worker", "core-diagnose", "core-validate"),
+                                           "core-worker", "core-diagnose", "core-validate"),
                         default="ngram")
     parser.add_argument("--model-dir", type=Path,
                         help="local official checkpoint for inspection/core fixtures; never downloaded")
@@ -350,8 +351,8 @@ def run(args):
                     args.runtime_profile, args.placement, args.model_dir,
                     args.flash_wheel_path)
                 return {"checkpoint": inspection, "dependencies": dependencies}, 0
-            fixture = (Path(__file__).resolve().parents[2] /
-                       "tests/fixtures/longcat-next/ngram-cases.json")
+            fixture = (Path(__file__).resolve().parents[2]
+                       / "tests/fixtures/longcat-next/ngram-cases.json")
             if args.mode == "core-worker":
                 return core.run_core_worker(args, fixture), 0
             if args.mode == "core-diagnose":
@@ -407,23 +408,25 @@ def main(argv=None):
         result, size = run(args)
     except (FixtureError, subprocess.CalledProcessError) as exc:
         if args.mode == "core-validate":
-            print(json.dumps({"schema_version": 2, "valid": False,
-                              "error": str(exc)}, indent=2, sort_keys=True))
+            sys.stdout.write(json.dumps({"schema_version": 2, "valid": False,
+                                         "error": str(exc)}, indent=2, sort_keys=True) + "\n")
             return 1
-        print(f"fixture error: {exc}", file=sys.stderr)
+        sys.stderr.write(f"fixture error: {exc}\n")
         return 1
     if args.mode in ("inspect", "preflight"):
-        print(json.dumps(result, indent=2, sort_keys=True))
+        sys.stdout.write(json.dumps(result, indent=2, sort_keys=True) + "\n")
     elif args.mode == "core-validate":
-        print(json.dumps(result, indent=2, sort_keys=True))
+        sys.stdout.write(json.dumps(result, indent=2, sort_keys=True) + "\n")
     elif args.mode in ("core", "core-worker", "core-diagnose"):
         if isinstance(result, dict):
-            print(json.dumps({name: str(path) for name, path in result.items()}, sort_keys=True))
+            sys.stdout.write(json.dumps({name: str(path) for name, path in result.items()}, sort_keys=True) + "\n")
         else:
-            print(json.dumps({"output": str(result)}, sort_keys=True))
+            sys.stdout.write(json.dumps({"output": str(result)}, sort_keys=True) + "\n")
     else:
-        print(json.dumps({"fixture": str(result), "bytes": size, "sha256": sha256(result)}, sort_keys=True))
+        sys.stdout.write(json.dumps({"fixture": str(result), "bytes": size,
+                                     "sha256": sha256(result)}, sort_keys=True) + "\n")
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

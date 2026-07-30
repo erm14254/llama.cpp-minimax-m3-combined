@@ -7,7 +7,6 @@ import importlib.metadata
 import io
 import inspect
 import json
-import math
 import os
 import random
 import re
@@ -70,6 +69,7 @@ EXPECTED_DEPENDENCIES = {
     "numpy": ("numpy", None),
 }
 RUNTIME_PROFILES = ("official-pinned", "blackwell-compatible")
+
 
 class CoreFixtureError(ValueError):
     pass
@@ -137,8 +137,8 @@ def validate_checkpoint(model_dir, hash_shards=False):
             "visual_generation_config must contain custom_params")
     require(visual_custom.get("token_h") == 37 and visual_custom.get("token_w") == 37,
             "visual token_h and token_w must both be 37")
-    require(visual_custom.get("anyres_prefix") ==
-            "<longcat_img_token_size>{h} {w}</longcat_img_token_size>",
+    require(visual_custom.get("anyres_prefix")
+            == "<longcat_img_token_size>{h} {w}</longcat_img_token_size>",
             "visual anyres_prefix does not match the pinned official value")
     require(audio.get("audio_parallel_decoding") is False,
             "audio_parallel_decoding must be false")
@@ -164,7 +164,7 @@ def validate_checkpoint(model_dir, hash_shards=False):
             "shards": [{"name": name, "bytes": shard_sizes[name],
                         **({"sha256": hashes[name]} if hashes else {})} for name in shards],
             "vocabulary_extents": {field: config[field] for field in
-                ("text_vocab_size", "text_vocab_plus_multimodal_special_token_size", "vocab_size")},
+                                   ("text_vocab_size", "text_vocab_plus_multimodal_special_token_size", "vocab_size")},
             "mtp_tensor_count": 0, "custom_code_sha256": code_hashes,
             "config_sha256": file_sha256(root / "config.json"),
             "generation_config_sha256": identities["generation_config.json"],
@@ -226,8 +226,8 @@ def runtime_probe(packages, runtime_profile, placement):
             vision_pair = version_pair(packages["torchvision"]["installed_version"])
             require(audio_pair == torch_pair,
                     f"torchaudio {audio_pair} does not match torch {torch_pair}")
-            require(vision_pair is not None and torch_pair is not None and
-                    vision_pair[0] == 0 and vision_pair[1] == torch_pair[1] + 15,
+            require(vision_pair is not None and torch_pair is not None
+                    and vision_pair[0] == 0 and vision_pair[1] == torch_pair[1] + 15,
                     f"torchvision {vision_pair} does not match torch {torch_pair}")
     except Exception as exc:
         report["ok"] = False
@@ -309,9 +309,9 @@ def windows_flash_abi(wheel_filename, wheel_tags, compatible_tags, torch_version
         "blackwell_kernel_build": ".blackwell" in value,
         "cuda_build_matches": wheel_cuda is not None and wheel_cuda == cuda_version,
         "torch_build_matches": wheel_torch is not None and wheel_torch == normalized_torch,
-        "cxx11_abi_matches": (wheel_cxx11_abi is not None and
-                              torch_cxx11_abi is not None and
-                              wheel_cxx11_abi == bool(torch_cxx11_abi)),
+        "cxx11_abi_matches": (wheel_cxx11_abi is not None
+                              and torch_cxx11_abi is not None
+                              and wheel_cxx11_abi == bool(torch_cxx11_abi)),
         "python_abi_platform_tag_matches": bool(matching_tags),
     }
     return {"ok": all(checks.values()), "checks": checks,
@@ -386,9 +386,9 @@ def flash_attention_probe(runtime, placement, runtime_profile, flash_wheel_path=
         elif platform_module.system() == "Windows":
             abi = windows_flash_distribution_report(distribution, runtime, flash_wheel_path)
             report["windows_wheel_abi"] = abi
-            require(abi["ok"], "native Windows FlashAttention wheel ABI does not match " +
-                    "the executing Python, PyTorch, CUDA, platform, and sm_120 device: " +
-                    json.dumps(abi, sort_keys=True))
+            require(abi["ok"], "native Windows FlashAttention wheel ABI does not match "
+                    + "the executing Python, PyTorch, CUDA, platform, and sm_120 device: "
+                    + json.dumps(abi, sort_keys=True))
             report.update({"provenance": "community/unofficial native Windows build",
                            "wsl_required": False})
         report.update(perform_flash_attention_smoke(torch, flash_attn))
@@ -422,8 +422,8 @@ def dependency_preflight(runtime_profile="official-pinned", placement="cpu", mod
             row["import_ok"] = True
         except Exception as exc:
             row["error"] = f"import failed: {type(exc).__name__}: {exc}"
-        exact_runtime = not (runtime_profile == "blackwell-compatible" and
-                             module_name in ("torch", "torchvision", "torchaudio", "flash_attn"))
+        exact_runtime = not (runtime_profile == "blackwell-compatible"
+                             and module_name in ("torch", "torchvision", "torchaudio", "flash_attn"))
         row["version_ok"] = expected is None or not exact_runtime or row["installed_version"] == expected
         row["official_pinned_version"] = expected
         row["runtime_profile_allows_departure"] = not exact_runtime
@@ -445,8 +445,8 @@ def dependency_preflight(runtime_profile="official-pinned", placement="cpu", mod
     else:
         custom_code = {"ok": False, "skipped": True,
                        "reason": "runtime and FlashAttention preflight must pass first"}
-    ok = (packages_ok and runtime["ok"] and flash["ok"] and
-          (custom_code is None or custom_code["ok"]))
+    ok = (packages_ok and runtime["ok"] and flash["ok"]
+          and (custom_code is None or custom_code["ok"]))
     return {"ok": ok, "runtime_profile": runtime_profile, "packages": packages,
             "runtime": runtime, "flash_attention": flash, "custom_code": custom_code}
 
@@ -454,8 +454,8 @@ def dependency_preflight(runtime_profile="official-pinned", placement="cpu", mod
 def require_dependency_preflight(runtime_profile="official-pinned", placement="cpu", model_dir=None,
                                  flash_wheel_path=None):
     report = dependency_preflight(runtime_profile, placement, model_dir, flash_wheel_path)
-    require(report["ok"], "dependency preflight failed; do not load model weights:\n" +
-            json.dumps(report, indent=2, sort_keys=True))
+    require(report["ok"], "dependency preflight failed; do not load model weights:\n"
+            + json.dumps(report, indent=2, sort_keys=True))
     return report
 
 
@@ -559,8 +559,8 @@ def validate_ordinary_device_map(device_map, model, router_prefixes):
             "empty root device-map key is only valid as the sole assignment", ["", keys[1]])
     for index, left in enumerate(keys):
         for right in keys[index + 1:]:
-            if ((left and right.startswith(left + ".")) or
-                    (right and left.startswith(right + "."))):
+            if ((left and right.startswith(left + "."))
+                    or (right and left.startswith(right + "."))):
                 pair = [left, right]
                 raise DeviceMapValidationError(
                     f"overlapping device-map assignments: {left!r} and {right!r}", pair)
@@ -683,10 +683,11 @@ def _audit_router_placement(model, placement, output_path, policy=None, expected
     device_map = getattr(model, "hf_device_map", {}) or {}
     map_validation = validate_ordinary_device_map(device_map, model, prefixes)
     policy_map_matches = policy is None or policy.get("ordinary_device_map") == device_map
-    preload_verified = (placement != "auto" or
-                        (policy is not None and
-                         policy.get("preload_module_classes") == [ROUTER_PRELOAD_CLASS] and
-                         policy.get("router_no_split_class") == ROUTER_PRELOAD_CLASS))
+    preload_verified = (placement != "auto"
+                        or (policy is not None
+
+                            and policy.get("preload_module_classes") == [ROUTER_PRELOAD_CLASS]
+                            and policy.get("router_no_split_class") == ROUTER_PRELOAD_CLASS))
     for logical, prefix in enumerate(prefixes):
         router = modules[prefix]
         weight = router.classifier.weight
@@ -705,13 +706,14 @@ def _audit_router_placement(model, placement, output_path, policy=None, expected
         resident_cuda = str(governing_device) in ("0", "cuda", "cuda:0")
         resident_cpu = placement == "cpu" and str(governing_device) == "cpu"
         offloaded = str(governing_device) in ("cpu", "disk")
-        resident_safe = (((resident_cuda and weight_device == "cuda" and correction_device == "cuda") or
-                          (resident_cpu and weight_device == "cpu" and correction_device == "cpu")) and
-                         not bool(getattr(weight, "is_meta", False)) and
-                         not bool(getattr(correction, "is_meta", False)))
-        offloaded_safe = (offloaded and parent_hook is not None and
-                          str(hook_execution) in ("0", "cuda", "cuda:0") and
-                          hook_place_submodules is True and preload_verified)
+        resident_safe = (((resident_cuda and weight_device == "cuda" and correction_device == "cuda")
+                          or (resident_cpu and weight_device == "cpu" and correction_device == "cpu"))
+
+                         and not bool(getattr(weight, "is_meta", False))
+                         and not bool(getattr(correction, "is_meta", False)))
+        offloaded_safe = (offloaded and parent_hook is not None
+                          and str(hook_execution) in ("0", "cuda", "cuda:0")
+                          and hook_place_submodules is True and preload_verified)
         direct_safe = resident_safe or offloaded_safe
         row = {
             "logical_layer": logical, "physical_block": 2 * logical,
@@ -802,8 +804,8 @@ def dispatch_auto_model_with_preload(model, model_dir, device_map, offload_dir, 
                 "offload_buffers", "dtype", "preload_module_classes"}
     signature = inspect.signature(dispatcher)
     require(required <= set(signature.parameters),
-            "Accelerate load_checkpoint_and_dispatch lacks required pinned parameters: " +
-            ", ".join(sorted(required - set(signature.parameters))))
+            "Accelerate load_checkpoint_and_dispatch lacks required pinned parameters: "
+            + ", ".join(sorted(required - set(signature.parameters))))
     try:
         model = dispatcher(
             model, checkpoint=str(model_dir), device_map=device_map,
@@ -912,8 +914,8 @@ def resolve_effective_greedy_policy(model, generation_config, overrides):
     resolved = {name: getattr(effective, name, None) for name in fields}
     resolved["use_model_defaults"] = overrides.get("use_model_defaults")
     require(resolved == overrides,
-            "effective generation policy is not the requested greedy policy: " +
-            json.dumps(resolved, sort_keys=True))
+            "effective generation policy is not the requested greedy policy: "
+            + json.dumps(resolved, sort_keys=True))
     return resolved
 
 
@@ -1154,6 +1156,7 @@ def write_core_outputs(output_dir, stem, arrays, metadata, reproducibility, max_
         temporary.replace(path)
     return paths
 
+
 def tensor_array(tensor, name="captured_tensor"):
     import numpy as np
     if isinstance(tensor, np.ndarray):
@@ -1235,7 +1238,6 @@ def normalize_block_component_array(name, array, token_count):
 
 
 def write_block_components_diagnostic(capture, report_dir, token_count, through=9):
-    import numpy as np
     expected = v2.block_component_names(through)
     require(sorted(capture) == sorted(expected),
             "block-component diagnostic inventory differs from exact 110-name contract")
@@ -1267,11 +1269,11 @@ def write_block_components_diagnostic(capture, report_dir, token_count, through=
 
 
 def write_block_components_window_diagnostic(capture, report_dir, token_count, start=10, count=4):
-    import numpy as np
     expected = v2.block_component_window_names(start, count)
     require(sorted(capture) == sorted(expected),
             "block-component window inventory differs from exact requested names")
-    arrays = {}; rows = []
+    arrays = {}
+    rows = []
     for name in expected:
         array, source_dtype = tensor_array(capture.pop(name), name)
         array = normalize_block_component_array(name, array, token_count)
@@ -1284,10 +1286,12 @@ def write_block_components_window_diagnostic(capture, report_dir, token_count, s
                      "source_torch_dtype": source_dtype,
                      "sha256": hashlib.sha256(array.tobytes(order="C")).hexdigest()})
         arrays[name] = array
-    root = Path(report_dir); root.mkdir(parents=True, exist_ok=True)
+    root = Path(report_dir)
+    root.mkdir(parents=True, exist_ok=True)
     npz_path = root / "block-components-window.npz"
     temporary = npz_path.with_name(npz_path.name + ".tmp")
-    temporary.write_bytes(deterministic_npz_bytes(arrays)); temporary.replace(npz_path)
+    temporary.write_bytes(deterministic_npz_bytes(arrays))
+    temporary.replace(npz_path)
     v2.atomic_json(root / "block-components-window.json", {
         "schema_version": 2, "accepted": False, "physical_block_start": start,
         "physical_block_count": count, "array_count": len(expected), "arrays": rows})
@@ -1423,19 +1427,19 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_
             "direct forward requires official multimodal generation status in text mode")
     try:
         with torch.inference_mode(), torch.autocast(device_type=device.type, enabled=False), \
-             v2.instrument_router_linear(torch) as router_session, \
-             v2.instrument_sdpa(torch, finite_checker, attention_backend) as sdpa_observation:
+                v2.instrument_router_linear(torch) as router_session, \
+                v2.instrument_sdpa(torch, finite_checker, attention_backend) as sdpa_observation:
             output = call_text_forward(model, {
-                    "input_ids": ids.clone(), "attention_mask": attention,
-                    "position_ids": positions, "cache_position": cache_position, "use_cache": False,
-                    "logits_to_keep": 1, "return_dict": True}, generation_context)
+                "input_ids": ids.clone(), "attention_mask": attention,
+                "position_ids": positions, "cache_position": cache_position, "use_cache": False,
+                "logits_to_keep": 1, "return_dict": True}, generation_context)
         if finite_checker is not None:
             finite_checker.sdpa_observation = sdpa_observation
             finite_checker.router_materialization = v2.router_materialization_summary(router_session)
-            require(finite_checker.router_materialization["router_invocation_count"] == 14 and
-                    finite_checker.router_materialization["logical_layers_observed"] == list(range(14)) and
-                    finite_checker.router_materialization["all_live_router_weights_materialized"] and
-                    finite_checker.router_materialization["all_live_correction_biases_materialized"],
+            require(finite_checker.router_materialization["router_invocation_count"] == 14
+                    and finite_checker.router_materialization["logical_layers_observed"] == list(range(14))
+                    and finite_checker.router_materialization["all_live_router_weights_materialized"]
+                    and finite_checker.router_materialization["all_live_correction_biases_materialized"],
                     "complete direct forward did not materialize all fourteen LongCat routers")
         if attention_backend == "eager":
             require(not sdpa_observation["calls"],
@@ -1677,8 +1681,8 @@ def run_core_worker_generation(args, weight_free_fixture, diagnostic=False):
                            {"package": name, "official": row["official_pinned_version"],
                             "installed": row["installed_version"]}
                            for name, row in dependency_report["packages"].items()
-                           if row["official_pinned_version"] is not None and
-                           row["installed_version"] != row["official_pinned_version"]]}
+                           if row["official_pinned_version"] is not None
+                           and row["installed_version"] != row["official_pinned_version"]]}
     reconstruction_reports = {}
     for name, value in runs[0].items():
         suffix = "/ngram_analytical_f32_max_absolute_error"
