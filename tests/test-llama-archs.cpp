@@ -419,6 +419,11 @@ static bool arch_supported(const llm_arch arch) {
     if (arch == LLM_ARCH_DEEPSEEK4) {
         return false;
     }
+    if (arch == LLM_ARCH_LONGCAT_FLASH_NGRAM ||
+            arch == LLM_ARCH_LONGCAT_NEXT) {
+        return false; // FIXME: generic synthetic fixture does not model
+                      // LongCat's mandatory MoE/ngram/vocabulary contract.
+    }
 
     // FIXME some models are segfaulting with WebGPU:
 #ifdef GGML_USE_WEBGPU
