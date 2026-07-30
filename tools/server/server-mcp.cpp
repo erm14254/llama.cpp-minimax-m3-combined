@@ -817,4 +817,3 @@ std::shared_ptr<server_mcp_transport> server_mcp::get_or_create(const std::strin
 
     return result;
 }
-

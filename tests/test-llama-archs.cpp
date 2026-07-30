@@ -152,13 +152,19 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
         }
         ms.add_kv(LLM_KV_ATTENTION_HEAD_COUNT, n_head_per_layer);
         ms.add_kv(LLM_KV_ATTENTION_HEAD_COUNT_KV, n_head_per_layer);
+    } else if (arch == LLM_ARCH_MINIMAX_M3) {
+        ms.add_kv(LLM_KV_ATTENTION_HEAD_COUNT, n_head);
+        ms.add_kv(LLM_KV_ATTENTION_HEAD_COUNT_KV, uint32_t(1));
     } else {
         ms.add_kv(LLM_KV_ATTENTION_HEAD_COUNT, n_head);
         ms.add_kv(LLM_KV_ATTENTION_HEAD_COUNT_KV, n_head);
     }
 
     ms.add_kv(LLM_KV_ATTENTION_MAX_ALIBI_BIAS, 8.0f);
-    if (arch == LLM_ARCH_DEEPSEEK2
+    if (arch == LLM_ARCH_MINIMAX_M3) {
+        ms.add_kv(LLM_KV_ATTENTION_KEY_LENGTH,       n_embd_head);
+        ms.add_kv(LLM_KV_ATTENTION_VALUE_LENGTH,     n_embd_head);
+    } else if (arch == LLM_ARCH_DEEPSEEK2
             || arch == LLM_ARCH_DEEPSEEK32
             || arch == LLM_ARCH_GLM_DSA
             || arch == LLM_ARCH_KIMI_LINEAR
@@ -426,6 +432,9 @@ static bool arch_supported(const llm_arch arch) {
     }
     if (arch == LLM_ARCH_DEEPSEEK4) {
         return false;
+    }
+    if (arch == LLM_ARCH_MINIMAX_M3) {
+        return false; // TODO no-weight MSA graph fixture
     }
 
     // FIXME: these hit scheduler/view-backed-output issues with WebGPU on CI.

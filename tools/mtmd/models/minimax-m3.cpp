@@ -11,7 +11,7 @@ ggml_tensor * clip_graph_minimax_m3::apply_rope(
     GGML_ASSERT(x->nb[0] == es);
     GGML_ASSERT(3 * axd <= dh);
 
-    const float th  = hparams.rope_theta;
+    const float th = hparams.rope_theta;
 
     // layout of x is [t, h, w, pad]
     // t is unrotated, h and w are rotated, pad is unrotated
@@ -19,17 +19,19 @@ ggml_tensor * clip_graph_minimax_m3::apply_rope(
     auto sl = [&](int off, int n) {
         return ggml_cont(ctx0, ggml_view_3d(ctx0, x, n, Hn, P, x->nb[1], x->nb[2], (size_t) off * es));
     };
+
     ggml_tensor * t = sl(0,       axd);
     ggml_tensor * h = sl(axd,     axd);
     ggml_tensor * w = sl(2 * axd, dh - 2 * axd); // w + pad
 
     h = ggml_rope_ext(ctx0, h, pos_h, nullptr, axd, GGML_ROPE_TYPE_NEOX, 0, th, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
     w = ggml_rope_ext(ctx0, w, pos_w, nullptr, axd, GGML_ROPE_TYPE_NEOX, 0, th, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
+
     return ggml_concat(ctx0, ggml_concat(ctx0, t, h, 0), w, 0);
 }
 
 ggml_cgraph * clip_graph_minimax_m3::build() {
-    GGML_ASSERT(model.patch_bias     == nullptr);
+    GGML_ASSERT(model.patch_bias == nullptr);
     GGML_ASSERT(model.class_embedding == nullptr);
     GGML_ASSERT(model.patch_embeddings_0 && model.patch_embeddings_1);
     GGML_ASSERT(model.mm_1_w && model.mm_2_w);
@@ -56,9 +58,12 @@ ggml_cgraph * clip_graph_minimax_m3::build() {
 
     // t (time axis) is always 0 for now, so we leave it unrotated
     ggml_tensor * pos_h = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_pos);
-    ggml_set_name(pos_h, "minimax_pos_h"); ggml_set_input(pos_h);
+    ggml_set_name(pos_h, "minimax_pos_h");
+    ggml_set_input(pos_h);
+
     ggml_tensor * pos_w = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_pos);
-    ggml_set_name(pos_w, "minimax_pos_w"); ggml_set_input(pos_w);
+    ggml_set_name(pos_w, "minimax_pos_w");
+    ggml_set_input(pos_w);
 
     ggml_tensor * inpL = build_vit(
         inp, n_pos, NORM_TYPE_NORMAL, FFN_GELU_ERF, nullptr,
@@ -68,17 +73,32 @@ ggml_cgraph * clip_graph_minimax_m3::build() {
 
     // projector
     ggml_tensor * emb = inpL;
-    emb = build_ffn(emb, model.mm_1_w, model.mm_1_b,
-                    nullptr, nullptr,
-                    model.mm_2_w, model.mm_2_b, FFN_GELU_ERF, -1);
+    emb = build_ffn(
+        emb,
+        model.mm_1_w,
+        model.mm_1_b,
+        nullptr,
+        nullptr,
+        model.mm_2_w,
+        model.mm_2_b,
+        FFN_GELU_ERF,
+        -1);
 
     const int64_t proj = emb->ne[0];
     emb = ggml_reshape_2d(ctx0, emb, proj * merge * merge, n_pos / (merge * merge));
 
-    emb = build_ffn(emb, model.mm_merger_fc1_w, model.mm_merger_fc1_b,
-                    nullptr, nullptr,
-                    model.mm_merger_fc2_w, model.mm_merger_fc2_b, FFN_GELU_ERF, -1);
+    emb = build_ffn(
+        emb,
+        model.mm_merger_fc1_w,
+        model.mm_merger_fc1_b,
+        nullptr,
+        nullptr,
+        model.mm_merger_fc2_w,
+        model.mm_merger_fc2_b,
+        FFN_GELU_ERF,
+        -1);
 
     ggml_build_forward_expand(gf, emb);
+
     return gf;
 }
