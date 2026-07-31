@@ -76,7 +76,7 @@ static llama_ubatch make_ubatch(
 
 class production_ngram_runner {
 public:
-    production_ngram_runner() {
+    production_ngram_runner(int32_t ignored_start = 0, int32_t ignored_count = 0) {
         struct ggml_init_params params = {
             /* .mem_size   = */ ggml_tensor_overhead() * 32,
             /* .mem_buffer = */ nullptr,
@@ -87,9 +87,13 @@ public:
 
         input = std::make_unique<llm_graph_input_ngram>(
             LONGCAT_EMBEDDERS, LONGCAT_NEIGHBOR, LONGCAT_SPLIT,
-            LONGCAT_VOCAB, LONGCAT_M, LONGCAT_EOS, &history);
+            LONGCAT_VOCAB, LONGCAT_M, LONGCAT_EOS, ignored_start, ignored_count, &history);
         for (int i = 0; i < LONGCAT_EMBEDDERS; ++i) {
             input->ngram_ids[i] = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 16);
+            input->lookup_masks[i] = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 16);
+        }
+        if (ignored_count > 0) {
+            input->preserve_base = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 16);
         }
         backend = ggml_backend_cpu_init();
         GGML_ASSERT(backend != nullptr);
@@ -107,6 +111,34 @@ public:
         const auto ubatch = make_ubatch(std::vector<int32_t>{ token }, std::vector<int32_t>{ pos }, std::vector<int32_t>{ seq_id });
         input->set_input(&ubatch);
         return read_row(0);
+    }
+
+    std::array<int32_t, LONGCAT_EMBEDDERS> append_all(int32_t token, int32_t pos, int32_t seq_id = 0) {
+        const auto ubatch = make_ubatch(std::vector<int32_t>{ token }, std::vector<int32_t>{ pos }, std::vector<int32_t>{ seq_id });
+        input->set_input(&ubatch);
+        std::array<int32_t, LONGCAT_EMBEDDERS> result = {};
+        for (int i = 0; i < LONGCAT_EMBEDDERS; ++i) {
+            ggml_backend_tensor_get(input->ngram_ids[i], &result[i], 0, sizeof(result[i]));
+        }
+        return result;
+    }
+
+    float preserve_mask() const {
+        float result = 0.0f;
+        ggml_backend_tensor_get(input->preserve_base, &result, 0, sizeof(result));
+        return result;
+    }
+
+    float lookup_mask(int table) const {
+        float result = -1.0f;
+        ggml_backend_tensor_get(input->lookup_masks[table], &result, 0, sizeof(result));
+        return result;
+    }
+
+    int32_t hash_id(int table) const {
+        int32_t result = -1;
+        ggml_backend_tensor_get(input->ngram_ids[table], &result, 0, sizeof(result));
+        return result;
     }
 
     std::array<int32_t, 3> append_many(
@@ -138,6 +170,19 @@ public:
         const auto ubatch = make_ubatch(tokens, positions, seq_ids);
         input->set_input(&ubatch);
         return read_row(pos);
+    }
+
+    std::array<int32_t, LONGCAT_EMBEDDERS> run_prefill_all(const std::vector<int32_t> & tokens, int pos, int32_t seq_id = 0) {
+        std::vector<int32_t> positions(tokens.size());
+        std::vector<int32_t> seq_ids(tokens.size(), seq_id);
+        for (size_t i = 0; i < tokens.size(); ++i) positions[i] = (int32_t) i;
+        const auto ubatch = make_ubatch(tokens, positions, seq_ids);
+        input->set_input(&ubatch);
+        std::array<int32_t, LONGCAT_EMBEDDERS> result = {};
+        for (int i = 0; i < LONGCAT_EMBEDDERS; ++i) {
+            ggml_backend_tensor_get(input->ngram_ids[i], &result[i], pos * sizeof(int32_t), sizeof(int32_t));
+        }
+        return result;
     }
 
     void seed_history(int32_t seq_id, const std::vector<std::pair<llama_pos, llama_token>> & entries) {
@@ -257,8 +302,94 @@ static void test_production_ngram(testing & t) {
     t.assert_equal("shared sequence history updated b", std::string("[0:10,1:11,2:12,3:13]"), shared.history_trace(1));
 }
 
+static void test_longcat_next_ignored_interval(testing & t) {
+    for (int32_t token = 131072; token < 131125; ++token) {
+        production_ngram_runner runner(131072, 53);
+        const auto hashes = runner.append_all(token, 0);
+        for (int i = 0; i < LONGCAT_EMBEDDERS; ++i) {
+            t.assert_equal("ignored token hash zero", 0, hashes[i]);
+        }
+        t.assert_equal("ignored token preserves base", 1.0f, runner.preserve_mask());
+    }
+
+    production_ngram_runner literal_zero(131072, 53);
+    const auto zero_hashes = literal_zero.append_all(0, 0);
+    for (int i = 0; i < LONGCAT_EMBEDDERS; ++i) {
+        t.assert_equal("literal zero hash zero", 0, zero_hashes[i]);
+        t.assert_equal("literal zero lookup masked", 0.0f, literal_zero.lookup_mask(i));
+    }
+    t.assert_equal("literal zero still scales", 0.0f, literal_zero.preserve_mask());
+
+    production_ngram_runner max_text(131072, 53);
+    max_text.append_all(131071, 0);
+    t.assert_equal("max text token still scales", 0.0f, max_text.preserve_mask());
+
+    // Literal zero and normalized ignored controls terminate every visible
+    // order, not merely the immediately preceding bigram.
+    for (int32_t boundary : { 0, 131072, 131124 }) {
+        production_ngram_runner after(131072, 53);
+        const auto ids = after.run_prefill_all({ 19, boundary, 29, 31, 37 }, 2);
+        for (int split = 0; split < 4; ++split) {
+            t.assert_equal("order-3 stops at zero boundary", 29, ids[4 + split]);
+            t.assert_equal("order-4 stops at zero boundary", 29, ids[8 + split]);
+        }
+        production_ngram_runner incremental(131072, 53);
+        std::array<int32_t, LONGCAT_EMBEDDERS> incremental_ids = {};
+        const std::vector<int32_t> sequence = { 19, boundary, 29, 31, 37 };
+        for (size_t pos = 0; pos < sequence.size(); ++pos) {
+            incremental_ids = incremental.append_all(sequence[pos], pos);
+        }
+        production_ngram_runner prompt(131072, 53);
+        const auto prompt_ids = prompt.run_prefill_all(sequence, sequence.size() - 1);
+        for (int table = 0; table < LONGCAT_EMBEDDERS; ++table) {
+            t.assert_equal("prompt and incremental all-table equivalence", prompt_ids[table], incremental_ids[table]);
+        }
+    }
+}
+
+static float execute_masked_projection(int32_t id, float lookup_mask) {
+    ggml_init_params params = { ggml_tensor_overhead() * 16 + ggml_graph_overhead(), nullptr, true };
+    ggml_context * ctx = ggml_init(params);
+    ggml_tensor * table = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 1, 2);
+    ggml_tensor * proj = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 1, 1);
+    ggml_tensor * ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
+    ggml_tensor * mask = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1);
+    ggml_tensor * out = ggml_mul(ctx, ggml_mul_mat(ctx, proj, ggml_get_rows(ctx, table, ids)),
+        ggml_reshape_2d(ctx, mask, 1, 1));
+    ggml_cgraph * graph = ggml_new_graph(ctx);
+    ggml_build_forward_expand(graph, out);
+    ggml_backend_t backend = ggml_backend_cpu_init();
+    ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
+    const float table_data[] = { 123.0f, 7.0f };
+    const float one = 1.0f;
+    ggml_backend_tensor_set(table, table_data, 0, sizeof(table_data));
+    ggml_backend_tensor_set(proj, &one, 0, sizeof(one));
+    ggml_backend_tensor_set(ids, &id, 0, sizeof(id));
+    ggml_backend_tensor_set(mask, &lookup_mask, 0, sizeof(lookup_mask));
+    GGML_ASSERT(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
+    float result;
+    ggml_backend_tensor_get(out, &result, 0, sizeof(result));
+    ggml_backend_buffer_free(buffer);
+    ggml_backend_free(backend);
+    ggml_free(ctx);
+    return result;
+}
+
+static void test_zero_hash_projection_mask(testing & t) {
+    production_ngram_runner zero(131072, 53);
+    zero.append_all(0, 0);
+    for (int table = 0; table < LONGCAT_EMBEDDERS; ++table) {
+        t.assert_equal("row zero deliberately nonzero but masked", 0.0f,
+            execute_masked_projection(zero.hash_id(table), zero.lookup_mask(table)));
+        t.assert_equal("nonzero hash keeps correct row for every table", 7.0f,
+            execute_masked_projection(1, 1.0f));
+    }
+}
+
 int main() {
     testing t(std::cout);
     t.test("longcat production ngram", test_production_ngram);
+    t.test("longcat-next ignored interval", test_longcat_next_ignored_interval);
+    t.test("longcat-next zero hash projection mask", test_zero_hash_projection_mask);
     return t.summary();
 }

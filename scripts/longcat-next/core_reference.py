@@ -5,15 +5,17 @@ import hashlib
 import importlib
 import importlib.metadata
 import io
+import inspect
 import json
-import math
 import os
 import random
 import re
 import sys
 import zipfile
+import importlib.util
 from copy import deepcopy
 from pathlib import Path
+from typing import Any, cast
 from urllib.parse import unquote, urlparse
 
 EXPECTED_TENSORS = 13450
@@ -22,7 +24,13 @@ EXPECTED_SHARDS = 15
 EXPECTED_SHARD_BYTES = 150827115056
 EXPECTED_TRANSFORMERS = "4.57.6"
 OFFICIAL_FLASH_ATTN = "2.7.4.post1"
-CORE_SCHEMA_VERSION = 1
+CORE_SCHEMA_VERSION = 2
+
+_V2_SPEC = importlib.util.spec_from_file_location(
+    "longcat_next_core_reference_v2", Path(__file__).with_name("core_reference_v2.py"))
+assert _V2_SPEC is not None and _V2_SPEC.loader is not None
+v2: Any = importlib.util.module_from_spec(_V2_SPEC)
+_V2_SPEC.loader.exec_module(v2)
 REQUIRED_FILES = (
     "config.json", "tokenizer_config.json", "tokenizer.json",
     "generation_config.json",
@@ -63,6 +71,7 @@ EXPECTED_DEPENDENCIES = {
     "numpy": ("numpy", None),
 }
 RUNTIME_PROFILES = ("official-pinned", "blackwell-compatible")
+
 
 class CoreFixtureError(ValueError):
     pass
@@ -130,8 +139,8 @@ def validate_checkpoint(model_dir, hash_shards=False):
             "visual_generation_config must contain custom_params")
     require(visual_custom.get("token_h") == 37 and visual_custom.get("token_w") == 37,
             "visual token_h and token_w must both be 37")
-    require(visual_custom.get("anyres_prefix") ==
-            "<longcat_img_token_size>{h} {w}</longcat_img_token_size>",
+    require(visual_custom.get("anyres_prefix")
+            == "<longcat_img_token_size>{h} {w}</longcat_img_token_size>",
             "visual anyres_prefix does not match the pinned official value")
     require(audio.get("audio_parallel_decoding") is False,
             "audio_parallel_decoding must be false")
@@ -157,7 +166,7 @@ def validate_checkpoint(model_dir, hash_shards=False):
             "shards": [{"name": name, "bytes": shard_sizes[name],
                         **({"sha256": hashes[name]} if hashes else {})} for name in shards],
             "vocabulary_extents": {field: config[field] for field in
-                ("text_vocab_size", "text_vocab_plus_multimodal_special_token_size", "vocab_size")},
+                                   ("text_vocab_size", "text_vocab_plus_multimodal_special_token_size", "vocab_size")},
             "mtp_tensor_count": 0, "custom_code_sha256": code_hashes,
             "config_sha256": file_sha256(root / "config.json"),
             "generation_config_sha256": identities["generation_config.json"],
@@ -171,12 +180,12 @@ def version_pair(value):
 
 
 def runtime_probe(packages, runtime_profile, placement):
-    report = {"ok": True, "operating_system": os.name,
-              "platform": __import__("platform").platform(),
-              "python_version": __import__("platform").python_version(),
-              "python_implementation": __import__("platform").python_implementation(),
-              "python_executable": sys.executable,
-              "cuda_selected": placement in ("auto", "cuda")}
+    report: dict[str, Any] = {"ok": True, "operating_system": os.name,
+                              "platform": __import__("platform").platform(),
+                              "python_version": __import__("platform").python_version(),
+                              "python_implementation": __import__("platform").python_implementation(),
+                              "python_executable": sys.executable,
+                              "cuda_selected": placement in ("auto", "cuda")}
     try:
         torch = importlib.import_module("torch")
         report.update({"torch_version": getattr(torch, "__version__", None),
@@ -219,8 +228,8 @@ def runtime_probe(packages, runtime_profile, placement):
             vision_pair = version_pair(packages["torchvision"]["installed_version"])
             require(audio_pair == torch_pair,
                     f"torchaudio {audio_pair} does not match torch {torch_pair}")
-            require(vision_pair is not None and torch_pair is not None and
-                    vision_pair[0] == 0 and vision_pair[1] == torch_pair[1] + 15,
+            require(vision_pair is not None and torch_pair is not None
+                    and vision_pair[0] == 0 and vision_pair[1] == torch_pair[1] + 15,
                     f"torchvision {vision_pair} does not match torch {torch_pair}")
     except Exception as exc:
         report["ok"] = False
@@ -229,7 +238,7 @@ def runtime_probe(packages, runtime_profile, placement):
 
 
 def import_local_custom_classes(model_dir):
-    report = {"ok": False, "classes": {}, "error": None}
+    report: dict[str, Any] = {"ok": False, "classes": {}, "error": None}
     try:
         from transformers.dynamic_module_utils import get_class_from_dynamic_module
         for reference in ("configuration_longcat_next.LongcatNextConfig",
@@ -302,9 +311,9 @@ def windows_flash_abi(wheel_filename, wheel_tags, compatible_tags, torch_version
         "blackwell_kernel_build": ".blackwell" in value,
         "cuda_build_matches": wheel_cuda is not None and wheel_cuda == cuda_version,
         "torch_build_matches": wheel_torch is not None and wheel_torch == normalized_torch,
-        "cxx11_abi_matches": (wheel_cxx11_abi is not None and
-                              torch_cxx11_abi is not None and
-                              wheel_cxx11_abi == bool(torch_cxx11_abi)),
+        "cxx11_abi_matches": (wheel_cxx11_abi is not None
+                              and torch_cxx11_abi is not None
+                              and wheel_cxx11_abi == bool(torch_cxx11_abi)),
         "python_abi_platform_tag_matches": bool(matching_tags),
     }
     return {"ok": all(checks.values()), "checks": checks,
@@ -359,9 +368,9 @@ def perform_flash_attention_smoke(torch, flash_attn):
 
 def flash_attention_probe(runtime, placement, runtime_profile, flash_wheel_path=None):
     platform_module = __import__("platform")
-    report = {"ok": True, "platform": platform_module.platform(),
-              "operating_system": platform_module.system(), "operation": "not requested",
-              "official_pinned_version": OFFICIAL_FLASH_ATTN}
+    report: dict[str, Any] = {"ok": True, "platform": platform_module.platform(),
+                              "operating_system": platform_module.system(), "operation": "not requested",
+                              "official_pinned_version": OFFICIAL_FLASH_ATTN}
     if placement not in ("auto", "cuda"):
         return report
     try:
@@ -379,9 +388,9 @@ def flash_attention_probe(runtime, placement, runtime_profile, flash_wheel_path=
         elif platform_module.system() == "Windows":
             abi = windows_flash_distribution_report(distribution, runtime, flash_wheel_path)
             report["windows_wheel_abi"] = abi
-            require(abi["ok"], "native Windows FlashAttention wheel ABI does not match " +
-                    "the executing Python, PyTorch, CUDA, platform, and sm_120 device: " +
-                    json.dumps(abi, sort_keys=True))
+            require(abi["ok"], "native Windows FlashAttention wheel ABI does not match "
+                    + "the executing Python, PyTorch, CUDA, platform, and sm_120 device: "
+                    + json.dumps(abi, sort_keys=True))
             report.update({"provenance": "community/unofficial native Windows build",
                            "wsl_required": False})
         report.update(perform_flash_attention_smoke(torch, flash_attn))
@@ -415,8 +424,8 @@ def dependency_preflight(runtime_profile="official-pinned", placement="cpu", mod
             row["import_ok"] = True
         except Exception as exc:
             row["error"] = f"import failed: {type(exc).__name__}: {exc}"
-        exact_runtime = not (runtime_profile == "blackwell-compatible" and
-                             module_name in ("torch", "torchvision", "torchaudio", "flash_attn"))
+        exact_runtime = not (runtime_profile == "blackwell-compatible"
+                             and module_name in ("torch", "torchvision", "torchaudio", "flash_attn"))
         row["version_ok"] = expected is None or not exact_runtime or row["installed_version"] == expected
         row["official_pinned_version"] = expected
         row["runtime_profile_allows_departure"] = not exact_runtime
@@ -438,8 +447,8 @@ def dependency_preflight(runtime_profile="official-pinned", placement="cpu", mod
     else:
         custom_code = {"ok": False, "skipped": True,
                        "reason": "runtime and FlashAttention preflight must pass first"}
-    ok = (packages_ok and runtime["ok"] and flash["ok"] and
-          (custom_code is None or custom_code["ok"]))
+    ok = (packages_ok and runtime["ok"] and flash["ok"]
+          and (custom_code is None or custom_code["ok"]))
     return {"ok": ok, "runtime_profile": runtime_profile, "packages": packages,
             "runtime": runtime, "flash_attention": flash, "custom_code": custom_code}
 
@@ -447,8 +456,8 @@ def dependency_preflight(runtime_profile="official-pinned", placement="cpu", mod
 def require_dependency_preflight(runtime_profile="official-pinned", placement="cpu", model_dir=None,
                                  flash_wheel_path=None):
     report = dependency_preflight(runtime_profile, placement, model_dir, flash_wheel_path)
-    require(report["ok"], "dependency preflight failed; do not load model weights:\n" +
-            json.dumps(report, indent=2, sort_keys=True))
+    require(report["ok"], "dependency preflight failed; do not load model weights:\n"
+            + json.dumps(report, indent=2, sort_keys=True))
     return report
 
 
@@ -480,15 +489,15 @@ def loading_kwargs(precision, placement, offload_dir=None, cpu_memory=None, gpu_
     enforce_offline_environment()
     import torch
     dtype = torch.bfloat16 if precision == "bf16" else torch.float16
-    kwargs = {"local_files_only": True, "trust_remote_code": True,
-              "use_safetensors": True, "low_cpu_mem_usage": True, "dtype": dtype}
+    kwargs: dict[str, Any] = {"local_files_only": True, "trust_remote_code": True,
+                              "use_safetensors": True, "low_cpu_mem_usage": True, "dtype": dtype}
     if placement == "auto":
         kwargs["device_map"] = "auto"
     elif placement == "cpu":
         kwargs["device_map"] = {"": "cpu"}
     else:
         kwargs["device_map"] = {"": 0}
-    max_memory = {}
+    max_memory: dict[str | int, int] = {}
     if cpu_memory:
         max_memory["cpu"] = parse_memory_limit(cpu_memory, "CPU")
     if gpu_memory:
@@ -499,6 +508,320 @@ def loading_kwargs(precision, placement, offload_dir=None, cpu_memory=None, gpu_
         kwargs["offload_folder"] = str(Path(offload_dir))
         kwargs["offload_state_dict"] = True
     return kwargs
+
+
+ROUTER_GPU_HEADROOM_BYTES = 128 * 1024 * 1024
+ROUTER_PLACEMENT_POLICY = "longcat-router-preload-v1"
+ROUTER_PRELOAD_CLASS = "LongcatFlashTopkRouter"
+
+
+def reserve_router_gpu_headroom(requested_gpu_bytes):
+    require(requested_gpu_bytes > ROUTER_GPU_HEADROOM_BYTES,
+            "GPU memory limit is smaller than reserved LongCat router headroom")
+    return requested_gpu_bytes - ROUTER_GPU_HEADROOM_BYTES
+
+
+def router_no_split_classes(existing):
+    return sorted(set(existing) | {ROUTER_PRELOAD_CLASS})
+
+
+def write_placement_failure(output_dir, phase, placement, policy, error):
+    v2.atomic_json(Path(output_dir) / "placement-audit.json", {
+        "schema_version": 2, "placement": placement, "placement_policy": policy,
+        "phase": phase, "all_router_direct_weight_access_safe": False,
+        "router_count": None, "exception_type": type(error).__name__,
+        "exception_message": str(error),
+        "conflicting_key_pair": getattr(error, "conflicting_key_pair", None),
+    })
+
+
+def resolve_router_prefixes(named_modules):
+    import re
+    found = []
+    for name, _ in named_modules:
+        match = re.fullmatch(r"model\.layers\.(\d+)\.mlp\.router", name)
+        if match:
+            found.append((int(match.group(1)), name))
+    found.sort()
+    require([index for index, _ in found] == list(range(14)),
+            f"explicit placement must resolve exactly routers 0..13, got {found}")
+    return [name for _, name in found]
+
+
+class DeviceMapValidationError(CoreFixtureError):
+    def __init__(self, message, conflicting_key_pair=None):
+        super().__init__(message)
+        self.conflicting_key_pair = conflicting_key_pair
+
+
+def validate_ordinary_device_map(device_map, model, router_prefixes):
+    keys = list(device_map)
+    if "" in device_map and len(keys) != 1:
+        raise DeviceMapValidationError(
+            "empty root device-map key is only valid as the sole assignment", ["", keys[1]])
+    for index, left in enumerate(keys):
+        for right in keys[index + 1:]:
+            if ((left and right.startswith(left + "."))
+                    or (right and left.startswith(right + "."))):
+                pair = [left, right]
+                raise DeviceMapValidationError(
+                    f"overlapping device-map assignments: {left!r} and {right!r}", pair)
+    parameters = list(model.named_parameters())
+    for name, _ in parameters:
+        governing = [key for key in keys if key == "" or name == key or name.startswith(key + ".")]
+        if len(governing) != 1:
+            raise DeviceMapValidationError(
+                f"parameter {name} has {len(governing)} governing device-map assignments")
+    router_governing = {}
+    for prefix in router_prefixes:
+        direct_descendants = [key for key in keys if key.startswith(prefix + ".")]
+        if direct_descendants:
+            raise DeviceMapValidationError(
+                f"router {prefix} has an independent descendant assignment",
+                [prefix, direct_descendants[0]])
+        governing = [key for key in keys if key == "" or prefix == key or prefix.startswith(key + ".")]
+        if len(governing) != 1:
+            raise DeviceMapValidationError(
+                f"router {prefix} has {len(governing)} governing assignments")
+        router_governing[prefix] = {
+            "entry": governing[0], "device": device_map[governing[0]]}
+    return {"non_overlapping_device_map": True,
+            "parameter_count": len(parameters), "router_governing_assignments": router_governing}
+
+
+def router_cuda_footprint(empty_model, router_prefixes, expected_dtype):
+    modules = dict(empty_model.named_modules())
+    dtype_sizes = {"torch.bfloat16": 2, "torch.float16": 2, "torch.float32": 4}
+    require(str(expected_dtype) in dtype_sizes,
+            f"unsupported router placement dtype {expected_dtype}")
+    element_bytes = dtype_sizes[str(expected_dtype)]
+    classifier_bytes = 0
+    correction_bias_bytes = 0
+    for prefix in router_prefixes:
+        router = modules[prefix]
+        weight = router.classifier.weight
+        bias = router.e_score_correction_bias
+        require(tuple(weight.shape) == (384, 3072),
+                f"{prefix}.classifier.weight has unexpected shape {tuple(weight.shape)}")
+        require(tuple(bias.shape) == (384,),
+                f"{prefix}.e_score_correction_bias has unexpected shape {tuple(bias.shape)}")
+        classifier_bytes += int(weight.numel()) * element_bytes
+        correction_bias_bytes += int(bias.numel()) * element_bytes
+    return {"router_parameter_dtype": str(expected_dtype),
+            "router_parameter_element_size_bytes": element_bytes,
+            "router_classifier_bytes": classifier_bytes,
+            "router_correction_bias_bytes": correction_bias_bytes,
+            "router_cuda_bytes": classifier_bytes + correction_bias_bytes}
+
+
+def infer_ordinary_device_map(infer, model, max_memory, dtype, no_split):
+    """Invoke Accelerate without adding any descendant placement overrides."""
+    return infer(
+        model, max_memory=max_memory, dtype=dtype,
+        no_split_module_classes=no_split, offload_buffers=True)
+
+
+def build_auto_dispatch_plan(model_dir, dtype, cpu_memory=None, gpu_memory=None):
+    """Build the pinned empty model and an ordinary non-overlapping Accelerate map."""
+    import torch
+    from accelerate import infer_auto_device_map, init_empty_weights
+    from accelerate.utils import convert_file_size_to_int, find_tied_parameters
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    config = AutoConfig.from_pretrained(
+        str(model_dir), local_files_only=True, trust_remote_code=True, dtype=dtype)
+    config.torch_dtype = dtype
+    with init_empty_weights():
+        empty_model = AutoModelForCausalLM.from_config(
+            config, trust_remote_code=True)
+    tie_weights = getattr(empty_model, "tie_weights", None)
+    if callable(tie_weights):
+        tie_weights()
+    tied_parameter_groups = [list(group) for group in find_tied_parameters(empty_model)]
+    router_prefixes = resolve_router_prefixes(empty_model.named_modules())
+    router_classes = {type(dict(empty_model.named_modules())[prefix]).__name__
+                      for prefix in router_prefixes}
+    require(router_classes == {ROUTER_PRELOAD_CLASS},
+            f"unexpected runtime router classes: {sorted(router_classes)}")
+    footprint = router_cuda_footprint(empty_model, router_prefixes, dtype)
+    requested_gpu = (convert_file_size_to_int(gpu_memory) if gpu_memory else
+                     int(torch.cuda.mem_get_info(0)[0]))
+    max_memory: dict[str | int, int] = {0: reserve_router_gpu_headroom(requested_gpu)}
+    if cpu_memory:
+        max_memory["cpu"] = convert_file_size_to_int(cpu_memory)
+    no_split = router_no_split_classes(empty_model._get_no_split_modules("auto"))
+    ordinary = infer_ordinary_device_map(
+        infer_auto_device_map, empty_model, max_memory, dtype, no_split)
+    validation = validate_ordinary_device_map(ordinary, empty_model, router_prefixes)
+    canonical = json.dumps(ordinary, sort_keys=True, separators=(",", ":"), default=str)
+    policy = {
+        "placement_policy": ROUTER_PLACEMENT_POLICY,
+        "router_prefixes": router_prefixes,
+        "preload_module_classes": [ROUTER_PRELOAD_CLASS],
+        "router_no_split_class": ROUTER_PRELOAD_CLASS,
+        "no_split_module_classes": no_split,
+        "offload_buffers": True,
+        "tied_parameter_groups": tied_parameter_groups,
+        "router_inventory_classifier_bytes": footprint["router_classifier_bytes"],
+        "router_inventory_correction_bias_bytes": footprint["router_correction_bias_bytes"],
+        "router_inventory_total_bytes": footprint["router_cuda_bytes"],
+        "single_router_preload_bytes": footprint["router_cuda_bytes"] // 14,
+        "router_parameter_dtype": footprint["router_parameter_dtype"],
+        "router_parameter_element_size_bytes": footprint["router_parameter_element_size_bytes"],
+        "reserved_gpu_headroom_bytes": ROUTER_GPU_HEADROOM_BYTES,
+        "automatic_map_gpu_budget_bytes": max_memory[0],
+        "ordinary_device_map_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        "ordinary_device_map": ordinary,
+        "device_map_validation": validation,
+    }
+    return empty_model, ordinary, policy
+
+
+def _audit_router_placement(model, placement, output_path, policy=None, expected_weight_dtype=None):
+    modules = dict(model.named_modules())
+    prefixes = resolve_router_prefixes(modules.items())
+    rows = []
+    failures = []
+    device_map = getattr(model, "hf_device_map", {}) or {}
+    map_validation = validate_ordinary_device_map(device_map, model, prefixes)
+    policy_map_matches = policy is None or policy.get("ordinary_device_map") == device_map
+    preload_verified = (placement != "auto"
+                        or (policy is not None
+
+                            and policy.get("preload_module_classes") == [ROUTER_PRELOAD_CLASS]
+                            and policy.get("router_no_split_class") == ROUTER_PRELOAD_CLASS))
+    for logical, prefix in enumerate(prefixes):
+        router = modules[prefix]
+        weight = router.classifier.weight
+        correction = router.e_score_correction_bias
+        weight_device = getattr(weight.device, "type", str(weight.device))
+        correction_device = getattr(correction.device, "type", str(correction.device))
+        weight_bytes = int(weight.numel()) * int(weight.element_size())
+        correction_bytes = int(correction.numel()) * int(correction.element_size())
+        governing = map_validation["router_governing_assignments"][prefix]
+        governing_device = governing["device"]
+        parent_hook = getattr(router, "_hf_hook", None)
+        child_hook = getattr(router.classifier, "_hf_hook", None)
+        hook_execution = getattr(parent_hook, "execution_device", None)
+        hook_offload = getattr(parent_hook, "offload", None)
+        hook_place_submodules = getattr(parent_hook, "place_submodules", None)
+        resident_cuda = str(governing_device) in ("0", "cuda", "cuda:0")
+        resident_cpu = placement == "cpu" and str(governing_device) == "cpu"
+        offloaded = str(governing_device) in ("cpu", "disk")
+        resident_safe = (((resident_cuda and weight_device == "cuda" and correction_device == "cuda")
+                          or (resident_cpu and weight_device == "cpu" and correction_device == "cpu"))
+
+                         and not bool(getattr(weight, "is_meta", False))
+                         and not bool(getattr(correction, "is_meta", False)))
+        offloaded_safe = (offloaded and parent_hook is not None
+                          and str(hook_execution) in ("0", "cuda", "cuda:0")
+                          and hook_place_submodules is True and preload_verified)
+        direct_safe = resident_safe or offloaded_safe
+        row = {
+            "logical_layer": logical, "physical_block": 2 * logical,
+            "router_module": prefix,
+            "governing_device_map_entry": governing["entry"],
+            "governing_device": governing_device,
+            "router_class": type(router).__name__,
+            "classifier_weight_device": str(weight.device),
+            "classifier_weight_is_meta": bool(getattr(weight, "is_meta", False)),
+            "classifier_weight_shape": list(weight.shape), "classifier_weight_dtype": str(weight.dtype),
+            "classifier_weight_bytes": weight_bytes,
+            "correction_bias_device": str(correction.device),
+            "correction_bias_is_meta": bool(getattr(correction, "is_meta", False)),
+            "correction_bias_dtype": str(correction.dtype),
+            "correction_bias_bytes": correction_bytes,
+            "router_total_bytes": weight_bytes + correction_bytes,
+            "router_hf_hook": None if parent_hook is None else type(parent_hook).__qualname__,
+            "router_execution_device": str(hook_execution),
+            "router_hook_offload": hook_offload,
+            "router_hook_place_submodules": hook_place_submodules,
+            "classifier_hf_hook": None if child_hook is None else type(child_hook).__qualname__,
+            "classifier_execution_device": str(getattr(child_hook, "execution_device", None)),
+            "classifier_hook_offload": getattr(child_hook, "offload", None),
+            "classifier_hook_place_submodules": getattr(child_hook, "place_submodules", None),
+            "direct_weight_access_safe": direct_safe,
+        }
+        rows.append(row)
+        if tuple(weight.shape) != (384, 3072) or tuple(correction.shape) != (384,):
+            failures.append(f"{prefix}: unexpected router parameter shape")
+        if expected_weight_dtype is not None and str(weight.dtype) != str(expected_weight_dtype):
+            failures.append(f"{prefix}: classifier expected checkpoint dtype {expected_weight_dtype}")
+        if expected_weight_dtype is not None and str(correction.dtype) != str(expected_weight_dtype):
+            failures.append(f"{prefix}: correction bias expected checkpoint dtype {expected_weight_dtype}")
+        if not direct_safe:
+            failures.append(f"{prefix}: direct classifier-weight access is unsafe")
+    if not preload_verified:
+        failures.append("LongcatFlashTopkRouter preload policy is not verified")
+    if not policy_map_matches:
+        failures.append("dispatched device map differs from placement policy")
+    report = {"schema_version": 2, "placement": placement,
+              "placement_policy": None if policy is None else policy.get("placement_policy"),
+              "all_router_direct_weight_access_safe": not failures,
+              "preload_policy_verified": preload_verified,
+              "non_overlapping_device_map": map_validation["non_overlapping_device_map"],
+              "router_count": len(rows), "routers": rows, "failures": failures,
+              "classifier_dtype_verified": not any("classifier expected" in row for row in failures),
+              "correction_bias_dtype_verified": not any("correction bias expected" in row for row in failures)}
+    v2.atomic_json(output_path, report)
+    require(not failures, "invalid LongCat router placement: " + "; ".join(failures))
+    return report
+
+
+def audit_router_placement(model, placement, output_path, policy=None, expected_weight_dtype=None):
+    output_path = Path(output_path)
+    try:
+        return _audit_router_placement(
+            model, placement, output_path, policy, expected_weight_dtype)
+    except Exception as error:
+        if not output_path.exists():
+            v2.atomic_json(output_path, {
+                "schema_version": 2, "placement": placement,
+                "placement_policy": None if policy is None else policy.get("placement_policy"),
+                "all_router_direct_weight_access_safe": False, "router_count": None,
+                "routers": [], "failures": [f"{type(error).__name__}: {error}"],
+            })
+        raise
+
+
+def load_model_with_placement_audit(loader, model_dir, load_kwargs, output_dir,
+                                    placement, placement_policy):
+    try:
+        return loader.from_pretrained(str(model_dir), **load_kwargs)
+    except Exception as exc:
+        write_placement_failure(
+            output_dir, "checkpoint_load", placement, placement_policy, exc)
+        raise CoreFixtureError(
+            f"local official model loading failed without network fallback: {exc}") from exc
+
+
+def dispatch_auto_model_with_preload(model, model_dir, device_map, offload_dir, dtype,
+                                     output_dir, placement_policy, dispatcher=None,
+                                     generation_config_class=None):
+    if dispatcher is None:
+        from accelerate import load_checkpoint_and_dispatch as dispatcher
+    if generation_config_class is None:
+        from transformers import GenerationConfig as generation_config_class
+    required = {"checkpoint", "device_map", "offload_folder", "offload_state_dict",
+                "offload_buffers", "dtype", "preload_module_classes"}
+    signature = inspect.signature(dispatcher)
+    require(required <= set(signature.parameters),
+            "Accelerate load_checkpoint_and_dispatch lacks required pinned parameters: "
+            + ", ".join(sorted(required - set(signature.parameters))))
+    try:
+        model = dispatcher(
+            model, checkpoint=str(model_dir), device_map=device_map,
+            offload_folder=str(offload_dir), offload_state_dict=True,
+            offload_buffers=True, dtype=dtype,
+            preload_module_classes=[ROUTER_PRELOAD_CLASS])
+        model.generation_config = generation_config_class.from_pretrained(
+            str(model_dir), local_files_only=True, trust_remote_code=True)
+        return model
+    except Exception as exc:
+        write_placement_failure(
+            output_dir, "checkpoint_load", "auto", placement_policy, exc)
+        raise CoreFixtureError(
+            f"local official model loading failed without network fallback: {exc}") from exc
 
 
 def tokenizer_loading_kwargs(fix_mistral_regex=False):
@@ -587,32 +910,58 @@ def resolve_effective_greedy_policy(model, generation_config, overrides):
     prepare = getattr(model, "_prepare_generation_config", None)
     require(callable(prepare),
             "official model does not expose _prepare_generation_config for greedy-policy validation")
+    assert callable(prepare)
     effective, _ = prepare(deepcopy(generation_config), **dict(overrides))
     fields = ("do_sample", "temperature", "top_p", "top_k", "max_new_tokens",
               "use_cache", "return_dict_in_generate")
     resolved = {name: getattr(effective, name, None) for name in fields}
     resolved["use_model_defaults"] = overrides.get("use_model_defaults")
     require(resolved == overrides,
-            "effective generation policy is not the requested greedy policy: " +
-            json.dumps(resolved, sort_keys=True))
+            "effective generation policy is not the requested greedy policy: "
+            + json.dumps(resolved, sort_keys=True))
     return resolved
 
 
 def generate_with_greedy_policy(model, encoded, generation_config, policy,
-                                prompt_name, repeat_index):
+                                prompt_name, repeat_index, finite_checker=None,
+                                attention_backend="default"):
     overrides = policy["explicit_call_overrides"]
     effective = resolve_effective_greedy_policy(model, generation_config, overrides)
     mode = "sampling" if effective["do_sample"] else "greedy"
     require(mode == "greedy", f"effective decoding method for {prompt_name} is {mode}, not greedy")
+    handles = []
     try:
-        generated = model.generate(
-            **encoded, generation_config=generation_config, **overrides)
+        if finite_checker is not None:
+            import torch
+            handles = v2.install_trunk_finite_hooks(
+                model, finite_checker, serialize_blocks=(), capture={})
+            handles.extend(v2.install_output_finite_hooks(
+                model, finite_checker, "generation", prompt_name))
+            sdpa_context = v2.instrument_sdpa(torch, finite_checker, attention_backend)
+        else:
+            import contextlib
+            sdpa_context = contextlib.nullcontext()
+        with sdpa_context:
+            generated = model.generate(
+                **encoded, generation_config=generation_config,
+                output_scores=True, **overrides)
+        if finite_checker is not None:
+            scores = getattr(generated, "scores", None)
+            require(scores is not None, "greedy generation did not return requested scores")
+            assert scores is not None
+            for step, score in enumerate(scores):
+                finite_checker.check(score, module_name="generation.scores",
+                                     operation="generation", role="score",
+                                     prompt=prompt_name, generation_step=step)
     except Exception as exc:
         raise CoreFixtureError(
             "generation failed; no fixture was written; "
             f"prompt={prompt_name}; repeat_index={repeat_index}; "
             f"requested_policy={json.dumps(overrides, sort_keys=True)}; "
             f"effective_decoding_mode={mode}; {type(exc).__name__}: {exc}") from exc
+    finally:
+        for handle in handles:
+            handle.remove()
     return generated, effective
 
 
@@ -657,8 +1006,8 @@ def build_text_generation_context(model, model_dir):
         from transformers import GenerationConfig
         generation = GenerationConfig.from_pretrained(
             str(model_dir), local_files_only=True, trust_remote_code=True)
-        visual = GenerationConfig(**generation.visual_generation_config)
-        audio = GenerationConfig(**generation.audio_generation_config)
+        visual = GenerationConfig(**getattr(generation, "visual_generation_config"))
+        audio = GenerationConfig(**getattr(generation, "audio_generation_config"))
         dynamic_module = importlib.import_module(model.__class__.__module__)
         status_class = getattr(dynamic_module, "LongcatNextForCausalLMGenerationStatus")
         status = status_class(visual, audio)
@@ -701,7 +1050,7 @@ def summarize_forward_logits(output, selected_logit_ids, include_complete=False,
     import numpy as np
     require(hasattr(output, "logits") and output.logits is not None,
             "official direct forward did not return logits")
-    logits, source_dtype = tensor_array(output.logits)
+    logits, source_dtype = tensor_array(output.logits, "final_logits")
     require(logits.ndim == 3,
             f"official logits must have shape [batch, sequence, vocabulary], got rank {logits.ndim}")
     require(logits.shape[-1] == 131125,
@@ -721,6 +1070,7 @@ def summarize_forward_logits(output, selected_logit_ids, include_complete=False,
 
 def deterministic_npz_bytes(arrays):
     import numpy as np
+    v2.validate_array_inventory(arrays, error_type=CoreFixtureError)
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as archive:
         for name in sorted(arrays):
@@ -737,9 +1087,11 @@ def deterministic_npz_bytes(arrays):
 def array_metadata(arrays):
     result = {}
     for name, value in sorted(arrays.items()):
+        finite = v2.validate_numpy_array(name, value, CoreFixtureError)
         data = value.tobytes(order="C")
         result[name] = {"shape": list(value.shape), "serialized_dtype": str(value.dtype),
-                        "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
+                        "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data),
+                        "finite": finite}
     return result
 
 
@@ -747,6 +1099,8 @@ def compare_runs(runs):
     import numpy as np
     require(len(runs) >= 1, "at least one official run is required")
     baseline = runs[0]
+    for index, run in enumerate(runs):
+        v2.validate_array_inventory(run, error_type=CoreFixtureError)
     reports = {}
     for name, reference in baseline.items():
         require(all(name in run for run in runs), f"repeated run is missing activation {name}")
@@ -782,9 +1136,16 @@ def write_core_outputs(output_dir, stem, arrays, metadata, reproducibility, max_
     root.mkdir(parents=True, exist_ok=True)
     require(not any(path.name.lower().endswith(WEIGHT_SUFFIXES) for path in root.iterdir()),
             "output directory contains a model-weight filename")
+    validation = v2.validate_array_inventory(arrays, error_type=CoreFixtureError)
+    if metadata.get("kind") == "longcat-next-core-reference":
+        contract = v2.load_accepted_contract(
+            Path(__file__).with_name("core-accepted-contract-v2.json"))
+        validation.update(v2.validate_accepted_arrays(
+            arrays, metadata["precision"], contract, CoreFixtureError))
     npz = deterministic_npz_bytes(arrays)
     metadata = dict(metadata)
     metadata["arrays"] = array_metadata(arrays)
+    metadata["whole_candidate_validation"] = validation
     json_bytes = (json.dumps(metadata, indent=2, sort_keys=True) + "\n").encode("ascii")
     repro_bytes = (json.dumps(reproducibility, indent=2, sort_keys=True) + "\n").encode("ascii")
     total = len(npz) + len(json_bytes) + len(repro_bytes)
@@ -799,15 +1160,146 @@ def write_core_outputs(output_dir, stem, arrays, metadata, reproducibility, max_
         temporary.replace(path)
     return paths
 
-def tensor_array(tensor):
+
+def tensor_array(tensor, name="captured_tensor"):
     import numpy as np
     if isinstance(tensor, np.ndarray):
-        return np.ascontiguousarray(tensor), str(tensor.dtype)
+        result = np.ascontiguousarray(tensor)
+        v2.validate_numpy_array(name, result, CoreFixtureError)
+        return result, str(tensor.dtype)
     value = tensor.detach().cpu()
     source_dtype = str(value.dtype).replace("torch.", "")
     if source_dtype == "bfloat16":
         value = value.float()
-    return value.contiguous().numpy(), source_dtype
+    result = value.contiguous().numpy()
+    v2.validate_numpy_array(name, result, CoreFixtureError)
+    return result, source_dtype
+
+
+def write_all_physical_blocks_diagnostic(capture, report_dir, token_count):
+    """Serialize the opt-in 28-block trace without touching accepted artifacts."""
+    import numpy as np
+    expected = [f"physical_block_{block:02d}" for block in range(28)]
+    require(sorted(capture) == expected,
+            f"all-block diagnostic inventory differs: {sorted(capture)}")
+    arrays = {}
+    rows = []
+    for name in expected:
+        array, source_dtype = tensor_array(capture.pop(name), name)
+        require(array.shape == (1, token_count, 3072),
+                f"{name} has diagnostic shape {array.shape}, expected {(1, token_count, 3072)}")
+        finite = v2.numpy_finite_report(name, array)
+        require(finite["finite_count"] == finite["total_elements"],
+                f"{name} is not finite")
+        data = np.ascontiguousarray(array).tobytes(order="C")
+        rows.append({**finite, "serialized_dtype": str(array.dtype),
+                     "source_torch_dtype": source_dtype,
+                     "minimum": finite["finite_minimum"],
+                     "maximum": finite["finite_maximum"],
+                     "sha256": hashlib.sha256(data).hexdigest()})
+        arrays[name] = array
+    root = Path(report_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    npz_path = root / "physical-blocks.npz"
+    temporary = npz_path.with_name(npz_path.name + ".tmp")
+    temporary.write_bytes(deterministic_npz_bytes(arrays))
+    temporary.replace(npz_path)
+    v2.atomic_json(root / "physical-blocks.json", {
+        "schema_version": 2, "accepted": False, "array_count": 28,
+        "arrays": rows})
+    return {"npz": npz_path, "metadata": root / "physical-blocks.json"}
+
+
+def diagnostic_serialize_blocks(enabled):
+    return tuple(range(28)) if enabled else ()
+
+
+def prepared_sequence_token_count(input_ids):
+    shape = tuple(input_ids.shape)
+    require(len(shape) == 2, f"prepared input_ids must have rank 2, got shape {shape}")
+    require(shape[0] == 1, f"prepared input_ids must have batch size 1, got shape {shape}")
+    require(shape[1] > 0, f"prepared input_ids must contain at least one token, got shape {shape}")
+    return int(shape[1])
+
+
+def normalize_block_component_array(name, array, token_count):
+    import numpy as np
+    suffix = name.split("__", 1)[1]
+    if suffix in {"router_logits", "router_probabilities", "router_selection_scores"}:
+        expected_tail = 384
+    elif suffix in {"router_topk_indices", "router_topk_weights"}:
+        expected_tail = 12
+    elif suffix == "identity_weight_sum":
+        expected_tail = 1
+    else:
+        expected_tail = 3072
+    result = np.asarray(array)
+    if result.ndim == 2:
+        result = result[None, :, :]
+    require(result.shape == (1, token_count, expected_tail),
+            f"{name} has component shape {result.shape}, expected {(1, token_count, expected_tail)}")
+    return np.ascontiguousarray(result)
+
+
+def write_block_components_diagnostic(capture, report_dir, token_count, through=9):
+    expected = v2.block_component_names(through)
+    require(sorted(capture) == sorted(expected),
+            "block-component diagnostic inventory differs from exact 110-name contract")
+    arrays = {}
+    rows = []
+    for name in expected:
+        array, source_dtype = tensor_array(capture.pop(name), name)
+        array = normalize_block_component_array(name, array, token_count)
+        finite = v2.numpy_finite_report(name, array)
+        if array.dtype.kind == "f":
+            require(finite["finite_count"] == finite["total_elements"], f"{name} is not finite")
+        if name.endswith("__router_topk_indices"):
+            require(array.dtype.kind in "iu", f"{name} must preserve integer indices")
+        data = array.tobytes(order="C")
+        rows.append({**finite, "serialized_dtype": str(array.dtype),
+                     "source_torch_dtype": source_dtype,
+                     "sha256": hashlib.sha256(data).hexdigest()})
+        arrays[name] = array
+    root = Path(report_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    npz_path = root / "block-components.npz"
+    temporary = npz_path.with_name(npz_path.name + ".tmp")
+    temporary.write_bytes(deterministic_npz_bytes(arrays))
+    temporary.replace(npz_path)
+    v2.atomic_json(root / "block-components.json", {
+        "schema_version": 2, "accepted": False, "through_physical_block": through,
+        "array_count": 110, "arrays": rows})
+    return {"npz": npz_path, "metadata": root / "block-components.json"}
+
+
+def write_block_components_window_diagnostic(capture, report_dir, token_count, start=10, count=4):
+    expected = v2.block_component_window_names(start, count)
+    require(sorted(capture) == sorted(expected),
+            "block-component window inventory differs from exact requested names")
+    arrays = {}
+    rows = []
+    for name in expected:
+        array, source_dtype = tensor_array(capture.pop(name), name)
+        array = normalize_block_component_array(name, array, token_count)
+        finite = v2.numpy_finite_report(name, array)
+        if array.dtype.kind == "f":
+            require(finite["finite_count"] == finite["total_elements"], f"{name} is not finite")
+        if name.endswith("__router_topk_indices"):
+            require(array.dtype.kind in "iu", f"{name} must preserve integer indices")
+        rows.append({**finite, "serialized_dtype": str(array.dtype),
+                     "source_torch_dtype": source_dtype,
+                     "sha256": hashlib.sha256(array.tobytes(order="C")).hexdigest()})
+        arrays[name] = array
+    root = Path(report_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    npz_path = root / "block-components-window.npz"
+    temporary = npz_path.with_name(npz_path.name + ".tmp")
+    temporary.write_bytes(deterministic_npz_bytes(arrays))
+    temporary.replace(npz_path)
+    v2.atomic_json(root / "block-components-window.json", {
+        "schema_version": 2, "accepted": False, "physical_block_start": start,
+        "physical_block_count": count, "array_count": len(expected), "arrays": rows})
+    return {"npz": npz_path, "metadata": root / "block-components-window.json"}
 
 
 def load_case_ids(weight_free_fixture, tokenizer):
@@ -871,24 +1363,52 @@ def analytical_ngram_decomposition(base, raw_projections, ignored_mask, official
     return contributions, reconstructed, error, report
 
 
-def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_context):
+def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_context,
+                    finite_checker=None, attention_backend="default",
+                    serialize_all_physical_blocks=False, serialize_block_components_through=None,
+                    serialize_block_components_window=None):
     import numpy as np
     import torch
     modules = resolve_capture_modules(model)
+    require(finite_checker is not None, "schema-v2 capture requires an on-device finite checker")
+    assert finite_checker is not None
     captured = {}
     source_dtypes = {}
     handles = []
+    diagnostic_blocks = {}
+    component_capture = {}
 
     def save(name, value):
         if isinstance(value, tuple):
             value = value[0]
-        array, dtype = tensor_array(value)
+        array, dtype = tensor_array(value, name)
         captured[name] = array
         source_dtypes[name] = dtype
 
+    # Register finite hooks before capture hooks so final norm/lm_head/model
+    # outputs are rejected on-device before any CPU or NumPy conversion.
+    handles.extend(v2.install_output_finite_hooks(model, finite_checker))
+    handles.extend(v2.install_trunk_finite_hooks(
+        model, finite_checker,
+        serialize_blocks=diagnostic_serialize_blocks(serialize_all_physical_blocks),
+        capture=diagnostic_blocks))
+    if serialize_block_components_through is not None:
+        handles.extend(v2.install_block_component_hooks(
+            model, finite_checker, component_capture, serialize_block_components_through))
+    if serialize_block_components_window is not None:
+        start, count = serialize_block_components_window
+        handles.extend(v2.install_block_component_window_hooks(
+            model, finite_checker, component_capture, start, count))
+    handles.append(modules["base_embedding"].register_forward_hook(
+        lambda module, args, output: finite_checker.check(
+            output, module_name="model.model.embed_tokens", operation="forward", role="output")))
     handles.append(modules["base_embedding"].register_forward_hook(
         lambda module, args, output: save("base_embedding", output)))
     for index, projection in enumerate(modules["ngram_projections"]):
+        handles.append(projection.register_forward_hook(
+            lambda module, args, output, index=index: finite_checker.check(
+                output, module_name=f"model.model.ngram_embeddings.post_projs.{index}",
+                operation="forward", role="output")))
         handles.append(projection.register_forward_hook(
             lambda module, args, output, index=index: save(f"ngram_projection_raw_{index:02d}", output)))
     for block, module in modules["physical_block_inputs"].items():
@@ -901,7 +1421,6 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_
         lambda module, args: save("fused_pre_trunk_embedding", args[0])))
     handles.append(modules["final_norm"].register_forward_hook(
         lambda module, args, output: save("final_normalized_hidden_state", output)))
-
     prepared = prepare_case_inputs(case_name, input_ids)
     device = modules["base_embedding"].weight.device
     ids = torch.tensor(prepared["input_ids"], dtype=torch.long, device=device)
@@ -912,11 +1431,41 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_
     require(getattr(status, "mode", None) == "text",
             "direct forward requires official multimodal generation status in text mode")
     try:
-        with torch.inference_mode():
+        with torch.inference_mode(), torch.autocast(device_type=device.type, enabled=False), \
+                v2.instrument_router_linear(torch) as router_session, \
+                v2.instrument_sdpa(torch, finite_checker, attention_backend) as sdpa_observation:
             output = call_text_forward(model, {
                 "input_ids": ids.clone(), "attention_mask": attention,
                 "position_ids": positions, "cache_position": cache_position, "use_cache": False,
                 "logits_to_keep": 1, "return_dict": True}, generation_context)
+        if finite_checker is not None:
+            finite_checker.sdpa_observation = sdpa_observation
+            finite_checker.router_materialization = v2.router_materialization_summary(router_session)
+            require(finite_checker.router_materialization["router_invocation_count"] == 14
+                    and finite_checker.router_materialization["logical_layers_observed"] == list(range(14))
+                    and finite_checker.router_materialization["all_live_router_weights_materialized"]
+                    and finite_checker.router_materialization["all_live_correction_biases_materialized"],
+                    "complete direct forward did not materialize all fourteen LongCat routers")
+        if attention_backend == "eager":
+            require(not sdpa_observation["calls"],
+                    "eager attention requested but the text trunk invoked SDPA")
+        if attention_backend in ("sdpa-math", "sdpa-f32"):
+            require(sdpa_observation["calls"],
+                    f"{attention_backend} requested but the text trunk did not invoke SDPA")
+        if serialize_all_physical_blocks:
+            write_all_physical_blocks_diagnostic(
+                diagnostic_blocks, finite_checker.report_dir,
+                prepared_sequence_token_count(prepared["input_ids"]))
+        if serialize_block_components_through is not None:
+            write_block_components_diagnostic(
+                component_capture, finite_checker.report_dir,
+                prepared_sequence_token_count(prepared["input_ids"]),
+                serialize_block_components_through)
+        if serialize_block_components_window is not None:
+            start, count = serialize_block_components_window
+            write_block_components_window_diagnostic(
+                component_capture, finite_checker.report_dir,
+                prepared_sequence_token_count(prepared["input_ids"]), start, count)
     finally:
         for handle in handles:
             handle.remove()
@@ -954,15 +1503,24 @@ def capture_forward(model, input_ids, selected_logit_ids, case_name, generation_
     captured["cache_position"] = cache_position.cpu().numpy()
     source_dtypes.update({"input_ids": "int64", "attention_mask": "int64",
                           "position_ids": "int64", "cache_position": "int64"})
+    if finite_checker is not None:
+        finite_checker.write_trace()
     return captured, source_dtypes
 
 
-def run_core_generation(args, weight_free_fixture):
+def run_core_worker_generation(args, weight_free_fixture, diagnostic=False):
+    worker_started_utc = v2.utc_now()
     validate_core_options(args.precision, args.placement, args.repeat_count, args.max_output_bytes)
     inspection = validate_checkpoint(args.model_dir, args.hash_shards)
     enforce_offline_environment()
     dependency_report = require_dependency_preflight(
         args.runtime_profile, args.placement, args.model_dir, args.flash_wheel_path)
+    if not getattr(args, "skip_source_scan", False):
+        source_validation = v2.verify_and_scan_source(
+            args.model_dir, args.shard_manifest, args.output_dir)
+    else:
+        require(diagnostic, "source scanning may only be bypassed by core-diagnose")
+        source_validation = {"all_finite": None, "bypassed_for_diagnosis": True}
     try:
         ensure_transformers_version()
         import torch
@@ -977,17 +1535,79 @@ def run_core_generation(args, weight_free_fixture):
     torch.use_deterministic_algorithms(True, warn_only=False)
     load = loading_kwargs(args.precision, args.placement, args.offload_dir,
                           args.cpu_memory, args.gpu_memory)
+    router_element_bytes = 2
+    router_classifier_bytes = 14 * 384 * 3072 * router_element_bytes
+    router_correction_bias_bytes = 14 * 384 * router_element_bytes
+    placement_policy = {
+        "placement_policy": (ROUTER_PLACEMENT_POLICY if args.placement == "auto" else
+                             f"longcat-router-{args.placement}-whole-model-v1"),
+        "router_parameter_dtype": str(load["dtype"]),
+        "router_parameter_element_size_bytes": router_element_bytes,
+        "router_classifier_bytes": router_classifier_bytes,
+        "router_correction_bias_bytes": router_correction_bias_bytes,
+        "router_cuda_bytes": router_classifier_bytes + router_correction_bias_bytes,
+        "reserved_gpu_headroom_bytes": 0,
+        "explicit_device_map_sha256": None,
+    }
+    auto_model = None
+    ordinary_map = None
+    if args.placement == "auto":
+        try:
+            auto_model, ordinary_map, placement_policy = build_auto_dispatch_plan(
+                args.model_dir, load["dtype"], args.cpu_memory, args.gpu_memory)
+        except Exception as error:
+            phase = ("device_map_validation" if isinstance(error, DeviceMapValidationError)
+                     else "device_map_construction")
+            v2.atomic_json(Path(args.output_dir) / "placement-preload-audit.json", {
+                "schema_version": 2,
+                "phase": phase,
+                "placement": args.placement, "valid": False,
+                "failures": [f"{type(error).__name__}: {error}"],
+                "conflicting_key_pair": getattr(error, "conflicting_key_pair", None),
+            })
+            write_placement_failure(
+                args.output_dir, phase, args.placement, placement_policy, error)
+            raise CoreFixtureError(f"LongCat router preload placement failed: {error}") from error
+    v2.atomic_json(Path(args.output_dir) / "placement-policy.json", placement_policy)
+    v2.atomic_json(Path(args.output_dir) / "placement-preload-audit.json", {
+        "schema_version": 2, "phase": "before_checkpoint_load",
+        "placement": args.placement, **placement_policy,
+        "router_prefix_count": len(cast(list[Any], placement_policy.get("router_prefixes", [])))
+        if args.placement == "auto" else 14,
+    })
+    if args.attention_backend != "default":
+        load["attn_implementation"] = (
+            "eager" if args.attention_backend == "eager" else "sdpa")
     try:
         tokenizer = AutoTokenizer.from_pretrained(
             str(args.model_dir), **tokenizer_loading_kwargs(False))
-        model = AutoModelForCausalLM.from_pretrained(str(args.model_dir), **load)
     except (OSError, RuntimeError, ValueError) as exc:
-        raise CoreFixtureError(f"local official model loading failed without network fallback: {exc}") from exc
+        raise CoreFixtureError(f"local official tokenizer loading failed without network fallback: {exc}") from exc
+    if args.placement == "auto":
+        require(args.offload_dir is not None,
+                "automatic LongCat placement requires --offload-dir")
+        model = dispatch_auto_model_with_preload(
+            auto_model, args.model_dir, ordinary_map, args.offload_dir, load["dtype"],
+            args.output_dir, placement_policy)
+    else:
+        model = load_model_with_placement_audit(
+            AutoModelForCausalLM, args.model_dir, load, args.output_dir,
+            args.placement, placement_policy)
     model.eval()
+    placement_audit = audit_router_placement(
+        model, args.placement, Path(args.output_dir) / "placement-audit.json",
+        placement_policy, load["dtype"])
+    attention_provenance = v2.configure_attention_backend(model, args.attention_backend)
     dtype_provenance = effective_dtype_provenance(model, args.precision, torch)
     tokenizer_metadata = tokenizer_provenance(tokenizer, args.model_dir)
     initial_pretokenizer_sha256 = tokenizer_metadata["backend_pre_tokenizer_state_sha256"]
     cases, prompts, prompt_input_ids = load_case_ids(weight_free_fixture, tokenizer)
+    requested_cases = list(getattr(args, "case", []) or [])
+    if requested_cases:
+        known = {name for name, _ in cases}
+        require(set(requested_cases) <= known,
+                f"unknown requested cases: {sorted(set(requested_cases) - known)}")
+        cases = [row for row in cases if row[0] in requested_cases]
     tokenizer_metadata["prompts"] = [
         {"name": f"prompt_{index}", "text": prompt,
          "input_ids": prompt_input_ids[f"prompt_{index}"]}
@@ -998,28 +1618,50 @@ def run_core_generation(args, weight_free_fixture):
     runs = []
     source_dtypes = {}
     greedy_by_run = []
+    sdpa_observations = []
+    router_materialization_observations = []
     for repeat in range(args.repeat_count):
         arrays = {}
         repeat_sources = {}
         for case_name, ids in cases:
             generation_context = build_text_generation_context(model, args.model_dir)
+            checker = v2.TorchFiniteChecker(
+                Path(args.output_dir) / "diagnostics" / case_name,
+                case_name, args.attention_backend, getattr(args, "run_index", 0))
             case_arrays, case_sources = capture_forward(
-                model, ids, selected_logit_ids, case_name, generation_context)
+                model, ids, selected_logit_ids, case_name, generation_context,
+                checker, args.attention_backend,
+                bool(getattr(args, "serialize_all_physical_blocks", False)),
+                getattr(args, "serialize_block_components_through", None),
+                ((getattr(args, "serialize_block_components_window_start", 10),
+                  getattr(args, "serialize_block_components_window_count", 4))
+                 if getattr(args, "serialize_block_components_window", False) else None))
+            sdpa_observations.append({"case": case_name, "run_index": repeat,
+                                      **checker.sdpa_observation})
+            router_materialization_observations.append({
+                "case": case_name, "run_index": repeat,
+                **checker.router_materialization})
             for name, value in case_arrays.items():
                 arrays[f"{case_name}/{name}"] = value
                 repeat_sources[f"{case_name}/{name}"] = case_sources[name]
         greedy = {}
-        for index, prompt in enumerate(prompts):
+        for index, prompt in ([] if diagnostic else enumerate(prompts)):
             encoded = tokenizer(prompt, add_special_tokens=True, return_tensors="pt")
             greedy_input_ids = encoded["input_ids"].detach().cpu().tolist()[0]
             require_prompt_ids_match(
                 f"prompt_{index}", prompt_input_ids[f"prompt_{index}"], greedy_input_ids)
             device = resolve_capture_modules(model)["base_embedding"].weight.device
             encoded = {key: value.to(device) for key, value in encoded.items()}
+            generation_checker = v2.TorchFiniteChecker(
+                Path(args.output_dir) / "diagnostics" / f"generation-prompt-{index}",
+                f"generation_prompt_{index}", args.attention_backend,
+                getattr(args, "run_index", 0))
             with torch.inference_mode():
                 generated, effective_policy = generate_with_greedy_policy(
                     model, encoded, greedy_generation_config, greedy_policy,
-                    f"prompt_{index}", repeat)
+                    f"prompt_{index}", repeat, generation_checker,
+                    args.attention_backend)
+            generation_checker.write_trace()
             if "effective_resolved_greedy_policy" not in greedy_policy:
                 greedy_policy["effective_resolved_greedy_policy"] = effective_policy
             else:
@@ -1044,8 +1686,8 @@ def run_core_generation(args, weight_free_fixture):
                            {"package": name, "official": row["official_pinned_version"],
                             "installed": row["installed_version"]}
                            for name, row in dependency_report["packages"].items()
-                           if row["official_pinned_version"] is not None and
-                           row["installed_version"] != row["official_pinned_version"]]}
+                           if row["official_pinned_version"] is not None
+                           and row["installed_version"] != row["official_pinned_version"]]}
     reconstruction_reports = {}
     for name, value in runs[0].items():
         suffix = "/ngram_analytical_f32_max_absolute_error"
@@ -1058,13 +1700,40 @@ def run_core_generation(args, weight_free_fixture):
                 "authority": case + "/fused_pre_trunk_embedding",
                 "analytical_dtype": "float32",
                 "is_official_captured_intermediate": False}
-    metadata = {"schema_version": CORE_SCHEMA_VERSION, "kind": "longcat-next-core-reference",
+    provenance = v2.collect_provenance(
+        Path(__file__).resolve().parents[2], args.model_dir, args.precision,
+        args.attention_backend, getattr(args, "run_index", 0),
+        [Path(__file__), Path(__file__).with_name("core_reference_v2.py"),
+         Path(__file__).with_name("make-reference-fixtures.py"),
+         Path(__file__).with_name("checkpoint-shards-v2.json"),
+         Path(__file__).with_name("core-accepted-contract-v2.json")], model,
+        {"effective_precision": dtype_provenance["effective_model_dtype"],
+         "effective_attention_backend": attention_provenance,
+         "shard_manifest_sha256": v2.sha256_file(args.shard_manifest),
+         "flash_attention_wheel_identity": dependency_report["flash_attention"],
+         "autocast_during_direct_forward": False,
+         "local_monkey_patches": ["scoped SDPA finite instrumentation",
+                                  "scoped router F.linear finite instrumentation"],
+         "placement_policy": placement_policy,
+         "start_utc": worker_started_utc, "end_utc": None})
+    metadata = {"schema_version": CORE_SCHEMA_VERSION,
+                "kind": ("longcat-next-core-diagnostic" if diagnostic else
+                         "longcat-next-core-reference"),
                 "precision": args.precision, "serialized_activation_dtype": "float32 except integer arrays",
                 "runtime_profile": args.runtime_profile,
-                "source_dtypes": source_dtypes, "checkpoint": inspection,
+                "source_dtypes": source_dtypes,
+                "checkpoint": {**inspection, "repository": v2.PINNED_MODEL_REPOSITORY,
+                               "revision": v2.PINNED_MODEL_REVISION},
                 "software_versions": {"transformers": EXPECTED_TRANSFORMERS,
                                       "torch": torch.__version__},
                 "dependency_preflight": dependency_report,
+                "placement_policy": placement_policy,
+                "placement_audit": placement_audit,
+                "source_weight_validation": source_validation,
+                "attention_backend": attention_provenance,
+                "sdpa_observations": sdpa_observations,
+                "router_live_materialization": router_materialization_observations,
+                "provenance": provenance,
                 "tokenizer": tokenizer_metadata,
                 "dtype_provenance": dtype_provenance,
                 "fixture_generation_settings": greedy_policy,
@@ -1080,6 +1749,87 @@ def run_core_generation(args, weight_free_fixture):
                     "physical_blocks_1_27": "outputs of logical layers 0/13",
                     "final_norm": "model.model.norm output",
                     "logits": "LongcatNextForCausalLM logits_to_keep=1 output"}}
-    stem = f"longcat-next-core-{args.precision}"
+    stem = (f"longcat-next-core-diagnostic-{args.precision}" if diagnostic else
+            f"longcat-next-core-{args.precision}")
     return write_core_outputs(args.output_dir, stem, runs[0], metadata,
                               reproducibility, args.max_output_bytes)
+
+
+def run_core_worker(args, weight_free_fixture):
+    """Produce one finite staged run. This function never promotes a candidate."""
+    require(args.repeat_count == 1, "core-worker executes exactly one run")
+    require(args.attention_backend != "sdpa-f32",
+            "diagnostic sdpa-f32 is forbidden for accepted workers")
+    paths = run_core_worker_generation(args, weight_free_fixture)
+    target = Path(args.output_dir) / "arrays.npz"
+    paths["npz"].replace(target)
+    paths["metadata"].replace(Path(args.output_dir) / "metadata.json")
+    paths["reproducibility"].replace(Path(args.output_dir) / "worker-reproducibility.json")
+    metadata_path = Path(args.output_dir) / "metadata.json"
+    contract = v2.load_accepted_contract(Path(__file__).with_name("core-accepted-contract-v2.json"))
+    arrays, validation = v2.load_worker_arrays(
+        args.output_dir, precision=args.precision, contract=contract)
+    v2.atomic_json(Path(args.output_dir) / "validation.json", validation)
+    metadata = json.loads(metadata_path.read_text(encoding="ascii"))
+    metadata["provenance"]["end_utc"] = v2.utc_now()
+    v2.atomic_json(metadata_path, metadata)
+    return {"arrays": target, "metadata": Path(args.output_dir) / "metadata.json"}
+
+
+def run_core_diagnose(args, weight_free_fixture):
+    """Run selected cases once, skip generation, and always retain a report."""
+    if not args.case:
+        args.case = list(v2.DEFAULT_DIAGNOSTIC_CASES)
+    args.repeat_count = 1
+    started = v2.utc_now()
+    try:
+        paths = run_core_worker_generation(args, weight_free_fixture, diagnostic=True)
+        report = {"schema_version": 2, "workflow": "core-diagnose", "accepted": False,
+                  "cases": args.case, "attention_backend": args.attention_backend,
+                  "start_utc": started, "end_utc": v2.utc_now(), "all_finite": True}
+        return paths
+    except Exception as exc:
+        report = {"schema_version": 2, "workflow": "core-diagnose", "accepted": False,
+                  "cases": args.case, "attention_backend": args.attention_backend,
+                  "start_utc": started, "end_utc": v2.utc_now(), "all_finite": False,
+                  "error": f"{type(exc).__name__}: {exc}"}
+        raise
+    finally:
+        v2.atomic_json(Path(args.output_dir) / "diagnostic-report.json", report)
+
+
+def run_core_generation(args, weight_free_fixture):
+    """Acceptance parent: start independent worker processes then atomically promote."""
+    require(args.repeat_count >= 2, "core acceptance requires at least two independent processes")
+    require(args.attention_backend != "sdpa-f32",
+            "diagnostic sdpa-f32 is forbidden for accepted candidates")
+    require(Path(args.output_dir).name != "bf16-candidate-15b7fe8c",
+            "refusing to overwrite the rejected schema-v1 candidate")
+    expected_name = re.compile(
+        rf"{args.precision}-candidate-[0-9a-f]{{7,40}}-{re.escape(args.attention_backend)}-v2")
+    require(expected_name.fullmatch(Path(args.output_dir).name) is not None,
+            "schema-v2 candidate directory must be named "
+            f"{args.precision}-candidate-<generator-commit>-{args.attention_backend}-v2")
+    script = Path(__file__).with_name("make-reference-fixtures.py")
+    commands = []
+    for index in range(args.repeat_count):
+        command = [sys.executable, str(script), "--mode", "core-worker",
+                   "--model-dir", str(args.model_dir), "--output-dir", "{run_dir}",
+                   "--precision", args.precision, "--placement", args.placement,
+                   "--runtime-profile", args.runtime_profile, "--repeat-count", "1",
+                   "--run-index", str(index), "--attention-backend", args.attention_backend,
+                   "--shard-manifest", str(args.shard_manifest),
+                   "--max-output-bytes", str(args.max_output_bytes),
+                   "--max-new-tokens", str(args.max_new_tokens),
+                   "--cpu-memory", args.cpu_memory, "--gpu-memory", args.gpu_memory]
+        if args.offload_dir:
+            command += ["--offload-dir", str(args.offload_dir)]
+        if args.flash_wheel_path:
+            command += ["--flash-wheel-path", str(args.flash_wheel_path)]
+        commands.append(command)
+    implementations = [Path(__file__), Path(__file__).with_name("core_reference_v2.py"),
+                       script, Path(__file__).with_name("checkpoint-shards-v2.json"),
+                       Path(__file__).with_name("core-accepted-contract-v2.json")]
+    return v2.orchestrate_workers(
+        args.output_dir, commands, args.precision, args.attention_backend,
+        Path(__file__).with_name("core-accepted-contract-v2.json"), implementations)

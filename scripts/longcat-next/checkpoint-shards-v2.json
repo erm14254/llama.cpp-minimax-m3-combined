@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "repository": "meituan-longcat/LongCat-Next",
+  "revision": "0cf0631862402ff36366e513e4023d22e7e5c84c",
+  "source": "Official Hugging Face Git-LFS pointer metadata at the pinned revision; payloads were not downloaded",
+  "source_url_template": "https://huggingface.co/meituan-longcat/LongCat-Next/raw/0cf0631862402ff36366e513e4023d22e7e5c84c/{filename}",
+  "shards": [
+    {"filename":"model-00001-of-00015.safetensors","bytes":10469005568,"lfs_sha256":"4152958a84d7d1c43b5ef17e34d1a62f56ecd08e4bc680c2e16799bba4978fc8"},
+    {"filename":"model-00002-of-00015.safetensors","bytes":10469001464,"lfs_sha256":"b6163b3de613da5f18bff50b03e2b29ffc17df3c33c1a0539a303c89c391b6a0"},
+    {"filename":"model-00003-of-00015.safetensors","bytes":10468997368,"lfs_sha256":"d711a29a3361414e74441d49a0310fabe971734bb5279fc983b003bf143952bc"},
+    {"filename":"model-00004-of-00015.safetensors","bytes":10468993272,"lfs_sha256":"899c8240a2ff817c81976cd0b8e0d7fcc8d0fe7b1b1b1e1c5fa7fd12930833ef"},
+    {"filename":"model-00005-of-00015.safetensors","bytes":10468989176,"lfs_sha256":"28f20561eef2fb9d5cd3082aaeb6ea0f5b9f932288a28579be7511e94073edfe"},
+    {"filename":"model-00006-of-00015.safetensors","bytes":10468985080,"lfs_sha256":"831ba5b9e0f7d04a168d95588e6d5d68eba637bc144b504fc2287d021aaa770f"},
+    {"filename":"model-00007-of-00015.safetensors","bytes":10695946096,"lfs_sha256":"30e90dee5dcbf71a537eb61fbe449ab5690a68b93616e201466ff53207a43e5a"},
+    {"filename":"model-00008-of-00015.safetensors","bytes":10731431456,"lfs_sha256":"46e726e739d5f9e893c83879a19eec66092afd749065c1ffd204831c50ada336"},
+    {"filename":"model-00009-of-00015.safetensors","bytes":10733437464,"lfs_sha256":"d3ac9aa868eb4a76f149e75bba0c4e0d4e51cb684b1650ada5b521cd8858c1d9"},
+    {"filename":"model-00010-of-00015.safetensors","bytes":10733438520,"lfs_sha256":"6471bf57eb0282f3f9bac2ca2f9c819f599a0a62dc9f3af7a5680737aec1731f"},
+    {"filename":"model-00011-of-00015.safetensors","bytes":10733437720,"lfs_sha256":"96ea2d0dfb4ec85787508d5fce2949b9d387c72526a38f8efe1f10c9f21da8ec"},
+    {"filename":"model-00012-of-00015.safetensors","bytes":10733436968,"lfs_sha256":"d26342611fc3c135deee9b3a32fb1e4ca85373851006278fcefaa4b985b0c215"},
+    {"filename":"model-00013-of-00015.safetensors","bytes":10733436960,"lfs_sha256":"d7868bf14b01da621df647a9228771292c04f855ab45219bebde6fd307142c09"},
+    {"filename":"model-00014-of-00015.safetensors","bytes":10733436904,"lfs_sha256":"658b6b96aa2f2a964a3a11d8c33ab841c2df4c5c73278436b37a2b09e0828a07"},
+    {"filename":"model-00015-of-00015.safetensors","bytes":2185141040,"lfs_sha256":"46b8a1a119098f56637753d6457972309a485e527a0bb16a66615812d39b2557"}
+  ]
+}

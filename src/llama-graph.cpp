@@ -15,6 +15,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <numeric>
 #include <sstream>
@@ -1173,6 +1174,17 @@ bool llm_graph_input_sampling::can_reuse(const llm_graph_params & params) {
 }
 
 
+ggml_tensor * llm_graph_build_longcat_capture_alias(
+        ggml_context * ctx,
+        ggml_cgraph * graph,
+        ggml_tensor * source) {
+    ggml_tensor * alias = ggml_view_4d(
+        ctx, source, source->ne[0], source->ne[1], source->ne[2], source->ne[3],
+        source->nb[1], source->nb[2], source->nb[3], 0);
+    ggml_build_forward_expand(graph, alias);
+    return alias;
+}
+
 llm_graph_longcat_moe_route llm_graph_build_longcat_moe_route(
         ggml_context * ctx,
         ggml_tensor * logits,
@@ -1216,6 +1228,79 @@ llm_graph_longcat_moe_route llm_graph_build_longcat_moe_route(
     return res;
 }
 
+ggml_tensor * llm_graph_build_longcat_even_ffn_output(
+        ggml_context * ctx,
+        ggml_tensor * residual,
+        ggml_tensor * dense_output,
+        bool bf16_boundary_rounding) {
+    return llm_graph_build_longcat_boundary_add(ctx, residual, dense_output, bf16_boundary_rounding);
+}
+
+ggml_tensor * llm_graph_build_longcat_odd_ffn_output(
+        ggml_context * ctx,
+        ggml_tensor * residual,
+        ggml_tensor * dense_output,
+        ggml_tensor * & shortcut,
+        bool bf16_boundary_rounding) {
+    ggml_tensor * result = llm_graph_build_longcat_even_ffn_output(
+        ctx, residual, dense_output, bf16_boundary_rounding);
+    if (shortcut) {
+        result = llm_graph_build_longcat_boundary_add(ctx, result, shortcut, bf16_boundary_rounding);
+        shortcut = nullptr;
+    }
+    return result;
+}
+
+ggml_tensor * llm_graph_build_longcat_bf16_round_trip(
+        ggml_context * ctx,
+        ggml_tensor * tensor,
+        bool enabled) {
+    if (!enabled) {
+        return tensor;
+    }
+    GGML_ASSERT(tensor->type == GGML_TYPE_F32);
+    return ggml_cast(ctx, ggml_cast(ctx, tensor, GGML_TYPE_BF16), GGML_TYPE_F32);
+}
+
+ggml_tensor * llm_graph_build_longcat_boundary_add(
+        ggml_context * ctx,
+        ggml_tensor * lhs,
+        ggml_tensor * rhs,
+        bool bf16_boundary_rounding) {
+    return llm_graph_build_longcat_bf16_round_trip(
+        ctx, ggml_add(ctx, lhs, rhs), bf16_boundary_rounding);
+}
+
+bool llm_graph_longcat_bf16_boundary_rounding_enabled(llm_arch arch) {
+    if (arch != LLM_ARCH_LONGCAT_NEXT) {
+        return false;
+    }
+    const char * value = std::getenv("LLAMA_LONGCAT_BF16_BOUNDARY_ROUNDING");
+    if (value == nullptr || std::strcmp(value, "0") == 0) {
+        return false;
+    }
+    GGML_ASSERT(std::strcmp(value, "1") == 0 &&
+                "LLAMA_LONGCAT_BF16_BOUNDARY_ROUNDING must be exactly 0 or 1");
+    return true;
+}
+
+bool llm_graph_longcat_bf16_hidden_surface_rounding_enabled(
+        llm_arch arch,
+        bool boundary_rounding_enabled) {
+    if (arch != LLM_ARCH_LONGCAT_NEXT) {
+        return false;
+    }
+    const char * value = std::getenv("LLAMA_LONGCAT_BF16_HIDDEN_SURFACE_ROUNDING");
+    if (value == nullptr || std::strcmp(value, "0") == 0) {
+        return false;
+    }
+    GGML_ASSERT(std::strcmp(value, "1") == 0 &&
+                "LLAMA_LONGCAT_BF16_HIDDEN_SURFACE_ROUNDING must be exactly 0 or 1");
+    GGML_ASSERT(boundary_rounding_enabled &&
+                "LongCat hidden-surface rounding requires boundary rounding");
+    return true;
+}
+
 void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
     // LONGCAT_NGRAM_POSITION_AWARE_HISTORY
     if (!ubatch->token) {
@@ -1230,6 +1315,16 @@ void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
     const int64_t n_tokens = ubatch->n_tokens;
     const int32_t n = n_neighbor;
     const int32_t k = n_split;
+
+    if (preserve_base) {
+        std::vector<float> mask(n_tokens, 0.0f);
+        for (int64_t i = 0; i < n_tokens; ++i) {
+            const llama_token token = ubatch->token[i];
+            mask[i] = ignored_count > 0 && token >= ignored_start &&
+                token < ignored_start + ignored_count ? 1.0f : 0.0f;
+        }
+        ggml_backend_tensor_set(preserve_base, mask.data(), 0, mask.size() * sizeof(float));
+    }
 
     // Reconcile speculative rollback before computing hashes. Target
     // verification evaluates sampled + draft tokens together. Rejected draft
@@ -1298,6 +1393,11 @@ void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
         return (llama_token) 0;
     };
 
+    auto hash_token = [&](llama_token token) {
+        return ignored_count > 0 && token >= ignored_start &&
+            token < ignored_start + ignored_count ? (llama_token) 0 : token;
+    };
+
     auto shifted_token_at = [&](int64_t row, llama_seq_id seq_id, llama_pos pos, int32_t shift) {
         const llama_pos prev_pos = pos - shift;
         if (prev_pos < 0) {
@@ -1308,7 +1408,8 @@ void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
         // segments. The EOS token itself can see earlier tokens in its segment,
         // but tokens after EOS cannot see the EOS or anything before it.
         for (llama_pos p = prev_pos; p < pos; ++p) {
-            if (token_at(row, seq_id, p) == eos_token_id) {
+            const llama_token raw = token_at(row, seq_id, p);
+            if (raw == eos_token_id || hash_token(raw) == 0) {
                 return (llama_token) 0;
             }
         }
@@ -1353,10 +1454,13 @@ void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
                 const llama_seq_id seq_id = ubatch->seq_id[i][0];
                 const llama_pos pos = ubatch->pos[i];
 
-                int64_t hash = (int64_t) ubatch->token[i];
-                for (int32_t p = 0; p < ng - 1; ++p) {
-                    const llama_token prev = shifted_token_at(i, seq_id, pos, p + 1);
-                    hash += (int64_t) prev * power_mods[p];
+                const llama_token current = hash_token(ubatch->token[i]);
+                int64_t hash = current;
+                if (current != 0) {
+                    for (int32_t p = 0; p < ng - 1; ++p) {
+                        const llama_token prev = hash_token(shifted_token_at(i, seq_id, pos, p + 1));
+                        hash += (int64_t) prev * power_mods[p];
+                    }
                 }
 
                 hash_ids[i] = (int32_t) (hash % emb_vocab_dim);
@@ -1367,6 +1471,14 @@ void llm_graph_input_ngram::set_input(const llama_ubatch * ubatch) {
                 hash_ids.data(),
                 0,
                 n_tokens * sizeof(int32_t));
+            if (lookup_masks[index]) {
+                std::vector<float> lookup_mask(n_tokens);
+                for (int64_t i = 0; i < n_tokens; ++i) {
+                    lookup_mask[i] = hash_ids[i] != 0 ? 1.0f : 0.0f;
+                }
+                ggml_backend_tensor_set(lookup_masks[index], lookup_mask.data(), 0,
+                    n_tokens * sizeof(float));
+            }
         }
     }
 

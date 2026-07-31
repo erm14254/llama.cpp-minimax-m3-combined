@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "longcat-next-core-reproducibility-schema-v1",
+  "$id": "longcat-next-core-reproducibility-schema-v2",
   "title": "LongCat-Next official-only reproducibility report",
   "type": "object",
   "required": ["schema_version", "repeat_count", "arrays", "greedy_continuations", "comparison_tolerances", "tolerances_selected_automatically"],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "repeat_count": {"type": "integer", "minimum": 1},
     "arrays": {
       "type": "object",

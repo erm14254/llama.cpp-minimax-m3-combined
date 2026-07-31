@@ -8,6 +8,7 @@ import struct
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
+from typing import Any
 
 EXPECTED_TOTAL = 13450
 EXPECTED_PAYLOAD = 150825367872
@@ -43,6 +44,7 @@ EXPECTED_IMAGE = {
 }
 EXPECTED_HIFT_PARAMETERS = 20821295
 EXPECTED_HIFT_PAYLOAD_BYTES = 83285180
+
 
 class InventoryError(ValueError):
     pass
@@ -113,7 +115,7 @@ def validate_image(path):
     length, header = read_safetensors_header(path)
     require(length == 226408, f"image header length: expected 226408, got {length}")
     require(len(header) == 1771, f"image tensor count: expected 1771, got {len(header)}")
-    summary = defaultdict(lambda: [0, 0, 0, set()])
+    summary: dict[str, list[Any]] = defaultdict(lambda: [0, 0, 0, set()])
     for name, item in header.items():
         require(isinstance(item, dict), f"image tensor {name}: metadata must be an object")
         for field in ("dtype", "shape", "data_offsets"):
@@ -145,8 +147,8 @@ def validate_hift(path):
         require("dtype" in item and "shape" in item,
                 f"HiFT tensor {name}: missing dtype or shape")
         dtypes.add(str(item["dtype"]).replace("torch.", "").upper())
-        require(isinstance(item["shape"], list) and
-                all(isinstance(value, int) and value >= 0 for value in item["shape"]),
+        require(isinstance(item["shape"], list)
+                and all(isinstance(value, int) and value >= 0 for value in item["shape"]),
                 f"HiFT tensor {name}: shape must be an array of non-negative integers")
         parameters += math.prod(item["shape"])
     require(dtypes == {"FLOAT32"} or dtypes == {"F32"},
@@ -239,10 +241,11 @@ def main(argv=None):
         report = validate(args.next_index, args.lite_index, args.config,
                           args.image_header, args.hift_metadata)
     except InventoryError as exc:
-        print(f"inventory error: {exc}", file=sys.stderr)
+        sys.stderr.write(f"inventory error: {exc}\n")
         return 1
-    print(json.dumps(report, indent=2, sort_keys=True))
+    sys.stdout.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

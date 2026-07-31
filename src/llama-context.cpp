@@ -7,6 +7,7 @@
 #include "llama-batch.h"
 #include "llama-io.h"
 #include "llama-memory.h"
+#include "llama-memory-longcat.h"
 #include "llama-mmap.h"
 #include "llama-model.h"
 #include "llama-ext.h"
@@ -386,6 +387,16 @@ llama_context::llama_context(
             /*.ctx_type  =*/ cparams.ctx_type,
             /*.mem_other =*/ llama_get_memory(cparams.ctx_other),
         };
+
+        bool cache_promoted = false;
+        std::string cache_error;
+        if (!llama_memory_params_resolve(model.arch, params_mem, cache_promoted, cache_error)) {
+            throw std::runtime_error(cache_error);
+        }
+        if (cache_promoted) {
+            LLAMA_LOG_WARN("%s: LongCat-Next absorbed MLA queries can exceed the F16 range; "
+                    "promoting the K/V cache from F16 to BF16\n", __func__);
+        }
 
         memory.reset(model.create_memory(params_mem, cparams));
     }
@@ -1381,6 +1392,10 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         return nullptr;
     }
 
+    if (auto * longcat = dynamic_cast<llama_memory_longcat_context *>(mctx)) {
+        longcat->commit();
+    }
+
     ret = GGML_STATUS_SUCCESS;
 
     return res;
@@ -1875,7 +1890,14 @@ int llama_context::decode(const llama_batch & batch_inp) {
 
                 LLAMA_LOG_WARN("%s: removing memory module entries for seq_id = %d, pos = [%d, +inf)\n", __func__, s, pos_min[s]);
 
-                memory->seq_rm(s, pos_min[s], -1);
+                if (auto * longcat = dynamic_cast<llama_memory_longcat *>(memory.get())) {
+                    // Graph input changed only the context's pending history;
+                    // roll back the already-applied underlying KV without
+                    // touching the committed LongCat history.
+                    longcat->rollback_underlying(s, pos_min[s], -1);
+                } else {
+                    memory->seq_rm(s, pos_min[s], -1);
+                }
             }
 
             switch (status) {
@@ -2339,7 +2361,9 @@ uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
         model.arch == LLM_ARCH_QWEN35 ||
         model.arch == LLM_ARCH_QWEN35MOE ||
         model.arch == LLM_ARCH_DEEPSEEK4 ||
-        model.arch == LLM_ARCH_LONGCAT_FLASH_NGRAM) {
+        model.arch == LLM_ARCH_LONGCAT_FLASH_NGRAM ||
+        model.arch == LLM_ARCH_LONGCAT_NEXT) {
+        // LongCat-Next shares the same 28-block MLA/MoE graph size profile.
         return std::max<uint32_t>(n_tokens * 40, 32u * model.n_tensors());
     }
     uint32_t res = std::max<uint32_t>(1024u, 8u*model.n_tensors());
@@ -2417,7 +2441,7 @@ llm_graph_params llama_context::graph_params(
                       const llama_ubatch & ubatch,
             const llama_memory_context_i * mctx,
                           llm_graph_type   gtype) const {
-    return {
+    llm_graph_params params = {
         /*.arch        =*/ model.arch,
         /*.hparams     =*/ model.hparams,
         /*.cparams     =*/ cparams,
@@ -2434,6 +2458,13 @@ llm_graph_params llama_context::graph_params(
         /*.cb          =*/ graph_get_cb(),
         /*.res         =*/ res,
     };
+    if (auto * longcat = dynamic_cast<const llama_memory_longcat_context *>(mctx)) {
+        params.mctx = longcat->base_context();
+        GGML_ASSERT(params.mctx);
+        GGML_ASSERT(dynamic_cast<const llama_memory_longcat_context *>(params.mctx) == nullptr);
+        params.longcat_history = &const_cast<llama_memory_longcat_context *>(longcat)->pending_history();
+    }
+    return params;
 }
 
 ggml_status llama_context::graph_compute(

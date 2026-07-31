@@ -109,6 +109,11 @@ struct llama_hparams {
     uint32_t ngram_neighbor_num     = 0;
     uint32_t ngram_split_num        = 0;
     uint32_t ngram_vocab_size_ratio = 0;
+    uint32_t ngram_hash_vocab_size  = 0;
+    uint32_t ngram_input_output_size = 0;
+    uint32_t ngram_source_vocab_size = 0;
+    uint32_t ngram_ignored_start     = 0;
+    uint32_t ngram_ignored_count     = 0;
 
     float f_norm_eps;
     float f_norm_rms_eps;

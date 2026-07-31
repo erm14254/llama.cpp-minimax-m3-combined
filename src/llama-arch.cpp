@@ -143,6 +143,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
     { LLM_ARCH_TALKIE,               "talkie"              },
     { LLM_ARCH_MELLUM,               "mellum"              },
     { LLM_ARCH_LONGCAT_FLASH_NGRAM,  "longcat-flash-ngram" },
+    { LLM_ARCH_LONGCAT_NEXT,         "longcat-next"        },
     { LLM_ARCH_UNKNOWN,          "(unknown)"        },
 };
 
@@ -206,6 +207,11 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
     { LLM_KV_NGRAM_NEIGHBOR_NUM,                   "%s.ngram.neighbor_num" },
     { LLM_KV_NGRAM_SPLIT_NUM,                      "%s.ngram.split_num" },
     { LLM_KV_NGRAM_VOCAB_SIZE_RATIO,               "%s.ngram.vocab_size_ratio" },
+    { LLM_KV_NGRAM_HASH_VOCAB_SIZE,                 "%s.ngram.hash_vocab_size" },
+    { LLM_KV_NGRAM_INPUT_OUTPUT_SIZE,               "%s.ngram.input_output_vocab_size" },
+    { LLM_KV_NGRAM_SOURCE_VOCAB_SIZE,               "%s.ngram.source_vocab_size" },
+    { LLM_KV_NGRAM_IGNORED_START,                   "%s.ngram.ignored_start" },
+    { LLM_KV_NGRAM_IGNORED_COUNT,                   "%s.ngram.ignored_count" },
     { LLM_KV_NUM_DEEPSTACK_LAYERS,              "%s.n_deepstack_layers"                },
     { LLM_KV_DEEPSTACK_MAPPING,                 "%s.deepstack_mapping"                 },
     { LLM_KV_HIDDEN_ACT,                        "%s.hidden_activation"                 },
@@ -2625,6 +2631,7 @@ static std::set<llm_tensor> llm_get_tensor_names(llm_arch arch) {
                 LLM_TENSOR_ATTN_KV_A_NORM,
             };
         case LLM_ARCH_LONGCAT_FLASH_NGRAM:
+        case LLM_ARCH_LONGCAT_NEXT:
             return {
                 LLM_TENSOR_TOKEN_EMBD,
                 LLM_TENSOR_OUTPUT_NORM,

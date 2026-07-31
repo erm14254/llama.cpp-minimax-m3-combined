@@ -5,7 +5,6 @@ import argparse
 import hashlib
 import importlib.metadata
 import json
-import os
 import importlib.util
 import platform
 import random
@@ -13,6 +12,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 HF_REVISION = "0cf0631862402ff36366e513e4023d22e7e5c84c"
 SOURCE_REVISION = "49dc718151f9943a9dca2c1169541934bb85d83e"
@@ -24,12 +24,15 @@ CONFIG_SHA256 = "9115e9785603b04382a45ebece9092235281f309f56f35eb4e43bcf53150b2a
 TOKENIZER_CONFIG_SHA256 = "22dddd0eb59965adf6e4861a7c8a9ed803595cd16bc86ed6e2d4ed915b9718d4"
 SEEDS = {"python": 20260725, "torch": 20260725, "numpy": 20260725}
 
-def load_core_reference():
+
+def load_core_reference() -> Any:
     path = Path(__file__).with_name("core_reference.py")
     spec = importlib.util.spec_from_file_location("longcat_next_core_reference", path)
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
 
 class FixtureError(ValueError):
     pass
@@ -239,7 +242,9 @@ def parse_args(argv=None):
     parser.add_argument("--config", type=Path)
     parser.add_argument("--tokenizer-config", type=Path)
     parser.add_argument("--output-dir", type=Path, default=Path("longcat-next-reference-output"))
-    parser.add_argument("--mode", choices=("ngram", "inspect", "preflight", "core"), default="ngram")
+    parser.add_argument("--mode", choices=("ngram", "inspect", "preflight", "core",
+                                           "core-worker", "core-diagnose", "core-validate"),
+                        default="ngram")
     parser.add_argument("--model-dir", type=Path,
                         help="local official checkpoint for inspection/core fixtures; never downloaded")
     parser.add_argument("--max-output-bytes", type=int)
@@ -255,11 +260,85 @@ def parse_args(argv=None):
     parser.add_argument("--flash-wheel-path", type=Path,
                         help="original FlashAttention wheel path for identity validation only")
     parser.add_argument("--max-new-tokens", type=int, default=8)
+    parser.add_argument("--case", action="append", default=[],
+                        help="case name (repeatable; diagnose defaults to two localization cases)")
+    parser.add_argument("--attention-backend",
+                        choices=("default", "eager", "sdpa-math", "sdpa-f32"), default="default")
+    parser.add_argument("--run-index", type=int, default=0)
+    parser.add_argument("--shard-manifest", type=Path,
+                        default=Path(__file__).with_name("checkpoint-shards-v2.json"))
+    parser.add_argument("--skip-source-scan", action="store_true",
+                        help="diagnosis only; disqualifies output from acceptance")
+    parser.add_argument("--serialize-all-physical-blocks", action="store_true",
+                        help="diagnosis only: write physical blocks 00 through 27 separately")
+    parser.add_argument("--serialize-block-components-through", type=int,
+                        help="diagnosis only: serialize the exact block-component inventory through block 9")
+    parser.add_argument("--serialize-block-components-window", action="store_true",
+                        help="diagnosis only: serialize an even-aligned physical-block component window")
+    parser.add_argument("--serialize-block-components-window-start", type=int, default=10)
+    parser.add_argument("--serialize-block-components-window-count", type=int, default=4)
+    parser.add_argument("--candidate-dir", type=Path)
     return parser.parse_args(argv)
 
 
+def validate_all_physical_blocks_request(mode, cases, enabled):
+    if enabled:
+        require(mode == "core-diagnose",
+                "--serialize-all-physical-blocks is valid only with --mode core-diagnose")
+        require(len(cases) == 1,
+                "--serialize-all-physical-blocks requires exactly one explicit --case")
+
+
+def validate_block_components_request(mode, cases, through):
+    if through is not None:
+        require(mode == "core-diagnose",
+                "--serialize-block-components-through is valid only with --mode core-diagnose")
+        require(len(cases) == 1,
+                "--serialize-block-components-through requires exactly one explicit --case")
+        require(through == 9,
+                "--serialize-block-components-through currently requires the exact value 9")
+
+
+def validate_block_components_window_request(mode, cases, enabled, start, count, canonical):
+    if enabled:
+        require(mode == "core-diagnose",
+                "--serialize-block-components-window is valid only with --mode core-diagnose")
+        require(len(cases) == 1,
+                "--serialize-block-components-window requires exactly one explicit --case")
+        require(canonical is None,
+                "component-window and canonical component diagnostics are mutually exclusive")
+        require(start >= 0 and start % 2 == 0, "component-window start must be non-negative and even")
+        require(count > 0 and count % 2 == 0, "component-window count must be positive and even")
+        require(start + count <= 28, "component window exceeds physical block 27")
+
+
 def run(args):
-    if args.mode in ("inspect", "preflight", "core"):
+    validate_all_physical_blocks_request(
+        args.mode, getattr(args, "case", []),
+        bool(getattr(args, "serialize_all_physical_blocks", False)))
+    validate_block_components_request(
+        args.mode, getattr(args, "case", []),
+        getattr(args, "serialize_block_components_through", None))
+    validate_block_components_window_request(
+        args.mode, getattr(args, "case", []),
+        bool(getattr(args, "serialize_block_components_window", False)),
+        getattr(args, "serialize_block_components_window_start", 10),
+        getattr(args, "serialize_block_components_window_count", 4),
+        getattr(args, "serialize_block_components_through", None))
+    if args.mode == "core-validate":
+        require(args.candidate_dir is not None, "core-validate requires --candidate-dir")
+        core = load_core_reference()
+        implementation_paths = [Path(__file__), Path(__file__).with_name("core_reference.py"),
+                                Path(__file__).with_name("core_reference_v2.py"),
+                                Path(__file__).with_name("checkpoint-shards-v2.json"),
+                                Path(__file__).with_name("core-accepted-contract-v2.json")]
+        try:
+            return core.v2.validate_candidate(
+                args.candidate_dir, Path(__file__).with_name("core-accepted-contract-v2.json"),
+                implementation_paths), 0
+        except (core.v2.V2Error, OSError, ValueError, json.JSONDecodeError) as exc:
+            raise FixtureError(str(exc)) from exc
+    if args.mode in ("inspect", "preflight", "core", "core-worker", "core-diagnose"):
         require(args.model_dir is not None, f"{args.mode} mode requires --model-dir")
         core = load_core_reference()
         if args.max_output_bytes is None:
@@ -274,9 +353,14 @@ def run(args):
                     args.runtime_profile, args.placement, args.model_dir,
                     args.flash_wheel_path)
                 return {"checkpoint": inspection, "dependencies": dependencies}, 0
-            return core.run_core_generation(args, Path(__file__).resolve().parents[2] /
-                                            "tests/fixtures/longcat-next/ngram-cases.json"), 0
-        except core.CoreFixtureError as exc:
+            fixture = (Path(__file__).resolve().parents[2]
+                       / "tests/fixtures/longcat-next/ngram-cases.json")
+            if args.mode == "core-worker":
+                return core.run_core_worker(args, fixture), 0
+            if args.mode == "core-diagnose":
+                return core.run_core_diagnose(args, fixture), 0
+            return core.run_core_generation(args, fixture), 0
+        except (core.CoreFixtureError, core.v2.V2Error) as exc:
             raise FixtureError(str(exc)) from exc
     if args.max_output_bytes is None:
         args.max_output_bytes = DEFAULT_MAX_BYTES
@@ -325,15 +409,26 @@ def main(argv=None):
     try:
         result, size = run(args)
     except (FixtureError, subprocess.CalledProcessError) as exc:
-        print(f"fixture error: {exc}", file=sys.stderr)
+        if args.mode == "core-validate":
+            sys.stdout.write(json.dumps({"schema_version": 2, "valid": False,
+                                         "error": str(exc)}, indent=2, sort_keys=True) + "\n")
+            return 1
+        sys.stderr.write(f"fixture error: {exc}\n")
         return 1
     if args.mode in ("inspect", "preflight"):
-        print(json.dumps(result, indent=2, sort_keys=True))
-    elif args.mode == "core":
-        print(json.dumps({name: str(path) for name, path in result.items()}, sort_keys=True))
+        sys.stdout.write(json.dumps(result, indent=2, sort_keys=True) + "\n")
+    elif args.mode == "core-validate":
+        sys.stdout.write(json.dumps(result, indent=2, sort_keys=True) + "\n")
+    elif args.mode in ("core", "core-worker", "core-diagnose"):
+        if isinstance(result, dict):
+            sys.stdout.write(json.dumps({name: str(path) for name, path in result.items()}, sort_keys=True) + "\n")
+        else:
+            sys.stdout.write(json.dumps({"output": str(result)}, sort_keys=True) + "\n")
     else:
-        print(json.dumps({"fixture": str(result), "bytes": size, "sha256": sha256(result)}, sort_keys=True))
+        sys.stdout.write(json.dumps({"fixture": str(result), "bytes": size,
+                                     "sha256": sha256(result)}, sort_keys=True) + "\n")
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

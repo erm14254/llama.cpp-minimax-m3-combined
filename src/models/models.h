@@ -445,6 +445,14 @@ struct llama_model_longcat_flash_ngram : public llama_model_base {
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
 };
 
+struct llama_model_longcat_next : public llama_model_longcat_flash_ngram {
+    llama_model_longcat_next(const struct llama_model_params & params) : llama_model_longcat_flash_ngram(params) {}
+
+    void load_arch_hparams(llama_model_loader & ml) override;
+    void load_arch_tensors(llama_model_loader & ml) override;
+    std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
+};
+
 
 struct llama_model_qwen : public llama_model_base {
     llama_model_qwen(const struct llama_model_params & params) : llama_model_base(params) {}

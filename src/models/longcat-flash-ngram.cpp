@@ -66,7 +66,9 @@ void llama_model_longcat_flash_ngram::load_arch_tensors(llama_model_loader &) {
         GGML_ASSERT(n_ngram > 0 && n_ngram <= (uint32_t) llama_model::NGRAM_MAX);
 
         const int64_t ngram_emb_dim = n_embd / n_ngram;
-        const int64_t ngram_m = (int64_t) hparams.ngram_vocab_size_ratio * n_vocab;
+        const int64_t hash_vocab = hparams.ngram_hash_vocab_size > 0
+            ? hparams.ngram_hash_vocab_size : n_vocab;
+        const int64_t ngram_m = (int64_t) hparams.ngram_vocab_size_ratio * hash_vocab;
 
         for (uint32_t j = 0; j < n_ngram; ++j) {
             const int64_t ngram_vocab_j = ngram_m + j * 2 + 1;
@@ -325,8 +327,16 @@ llama_model_longcat_flash_ngram::graph::graph(
 
     // MoE shortcut: computed on even blocks, added on the following odd block
     ggml_tensor * moe_shortcut = nullptr;
+    const bool bf16_boundary_rounding =
+        llm_graph_longcat_bf16_boundary_rounding_enabled(model.arch);
+    const bool bf16_hidden_surface_rounding =
+        llm_graph_longcat_bf16_hidden_surface_rounding_enabled(
+            model.arch, bf16_boundary_rounding);
 
     inpL = build_inp_embd(model.tok_embd);
+    // Capture the computed token embedding result, not the optional vector-
+    // embedding input tensor named by generic build_inp_embd().
+    cb(inpL, "inp_embd", -1);
 
     // N-gram embedding augmentation
     // Computes polynomial rolling hashes over token ID history, looks up 12 embedding tables,
@@ -336,7 +346,8 @@ llama_model_longcat_flash_ngram::graph::graph(
         const uint32_t n_neighbor = hparams.ngram_neighbor_num;    // 4
         const uint32_t n_split    = hparams.ngram_split_num;       // 4
         const uint32_t n_ngram    = (n_neighbor - 1) * n_split;    // 12
-        const int64_t  vocab_size   = model.tok_embd->ne[1];
+        const int64_t  vocab_size   = hparams.ngram_hash_vocab_size > 0
+            ? hparams.ngram_hash_vocab_size : model.tok_embd->ne[1];
         const int64_t  m            = (int64_t)hparams.ngram_vocab_size_ratio * vocab_size;
         const int32_t  eos_token_id = model.vocab.token_eos();
         GGML_ASSERT(eos_token_id == 2);
@@ -345,11 +356,20 @@ llama_model_longcat_flash_ngram::graph::graph(
         auto inp = std::make_unique<llm_graph_input_ngram>(
             (int32_t)n_ngram, (int32_t)n_neighbor, (int32_t)n_split,
             (int32_t)vocab_size, m, eos_token_id,
-            &res->ngram_token_history);
+            (int32_t) hparams.ngram_ignored_start,
+            (int32_t) hparams.ngram_ignored_count,
+            params.longcat_history ? params.longcat_history : &res->ngram_token_history);
+
+        inp->preserve_base = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_tokens);
+        ggml_set_input(inp->preserve_base);
+
+        ggml_tensor * base_embedding = inpL;
 
         for (uint32_t j = 0; j < n_ngram; j++) {
             inp->ngram_ids[j] = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
             ggml_set_input(inp->ngram_ids[j]);
+            inp->lookup_masks[j] = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_tokens);
+            ggml_set_input(inp->lookup_masks[j]);
         }
 
         // For each embedder: lookup embedding table, project to hidden_size, accumulate
@@ -360,6 +380,7 @@ llama_model_longcat_flash_ngram::graph::graph(
             cb(emb, "ngram_emb", j);
 
             ggml_tensor * proj = ggml_mul_mat(ctx0, model.ngram_proj[j], emb);
+            proj = ggml_mul(ctx0, proj, ggml_reshape_2d(ctx0, inp->lookup_masks[j], 1, n_tokens));
             cb(proj, "ngram_proj", j);
 
             inpL = ggml_add(ctx0, inpL, proj);
@@ -367,6 +388,13 @@ llama_model_longcat_flash_ngram::graph::graph(
 
         // Normalize: x = (base + sum_of_projections) / (1 + n_ngram)
         inpL = ggml_scale(ctx0, inpL, 1.0f / (1.0f + (float)n_ngram));
+        if (hparams.ngram_ignored_count > 0) {
+            ggml_tensor * mask = ggml_reshape_2d(ctx0, inp->preserve_base, 1, n_tokens);
+            inpL = ggml_add(ctx0, inpL,
+                ggml_mul(ctx0, ggml_sub(ctx0, base_embedding, inpL), mask));
+        }
+        inpL = llm_graph_build_longcat_bf16_round_trip(
+            ctx0, inpL, bf16_hidden_surface_rounding);
         cb(inpL, "inp_embd_ngram", -1);
 
         res->add_input(std::move(inp));
@@ -380,11 +408,17 @@ llama_model_longcat_flash_ngram::graph::graph(
 
     for (int il = 0; il < n_layer; ++il) {
         ggml_tensor * inpSA = inpL;
+        // cb() assigns a name to its tensor. Use a distinct view so the
+        // upstream inp_embd_ngram/l_out surface retains its capture name.
+        ggml_tensor * block_input_capture = llm_graph_build_longcat_capture_alias(ctx0, gf, inpL);
+        cb(block_input_capture, "block_in", il);
 
         const bool is_even_block = (il % 2 == 0);
 
         // norm
         cur = build_norm(inpL, model.layers[il].attn_norm, NULL, LLM_NORM_RMS, il);
+        cur = llm_graph_build_longcat_bf16_round_trip(
+            ctx0, cur, bf16_hidden_surface_rounding);
         cb(cur, "attn_norm", il);
 
         // MLA self-attention (same as DeepSeek2 with absorption optimization)
@@ -481,6 +515,9 @@ llama_model_longcat_flash_ngram::graph::graph(
             cur = build_attn(inp_attn_k,
                     model.layers[il].wo, NULL, model.layers[il].wo_s,
                     Qcur, Kcur, Vcur, nullptr, nullptr, model.layers[il].wv_b, kq_scale, il);
+            cur = llm_graph_build_longcat_bf16_round_trip(
+                ctx0, cur, bf16_hidden_surface_rounding);
+            cb(cur, "attn_out", il);
         }
 
         if (il == n_layer - 1 && inp_out_ids && cparams.embeddings_nextn_masked) {
@@ -493,11 +530,14 @@ llama_model_longcat_flash_ngram::graph::graph(
         }
 
         // attention residual
-        ggml_tensor * ffn_inp = ggml_add(ctx0, cur, inpSA);
+        ggml_tensor * ffn_inp = llm_graph_build_longcat_boundary_add(
+            ctx0, cur, inpSA, bf16_boundary_rounding);
         cb(ffn_inp, "ffn_inp", il);
 
         // FFN norm
         cur = build_norm(ffn_inp, model.layers[il].ffn_norm, NULL, LLM_NORM_RMS, il);
+        cur = llm_graph_build_longcat_bf16_round_trip(
+            ctx0, cur, bf16_hidden_surface_rounding);
         cb(cur, "ffn_norm", il);
 
         if (is_even_block) {
@@ -561,7 +601,8 @@ llama_model_longcat_flash_ngram::graph::graph(
                 ggml_tensor * identity_residual = ggml_mul(ctx0, cur, route.identity_weight_sum);
                 cb(identity_residual, "identity_residual", il);
 
-                moe_shortcut = ggml_add(ctx0, moe_out, identity_residual);
+                moe_shortcut = llm_graph_build_longcat_boundary_add(
+                    ctx0, moe_out, identity_residual, bf16_boundary_rounding);
                 cb(moe_shortcut, "moe_shortcut", il);
             }
 
@@ -571,6 +612,8 @@ llama_model_longcat_flash_ngram::graph::graph(
                 model.layers[il].ffn_gate_shexp, NULL, NULL,
                 model.layers[il].ffn_down_shexp, NULL, NULL,
                 NULL, LLM_FFN_SILU, LLM_FFN_PAR, il);
+            cur = llm_graph_build_longcat_bf16_round_trip(
+                ctx0, cur, bf16_hidden_surface_rounding);
             cb(cur, "ffn_out", il);
 
         } else {
@@ -582,18 +625,23 @@ llama_model_longcat_flash_ngram::graph::graph(
                 model.layers[il].ffn_gate, NULL, NULL,
                 model.layers[il].ffn_down, NULL, NULL,
                 NULL, LLM_FFN_SILU, LLM_FFN_PAR, il);
+            cur = llm_graph_build_longcat_bf16_round_trip(
+                ctx0, cur, bf16_hidden_surface_rounding);
             cb(cur, "ffn_out", il);
 
-            // Add MoE shortcut from the paired even block
-            if (moe_shortcut) {
-                cur = ggml_add(ctx0, cur, moe_shortcut);
-                cb(cur, "ffn_out_with_moe", il);
-                moe_shortcut = nullptr;
-            }
+            // Preserve Python's left-associative grouping exactly:
+            // (residual + dense MLP[1] output) + shortcut.
+            cur = llm_graph_build_longcat_odd_ffn_output(
+                ctx0, ffn_inp, cur, moe_shortcut, bf16_boundary_rounding);
+            cb(cur, "ffn_out_with_moe", il);
         }
 
-        // residual
-        cur = ggml_add(ctx0, cur, ffn_inp);
+        // The odd path consumed its residual in the ordered helper above.
+        // Even blocks retain the single ordinary residual update.
+        if (is_even_block) {
+            cur = llm_graph_build_longcat_even_ffn_output(
+                ctx0, ffn_inp, cur, bf16_boundary_rounding);
+        }
 
         cur = build_cvec(cur, il);
         cb(cur, "l_out", il);

@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "criterion": "abs(candidate-reference) <= atol + rtol * abs(reference)",
+  "bf16": {
+    "base_embedding": {
+      "atol": 0,
+      "rtol": 0
+    },
+    "ngram_projection_raw": {
+      "atol": 0.0625,
+      "rtol": 0.015625
+    },
+    "fused_pre_trunk_embedding": {
+      "atol": 0.0625,
+      "rtol": 0.015625
+    },
+    "physical_block_00": {
+      "atol": 0.125,
+      "rtol": 0.03125
+    },
+    "physical_block_01": {
+      "atol": 0.125,
+      "rtol": 0.03125
+    },
+    "physical_block_02": {
+      "atol": 0.125,
+      "rtol": 0.03125
+    },
+    "physical_block_27": {
+      "atol": 0.25,
+      "rtol": 0.05
+    },
+    "final_normalized_hidden_state": {
+      "atol": 0.25,
+      "rtol": 0.05
+    },
+    "selected_logits": {
+      "atol": 0.5,
+      "rtol": 0.05
+    },
+    "complete_final_position_logits": {
+      "atol": 0.5,
+      "rtol": 0.05
+    },
+    "topk_values": {
+      "atol": 0.5,
+      "rtol": 0.05
+    }
+  },
+  "f16": {
+    "base_embedding": {
+      "atol": 0,
+      "rtol": 0
+    },
+    "ngram_projection_raw": {
+      "atol": 0.015625,
+      "rtol": 0.00390625
+    },
+    "fused_pre_trunk_embedding": {
+      "atol": 0.015625,
+      "rtol": 0.00390625
+    },
+    "physical_block_00": {
+      "atol": 0.0625,
+      "rtol": 0.015625
+    },
+    "physical_block_01": {
+      "atol": 0.0625,
+      "rtol": 0.015625
+    },
+    "physical_block_02": {
+      "atol": 0.0625,
+      "rtol": 0.015625
+    },
+    "physical_block_27": {
+      "atol": 0.125,
+      "rtol": 0.025
+    },
+    "final_normalized_hidden_state": {
+      "atol": 0.125,
+      "rtol": 0.025
+    },
+    "selected_logits": {
+      "atol": 0.25,
+      "rtol": 0.025
+    },
+    "complete_final_position_logits": {
+      "atol": 0.25,
+      "rtol": 0.025
+    },
+    "topk_values": {
+      "atol": 0.25,
+      "rtol": 0.025
+    }
+  }
+}

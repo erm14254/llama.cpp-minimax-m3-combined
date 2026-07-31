@@ -29,7 +29,16 @@ implementation. Generation fails unless they match exactly for every case.
 The two core-*.json schema files define local-only weight-backed metadata and
 official reproducibility reports. They contain no generated activations. Actual
 longcat-next-core-*.npz/json files remain outside the repository pending review.
+Those core documents now use schema version 2. Acceptance still contains exactly
+433 arrays per precision; diagnostic hooks finite-check all 28 physical blocks
+without expanding the accepted inventory. See
+`docs/longcat-next/REFERENCE_GENERATOR_V2.md`.
 
 The manifest preserves the official-pinned runtime versions separately from the
 Blackwell-compatible execution policy. Local core metadata must record exact installed
 versions and every departure; it must never rewrite the official provenance.
+
+`stage1-tolerances.json` is the immutable cross-implementation policy selected
+before the first local C++ parity run. Unlike the Stage-0 manifest's still-pending
+historical fields, the Stage-1 comparator applies these checked values and does not
+tune them after observing candidate output.

@@ -4,6 +4,7 @@
 #include "llama-batch.h"
 #include "llama-hparams.h"
 #include "llama-adapter.h"
+#include "llama-longcat-history.h"
 
 #include <cstdint>
 #include <deque>
@@ -658,7 +659,7 @@ public:
 };
 
 // LONGCAT_NGRAM_POSITION_AWARE_HISTORY
-using llm_ngram_token_history = std::map<llama_seq_id, std::deque<std::pair<llama_pos, llama_token>>>;
+using llm_ngram_token_history = llama_longcat_token_history;
 
 
 struct llm_graph_longcat_moe_route {
@@ -671,6 +672,13 @@ struct llm_graph_longcat_moe_route {
     ggml_tensor * identity_weight_sum = nullptr;
 };
 
+// Return a distinct tensor object that aliases the same storage. Diagnostic
+// callbacks may name this view without overwriting the source surface name.
+ggml_tensor * llm_graph_build_longcat_capture_alias(
+        ggml_context * ctx,
+        ggml_cgraph * graph,
+        ggml_tensor * source);
+
 llm_graph_longcat_moe_route llm_graph_build_longcat_moe_route(
         ggml_context * ctx,
         ggml_tensor * logits,
@@ -680,6 +688,40 @@ llm_graph_longcat_moe_route llm_graph_build_longcat_moe_route(
         int32_t n_expert_total,
         int32_t n_expert_used,
         float expert_weights_scale);
+
+// Ordered LongCat residual helpers. The odd-sublayer helper matches
+// LongcatFlashDecoderLayer.forward() exactly:
+// (residual + dense_output) + shortcut.
+ggml_tensor * llm_graph_build_longcat_even_ffn_output(
+        ggml_context * ctx,
+        ggml_tensor * residual,
+        ggml_tensor * dense_output,
+        bool bf16_boundary_rounding = false);
+
+ggml_tensor * llm_graph_build_longcat_odd_ffn_output(
+        ggml_context * ctx,
+        ggml_tensor * residual,
+        ggml_tensor * dense_output,
+        ggml_tensor * & shortcut,
+        bool bf16_boundary_rounding = false);
+
+// Temporary diagnostic precision spike. Disabled calls preserve the input
+// pointer; enabled calls perform an actual F32 -> BF16 -> F32 graph round trip.
+ggml_tensor * llm_graph_build_longcat_bf16_round_trip(
+        ggml_context * ctx,
+        ggml_tensor * tensor,
+        bool enabled);
+
+ggml_tensor * llm_graph_build_longcat_boundary_add(
+        ggml_context * ctx,
+        ggml_tensor * lhs,
+        ggml_tensor * rhs,
+        bool bf16_boundary_rounding);
+
+bool llm_graph_longcat_bf16_boundary_rounding_enabled(llm_arch arch);
+bool llm_graph_longcat_bf16_hidden_surface_rounding_enabled(
+        llm_arch arch,
+        bool boundary_rounding_enabled);
 
 // N-gram hash embedding input for LongCat-Flash-Ngram
 // Computes polynomial rolling hash IDs from token history and current batch,
@@ -693,6 +735,8 @@ public:
             int32_t vocab_size,     // model vocab size
             int64_t m,              // ngram_vocab_size_ratio * vocab_size
             int32_t eos_token_id,   // EOS token that terminates n-gram history segments
+            int32_t ignored_start,
+            int32_t ignored_count,
             llm_ngram_token_history * token_history) // persistent history (owned by llm_graph_result)
         : n_embedders(n_embedders)
         , n_neighbor(n_neighbor)
@@ -700,6 +744,8 @@ public:
         , vocab_size(vocab_size)
         , m(m)
         , eos_token_id(eos_token_id)
+        , ignored_start(ignored_start)
+        , ignored_count(ignored_count)
         , token_history(token_history) {}
     virtual ~llm_graph_input_ngram() = default;
 
@@ -708,6 +754,8 @@ public:
     // one I32 [n_tokens] tensor per embedder
     static constexpr int NGRAM_MAX_EMBEDDERS = 12;
     ggml_tensor * ngram_ids[NGRAM_MAX_EMBEDDERS] = {};
+    ggml_tensor * lookup_masks[NGRAM_MAX_EMBEDDERS] = {};
+    ggml_tensor * preserve_base = nullptr;
 
     const int32_t n_embedders;
     const int32_t n_neighbor;
@@ -715,6 +763,8 @@ public:
     const int32_t vocab_size;
     const int64_t m;
     const int32_t eos_token_id;
+    const int32_t ignored_start;
+    const int32_t ignored_count;
 
     llm_ngram_token_history * token_history;
 };
@@ -775,9 +825,16 @@ struct llm_graph_params {
 
     llm_graph_result * res;
 
+    llama_longcat_token_history * longcat_history = nullptr;
+
     // return true if the "other" params would result in a graph with the same topology as with the current params
     //   having the same topology allows us to reuse the graph in some cases
     bool allow_reuse(const llm_graph_params & other) const {
+        // LongCat batch contexts own transactional working histories. A graph
+        // input must never retain the pointer from a destroyed prior context.
+        if (longcat_history != other.longcat_history) {
+            return false;
+        }
         // first check the ubatch
         bool can_reuse_ubatch =
             ubatch.equal_seqs() == other.ubatch.equal_seqs() &&

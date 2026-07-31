@@ -866,6 +866,21 @@ class GGUFWriter:
     def add_ngram_vocab_size_ratio(self, ratio: int) -> None:
         self.add_uint32(Keys.LLM.NGRAM_VOCAB_SIZE_RATIO.format(arch=self.arch), ratio)
 
+    def add_ngram_hash_vocab_size(self, size: int) -> None:
+        self.add_uint32(Keys.LLM.NGRAM_HASH_VOCAB_SIZE.format(arch=self.arch), size)
+
+    def add_ngram_input_output_size(self, size: int) -> None:
+        self.add_uint32(Keys.LLM.NGRAM_INPUT_OUTPUT_SIZE.format(arch=self.arch), size)
+
+    def add_ngram_source_vocab_size(self, size: int) -> None:
+        self.add_uint32(Keys.LLM.NGRAM_SOURCE_VOCAB_SIZE.format(arch=self.arch), size)
+
+    def add_ngram_ignored_start(self, start: int) -> None:
+        self.add_uint32(Keys.LLM.NGRAM_IGNORED_START.format(arch=self.arch), start)
+
+    def add_ngram_ignored_count(self, count: int) -> None:
+        self.add_uint32(Keys.LLM.NGRAM_IGNORED_COUNT.format(arch=self.arch), count)
+
     def add_swiglu_clamp_exp(self, values: Sequence[float]) -> None:
         self.add_array(Keys.LLM.SWIGLU_CLAMP_EXP.format(arch=self.arch), values)
 
