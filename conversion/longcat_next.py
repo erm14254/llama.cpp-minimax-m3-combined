@@ -19,6 +19,23 @@ from .longcat_next_inventory import (
 )
 
 
+def round_router_correction_bias_for_outtype(
+    data_torch: Tensor, ftype: gguf.LlamaFileType
+) -> Tensor:
+    """Match the checkpoint parameter dtype used by Transformers inference.
+
+    The generic converter stores one-dimensional bias tensors as F32 even for
+    mostly-BF16/F16 exports. LongCat-Next loads this FP32 source parameter into
+    the model's requested inference dtype, so preserve those rounded values
+    while retaining the generic F32 GGUF storage policy.
+    """
+    if ftype == gguf.LlamaFileType.MOSTLY_BF16:
+        return data_torch.bfloat16().float()
+    if ftype == gguf.LlamaFileType.MOSTLY_F16:
+        return data_torch.half().float()
+    return data_torch
+
+
 @ModelBase.register("LongcatNextForCausalLM")
 class LongcatNextModel(LongcatFlashNgramModel):
     """Provisional text-core-only LongCat-Next converter."""
@@ -81,4 +98,7 @@ class LongcatNextModel(LongcatFlashNgramModel):
         if name == "lm_head.weight" and data_torch.shape[0] != self.CORE_VOCAB_SIZE:
             raise ValueError(
                 f"LongCat-Next lm_head rows must be {self.CORE_VOCAB_SIZE}, got {data_torch.shape[0]}")
+        if name.endswith(".mlp.router.e_score_correction_bias"):
+            data_torch = round_router_correction_bias_for_outtype(
+                data_torch, self.ftype)
         yield from super().modify_tensors(data_torch, name, bid)
