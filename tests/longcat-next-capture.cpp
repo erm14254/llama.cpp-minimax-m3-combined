@@ -82,7 +82,9 @@ static bool wanted(const std::string & name) {
 
 static bool wanted_layer0(const std::string & name) {
     static const std::vector<std::string> names = {
-        "attn_norm-0", "q_scaled-0", "kv_cmpr_scaled-0", "q_nope_absorbed_perm-0",
+        "attn_norm-0", "q_a_proj-0", "q_a_norm-0", "q_b_proj-0",
+        "q_scaled-0", "kv_cmpr_pe-0", "kv_cmpr_pre_norm-0", "kv_cmpr_norm-0",
+        "kv_cmpr_scaled-0", "q_nope_absorbed_perm-0",
         "Qcur-0", "Kcur-0", "Vcur-0", "kq-0", "kq_soft_max-0", "kqv-0",
         "kqv_mla-0", "fattn_mla-0", "kqv_out-0", "attn_out-0", "ffn_inp-0",
         "ffn_norm-0", "ffn_out-0", "l_out-0"};
@@ -378,7 +380,9 @@ static int self_test() {
     if (!parse_cache_type("bf16", parsed) || parsed != capture_cache_type::BF16) return 34;
     if (!parse_cache_type("f32", parsed) || parsed != capture_cache_type::F32) return 35;
     if (parse_cache_type("invalid", parsed)) return 36;
-    for (const char * name : {"kq-0", "kq_soft_max-0", "kqv-0", "kqv_mla-0",
+    for (const char * name : {"q_a_proj-0", "q_a_norm-0", "q_b_proj-0",
+            "kv_cmpr_pe-0", "kv_cmpr_pre_norm-0", "kv_cmpr_norm-0",
+            "kq-0", "kq_soft_max-0", "kqv-0", "kqv_mla-0",
             "fattn_mla-0", "kqv_out-0", "attn_out-0"}) {
         if (!wanted_layer0(name)) return 37;
     }

@@ -381,9 +381,13 @@ llama_model_longcat_flash_ngram::graph::graph(
 
             ggml_tensor * proj = ggml_mul_mat(ctx0, model.ngram_proj[j], emb);
             proj = ggml_mul(ctx0, proj, ggml_reshape_2d(ctx0, inp->lookup_masks[j], 1, n_tokens));
+            proj = llm_graph_build_longcat_bf16_round_trip(
+                ctx0, proj, bf16_hidden_surface_rounding);
             cb(proj, "ngram_proj", j);
 
             inpL = ggml_add(ctx0, inpL, proj);
+            inpL = llm_graph_build_longcat_bf16_round_trip(
+                ctx0, inpL, bf16_hidden_surface_rounding);
         }
 
         // Normalize: x = (base + sum_of_projections) / (1 + n_ngram)
@@ -416,7 +420,13 @@ llama_model_longcat_flash_ngram::graph::graph(
         const bool is_even_block = (il % 2 == 0);
 
         // norm
-        cur = build_norm(inpL, model.layers[il].attn_norm, NULL, LLM_NORM_RMS, il);
+        // LongCat BF16 contract: round the normalized activation before the
+        // BF16 norm-weight multiply, then preserve the existing BF16 surface.
+        cur = ggml_rms_norm(ctx0, inpL, hparams.f_norm_rms_eps);
+        cb(cur, "norm", il);
+        cur = llm_graph_build_longcat_bf16_round_trip(
+            ctx0, cur, bf16_hidden_surface_rounding);
+        cur = ggml_mul(ctx0, cur, model.layers[il].attn_norm);
         cur = llm_graph_build_longcat_bf16_round_trip(
             ctx0, cur, bf16_hidden_surface_rounding);
         cb(cur, "attn_norm", il);
@@ -428,13 +438,13 @@ llama_model_longcat_flash_ngram::graph::graph(
             if (model.layers[il].wq_a) {
                 // LoRA Q path
                 q = ggml_mul_mat(ctx0, model.layers[il].wq_a, cur);
-                cb(q, "q", il);
+                cb(q, "q_a_proj", il);
 
                 q = build_norm(q, model.layers[il].attn_q_a_norm, nullptr, LLM_NORM_RMS, il);
-                cb(q, "q", il);
+                cb(q, "q_a_norm", il);
 
                 q = ggml_mul_mat(ctx0, model.layers[il].wq_b, q);
-                cb(q, "q", il);
+                cb(q, "q_b_proj", il);
 
                 // MLA LoRA scaling: q *= sqrt(hidden_size / q_lora_rank)
                 q = ggml_scale(ctx0, q, mla_scale_q);
@@ -465,7 +475,7 @@ llama_model_longcat_flash_ngram::graph::graph(
             ggml_tensor * kv_cmpr =
                 ggml_view_2d(ctx0, kv_cmpr_pe, kv_lora_rank, n_tokens,
                              ggml_row_size(kv_cmpr_pe->type, kv_lora_rank + n_embd_head_qk_rope), 0);
-            cb(kv_cmpr, "kv_cmpr", il);
+            cb(kv_cmpr, "kv_cmpr_pre_norm", il);
 
             ggml_tensor * k_pe = ggml_view_3d(ctx0, kv_cmpr_pe, n_embd_head_qk_rope, 1, n_tokens,
                                               ggml_row_size(kv_cmpr_pe->type, kv_lora_rank + n_embd_head_qk_rope),
@@ -484,7 +494,7 @@ llama_model_longcat_flash_ngram::graph::graph(
 
             // normalize compressed KV
             kv_cmpr = build_norm(kv_cmpr, model.layers[il].attn_kv_a_norm, nullptr, LLM_NORM_RMS, il);
-            cb(kv_cmpr, "kv_cmpr", il);
+            cb(kv_cmpr, "kv_cmpr_norm", il);
 
             // MLA LoRA scaling: kv_cmpr *= sqrt(hidden_size / kv_lora_rank)
             kv_cmpr = ggml_scale(ctx0, kv_cmpr, mla_scale_kv);
@@ -535,7 +545,12 @@ llama_model_longcat_flash_ngram::graph::graph(
         cb(ffn_inp, "ffn_inp", il);
 
         // FFN norm
-        cur = build_norm(ffn_inp, model.layers[il].ffn_norm, NULL, LLM_NORM_RMS, il);
+        // Same LongCat BF16 weighted-RMSNorm contract as the attention norm.
+        cur = ggml_rms_norm(ctx0, ffn_inp, hparams.f_norm_rms_eps);
+        cb(cur, "norm", il);
+        cur = llm_graph_build_longcat_bf16_round_trip(
+            ctx0, cur, bf16_hidden_surface_rounding);
+        cur = ggml_mul(ctx0, cur, model.layers[il].ffn_norm);
         cur = llm_graph_build_longcat_bf16_round_trip(
             ctx0, cur, bf16_hidden_surface_rounding);
         cb(cur, "ffn_norm", il);

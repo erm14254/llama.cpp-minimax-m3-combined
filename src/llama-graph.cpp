@@ -2829,13 +2829,45 @@ ggml_tensor * llm_graph_context::build_attn_mha(
             cb(v, "v_cont", il);
         }
 
-        ggml_tensor * kqv = ggml_mul_mat(ctx0, v, kq);
-        cb(kqv, "kqv", il);
+        ggml_tensor * kqv = nullptr;
 
-        // for MLA with the absorption optimization, we need to "decompress" from MQA back to MHA
-        if (v_mla) {
-            kqv = ggml_mul_mat(ctx0, v_mla, kqv);
+        // LongCat-Next BF16 parity: the reference applies the per-head value
+        // projection before attention probability accumulation. Keep the
+        // existing post-attention MLA decompression path for every other
+        // architecture and for non-BF16 LongCat-Next cache values.
+        const bool longcat_next_bf16_preexpand_v =
+            arch == LLM_ARCH_LONGCAT_NEXT && v_mla && v->type == GGML_TYPE_BF16;
+
+        if (longcat_next_bf16_preexpand_v) {
+            GGML_ASSERT(v->ne[0] == kq->ne[0]);
+            GGML_ASSERT(v->ne[1] == v_mla->ne[0]);
+            GGML_ASSERT(v_mla->ne[2] == q->ne[2]);
+
+            // `v` is [n_kv, kv_lora_rank, 1, stream] in the orientation
+            // consumed by ggml_mul_mat(v, kq). Restore compressed-V matrix
+            // orientation, broadcast the identical MQA values across heads,
+            // project with Wv, round the projected value surface to BF16, then
+            // restore attention-matmul orientation.
+            ggml_tensor * v_compressed = ggml_cont(ctx0, ggml_transpose(ctx0, v));
+            v_compressed = ggml_repeat_4d(
+                ctx0, v_compressed,
+                v_compressed->ne[0], v_compressed->ne[1], v_mla->ne[2], v_compressed->ne[3]);
+
+            ggml_tensor * v_expanded = ggml_mul_mat(ctx0, v_mla, v_compressed);
+            v_expanded = ggml_cast(ctx0, v_expanded, GGML_TYPE_BF16);
+            v_expanded = ggml_cont(ctx0, ggml_transpose(ctx0, v_expanded));
+
+            kqv = ggml_mul_mat(ctx0, v_expanded, kq);
             cb(kqv, "kqv_mla", il);
+        } else {
+            kqv = ggml_mul_mat(ctx0, v, kq);
+            cb(kqv, "kqv", il);
+
+            // for MLA with the absorption optimization, we need to "decompress" from MQA back to MHA
+            if (v_mla) {
+                kqv = ggml_mul_mat(ctx0, v_mla, kqv);
+                cb(kqv, "kqv_mla", il);
+            }
         }
 
         cur = ggml_permute(ctx0, kqv, 0, 2, 1, 3);
