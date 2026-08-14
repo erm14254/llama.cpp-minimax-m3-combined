@@ -807,6 +807,24 @@ class GGUFWriter:
         key = Keys.Attention.Indexer.TYPES.format(arch=self.arch)
         self.add_array(key, value)
 
+    def add_indexer_init_tokens(self, count: int) -> None:
+        self.add_uint32(Keys.Attention.Indexer.INIT_TOKENS.format(arch=self.arch), count)
+
+    def add_indexer_local_tokens(self, count: int) -> None:
+        self.add_uint32(Keys.Attention.Indexer.LOCAL_TOKENS.format(arch=self.arch), count)
+
+    def add_indexer_k_norm_type(self, value: str) -> None:
+        self.add_string(Keys.Attention.Indexer.K_NORM_TYPE.format(arch=self.arch), value)
+
+    def add_indexer_k_norm_eps(self, value: float) -> None:
+        self.add_float32(Keys.Attention.Indexer.K_NORM_EPS.format(arch=self.arch), value)
+
+    def add_indexer_rope_interleave(self, value: bool) -> None:
+        self.add_bool(Keys.Attention.Indexer.ROPE_INTERLEAVE.format(arch=self.arch), value)
+
+    def add_indexer_cli_factor(self, count: int) -> None:
+        self.add_uint32(Keys.Attention.Indexer.CLI_FACTOR.format(arch=self.arch), count)
+
     def add_max_alibi_bias(self, bias: float) -> None:
         self.add_float32(Keys.Attention.MAX_ALIBI_BIAS.format(arch=self.arch), bias)
 
@@ -899,6 +917,15 @@ class GGUFWriter:
 
     def add_nextn_predict_layers(self, count: int) -> None:
         self.add_uint32(Keys.LLM.NEXTN_PREDICT_LAYERS.format(arch=self.arch), count)
+
+    def add_mtp_num_layers(self, count: int) -> None:
+        self.add_uint32(Keys.MTP.NUM_LAYERS.format(arch=self.arch), count)
+
+    def add_mtp_replicate_modules(self, value: bool) -> None:
+        self.add_bool(Keys.MTP.REPLICATE_MODULES.format(arch=self.arch), value)
+
+    def add_mtp_dsa_cli(self, value: bool) -> None:
+        self.add_bool(Keys.MTP.DSA_CLI.format(arch=self.arch), value)
 
     def add_swin_norm(self, value: bool) -> None:
         self.add_bool(Keys.LLM.SWIN_NORM.format(arch=self.arch), value)

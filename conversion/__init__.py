@@ -129,6 +129,7 @@ TEXT_MODEL_MAP: dict[str, str] = {
     "KimiLinearModel": "kimi_linear",
     "KimiVLForConditionalGeneration": "deepseek",
     "LongcatFlashNgramForCausalLM": "longcat_flash_ngram",
+    "LongcatFlashSparseForCausalLM": "longcat_flash_ngram",
     "LFM2ForCausalLM": "lfm2",
     "LLaDAMoEModel": "llada",
     "LLaDAMoEModelLM": "llada",

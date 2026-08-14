@@ -218,6 +218,17 @@ class Keys:
             BLOCK_SIZE   = "{arch}.attention.indexer.block_size"    # MSA
             LOCAL_BLOCKS = "{arch}.attention.indexer.local_blocks"  # MSA
             TYPES      = "{arch}.attention.indexer.types"
+            INIT_TOKENS     = "{arch}.attention.indexer.init_tokens"
+            LOCAL_TOKENS    = "{arch}.attention.indexer.local_tokens"
+            K_NORM_TYPE     = "{arch}.attention.indexer.k_norm_type"
+            K_NORM_EPS      = "{arch}.attention.indexer.k_norm_epsilon"
+            ROPE_INTERLEAVE = "{arch}.attention.indexer.rope_interleave"
+            CLI_FACTOR      = "{arch}.attention.indexer.cli_factor"
+
+    class MTP:
+        NUM_LAYERS        = "{arch}.mtp.num_layers"
+        REPLICATE_MODULES = "{arch}.mtp.replicate_modules"
+        DSA_CLI           = "{arch}.mtp.dsa_cli"
 
     class HyperConnection:
         COUNT                = "{arch}.hyper_connection.count"
@@ -589,6 +600,7 @@ class MODEL_ARCH(IntEnum):
     QWEN3TTS         = auto()
     POCKETTTS        = auto()
     LONGCAT_FLASH_NGRAM = auto()
+    LONGCAT_FLASH_SPARSE = auto()
 
 
 class VISION_PROJECTOR_TYPE(IntEnum):
@@ -1301,6 +1313,7 @@ MODEL_ARCH_NAMES: dict[MODEL_ARCH, str] = {
     MODEL_ARCH.QWEN3TTS:         "qwen3tts",
     MODEL_ARCH.POCKETTTS:        "pockettts",
     MODEL_ARCH.LONGCAT_FLASH_NGRAM: "longcat-flash-ngram",
+    MODEL_ARCH.LONGCAT_FLASH_SPARSE: "longcat-flash-sparse",
 }
 
 VISION_PROJECTOR_TYPE_NAMES: dict[VISION_PROJECTOR_TYPE, str] = {
@@ -5062,6 +5075,17 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.FFN_UP,
     ],
 }
+
+# LongCat-Flash-Lite-Sparse has the proven LongCat-Flash-Ngram trunk/MTP
+# inventory plus the trained DSA/LSA indexer on each CLI owner block and on
+# the one physical MTP block.
+MODEL_TENSORS[MODEL_ARCH.LONGCAT_FLASH_SPARSE] = [
+    *MODEL_TENSORS[MODEL_ARCH.LONGCAT_FLASH_NGRAM],
+    MODEL_TENSOR.INDEXER_K_NORM,
+    MODEL_TENSOR.INDEXER_PROJ,
+    MODEL_TENSOR.INDEXER_ATTN_K,
+    MODEL_TENSOR.INDEXER_ATTN_Q_B,
+]
 
 # tensors that will not be serialized
 MODEL_TENSOR_SKIP: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {

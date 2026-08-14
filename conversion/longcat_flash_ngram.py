@@ -359,3 +359,229 @@ class LongcatFlashNgramModel(TextModel):
             ]
             if remaining:
                 raise ValueError(f"Unprocessed experts: {remaining}")
+
+
+@ModelBase.register("LongcatFlashSparseForCausalLM")
+class LongcatFlashSparseModel(LongcatFlashNgramModel):
+    "Conversion-only GGUF contract for validated LongCat-Flash-Lite-Sparse v4."
+
+    model_arch = gguf.MODEL_ARCH.LONGCAT_FLASH_SPARSE
+
+    _INDEXER_SUFFIXES = {
+        "k_norm.weight",
+        "weights_proj.weight",
+        "wk.weight",
+        "wq_b.weight",
+    }
+
+    @classmethod
+    def filter_tensors(cls, item):
+        # Original Meituan Sparse checkpoints use oe_embed_* names while a
+        # Transformers/Heretic save_pretrained round-trip emits the canonical
+        # runtime ngram_embeddings.* names. Normalize both to the tensor names
+        # already understood by the LongCat GGUF mapping.
+        name, gen = item
+
+        match = re.fullmatch(r"(?:model\.)?oe_embed_tokens(\d+)\.weight", name)
+        if match:
+            name = (
+                f"model.ngram_embeddings.embedders."
+                f"{int(match.group(1))}.weight"
+            )
+
+        match = re.fullmatch(r"(?:model\.)?oe_embed_proj(\d+)\.weight", name)
+        if match:
+            name = (
+                f"model.ngram_embeddings.post_projs."
+                f"{int(match.group(1))}.weight"
+            )
+
+        return super().filter_tensors((name, gen))
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._normalize_sparse_ngram_aliases()
+        self._validate_sparse_contract()
+
+    def _normalize_sparse_ngram_aliases(self) -> None:
+        # Original Meituan Sparse config uses oe_* names. A Transformers/
+        # Heretic save_pretrained round-trip serializes the same values under
+        # the canonical LongCat runtime names. Accept either representation,
+        # fail on conflicts, and never modify config.json on disk.
+        aliases = {
+            "emb_neighbor_num": "oe_neighbor_num",
+            "emb_split_num": "oe_split_num",
+            "ngram_vocab_size_ratio": "oe_vocab_size_ratio",
+        }
+        for canonical, source_alias in aliases.items():
+            canonical_value = self.hparams.get(canonical)
+            alias_value = self.hparams.get(source_alias)
+
+            if canonical_value is not None and alias_value is not None:
+                if canonical_value != alias_value:
+                    raise ValueError(
+                        "Conflicting LongCat Sparse N-gram config values: "
+                        f"{canonical}={canonical_value!r}, "
+                        f"{source_alias}={alias_value!r}"
+                    )
+                continue
+
+            if canonical_value is None and alias_value is not None:
+                self.hparams[canonical] = alias_value
+                continue
+
+            if canonical_value is None:
+                raise ValueError(
+                    "Missing LongCat Sparse N-gram config value: expected "
+                    f"{canonical!r} or alias {source_alias!r}"
+                )
+
+    def _validate_sparse_contract(self) -> None:
+        expected = {
+            "attention_method": "LSA",
+            "index_n_heads": 16,
+            "index_head_dim": 128,
+            "index_topk": 2048,
+            "index_local_tokens": 1024,
+            "index_init_tokens": 16,
+            "index_k_norm_type": "rms",
+            "indexer_rope_interleave": True,
+            "cli_factor": 2,
+            "mtp_num_layers": 3,
+            "mtp_replicate_modules": True,
+            "dsa_mtp_cli": True,
+        }
+        for key, want in expected.items():
+            got = self.hparams.get(key)
+            if got != want:
+                raise ValueError(
+                    f"Unsupported LongCat Sparse contract: {key}={got!r}, "
+                    f"expected {want!r}"
+                )
+
+        if self.base_block_count != 28:
+            raise ValueError(
+                "Validated LongCat-Flash-Lite-Sparse support requires "
+                f"28 physical target blocks; got {self.base_block_count}"
+            )
+        if self.mtp_count != 1:
+            raise ValueError(
+                "Validated LongCat Sparse checkpoint must contain exactly one "
+                f"physical MTP block; got {self.mtp_count}"
+            )
+        if self.block_count != 29:
+            raise ValueError(
+                f"Expected 28 target + 1 physical MTP GGUF blocks; got {self.block_count}"
+            )
+
+        names = set(self.model_tensors)
+
+        expected_ngram = {
+            *{
+                f"model.ngram_embeddings.embedders.{i}.weight"
+                for i in range(12)
+            },
+            *{
+                f"model.ngram_embeddings.post_projs.{i}.weight"
+                for i in range(12)
+            },
+        }
+        actual_ngram = {
+            name
+            for name in names
+            if name.startswith("model.ngram_embeddings.")
+        }
+        if actual_ngram != expected_ngram:
+            missing = sorted(expected_ngram - actual_ngram)
+            extra = sorted(actual_ngram - expected_ngram)
+            raise ValueError(
+                "LongCat Sparse N-gram tensor inventory mismatch: "
+                f"missing={missing}, extra={extra}"
+            )
+
+        main_indexers = {
+            name
+            for name in names
+            if name.startswith("model.layers.") and ".indexer." in name
+        }
+        mtp_indexers = {
+            name
+            for name in names
+            if name.startswith("model.mtp.") and ".indexer." in name
+        }
+        all_indexers = {name for name in names if ".indexer." in name}
+
+        expected_main = {
+            f"model.layers.{layer}.self_attn.0.indexer.{suffix}"
+            for layer in range(14)
+            for suffix in self._INDEXER_SUFFIXES
+        }
+        expected_mtp = {
+            f"model.mtp.layers.0.self_attn.indexer.{suffix}"
+            for suffix in self._INDEXER_SUFFIXES
+        }
+
+        if main_indexers != expected_main:
+            missing = sorted(expected_main - main_indexers)
+            extra = sorted(main_indexers - expected_main)
+            raise ValueError(
+                "LongCat Sparse main indexer inventory mismatch: "
+                f"missing={missing}, extra={extra}"
+            )
+        if mtp_indexers != expected_mtp:
+            missing = sorted(expected_mtp - mtp_indexers)
+            extra = sorted(mtp_indexers - expected_mtp)
+            raise ValueError(
+                "LongCat Sparse MTP indexer inventory mismatch: "
+                f"missing={missing}, extra={extra}"
+            )
+        if all_indexers != expected_main | expected_mtp:
+            extra = sorted(all_indexers - expected_main - expected_mtp)
+            raise ValueError(
+                "Unexpected LongCat Sparse indexer tensors outside the validated "
+                f"60-tensor contract: {extra}"
+            )
+
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+
+        self.gguf_writer.add_indexer_head_count(self.hparams["index_n_heads"])
+        self.gguf_writer.add_indexer_key_length(self.hparams["index_head_dim"])
+        self.gguf_writer.add_indexer_top_k(self.hparams["index_topk"])
+        self.gguf_writer.add_indexer_init_tokens(self.hparams["index_init_tokens"])
+        self.gguf_writer.add_indexer_local_tokens(self.hparams["index_local_tokens"])
+        self.gguf_writer.add_indexer_k_norm_type(self.hparams["index_k_norm_type"])
+        # SGLang/validated HF v4 Indexer RMSNorm default is 1e-6. This is
+        # intentionally distinct from model-wide rms_norm_eps=1e-5.
+        self.gguf_writer.add_indexer_k_norm_eps(1e-6)
+        self.gguf_writer.add_indexer_rope_interleave(
+            self.hparams["indexer_rope_interleave"]
+        )
+        self.gguf_writer.add_indexer_cli_factor(self.hparams["cli_factor"])
+
+        # Generic DSA indexer.types describes target/trunk layers only.
+        # MTP ownership is represented separately by the physical MTP indexer
+        # tensors plus mtp.dsa_cli metadata.
+        indexer_types = [
+            (block_id % self.hparams["cli_factor"]) == 0
+            for block_id in range(self.base_block_count)
+        ]
+        self.gguf_writer.add_indexer_types(indexer_types)
+
+        # nextn_predict_layers remains 1 (physical block count).
+        self.gguf_writer.add_mtp_num_layers(self.hparams["mtp_num_layers"])
+        self.gguf_writer.add_mtp_replicate_modules(
+            self.hparams["mtp_replicate_modules"]
+        )
+        self.gguf_writer.add_mtp_dsa_cli(self.hparams["dsa_mtp_cli"])
+
+    def tensor_force_quant(
+        self,
+        name: str,
+        new_name: str,
+        bid: int | None,
+        n_dims: int,
+    ) -> gguf.GGMLQuantizationType | bool:
+        if new_name.endswith(".indexer.proj.weight"):
+            return gguf.GGMLQuantizationType.F32
+        return super().tensor_force_quant(name, new_name, bid, n_dims)
