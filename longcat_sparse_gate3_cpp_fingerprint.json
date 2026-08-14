@@ -1,0 +1,277 @@
+{
+    "index":  0,
+    "content":  "",
+    "tokens":  [
+                   30
+               ],
+    "id_slot":  3,
+    "stop":  true,
+    "model":  "D:\\LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-GGUF-BF16\\LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-BF16-00001-of-00008.gguf",
+    "tokens_predicted":  1,
+    "tokens_evaluated":  8,
+    "generation_settings":  {
+                                "seed":  4294967295,
+                                "temperature":  0.0,
+                                "dynatemp_range":  0.0,
+                                "dynatemp_exponent":  1.0,
+                                "top_k":  50,
+                                "top_p":  1.0,
+                                "min_p":  0.05000000074505806,
+                                "top_n_sigma":  -1.0,
+                                "xtc_probability":  0.0,
+                                "xtc_threshold":  0.10000000149011612,
+                                "typical_p":  1.0,
+                                "repeat_last_n":  64,
+                                "repeat_penalty":  1.0,
+                                "presence_penalty":  0.0,
+                                "frequency_penalty":  0.0,
+                                "dry_multiplier":  0.0,
+                                "dry_base":  1.75,
+                                "dry_allowed_length":  2,
+                                "dry_penalty_last_n":  64,
+                                "dry_sequence_breakers":  [
+                                                              "\n",
+                                                              ":",
+                                                              "\"",
+                                                              "*"
+                                                          ],
+                                "mirostat":  0,
+                                "mirostat_tau":  5.0,
+                                "mirostat_eta":  0.10000000149011612,
+                                "adaptive_target":  -1.0,
+                                "adaptive_decay":  0.8999999761581421,
+                                "stop":  [
+
+                                         ],
+                                "max_tokens":  1,
+                                "n_predict":  1,
+                                "n_keep":  0,
+                                "n_discard":  0,
+                                "ignore_eos":  false,
+                                "stream":  false,
+                                "logit_bias":  [
+
+                                               ],
+                                "n_probs":  20,
+                                "min_keep":  0,
+                                "grammar":  "",
+                                "grammar_lazy":  false,
+                                "grammar_triggers":  [
+
+                                                     ],
+                                "preserved_tokens":  [
+
+                                                     ],
+                                "chat_format":  "Content-only",
+                                "reasoning_format":  "deepseek",
+                                "reasoning_in_content":  false,
+                                "generation_prompt":  "",
+                                "samplers":  [
+                                                 "penalties",
+                                                 "dry",
+                                                 "top_n_sigma",
+                                                 "top_k",
+                                                 "typ_p",
+                                                 "top_p",
+                                                 "min_p",
+                                                 "xtc",
+                                                 "temperature"
+                                             ],
+                                "speculative.types":  "none",
+                                "timings_per_token":  false,
+                                "post_sampling_probs":  false,
+                                "backend_sampling":  false,
+                                "lora":  [
+
+                                         ]
+                            },
+    "prompt":  "\u003cmask_76\u003e\u003cmask_176\u003em? c???",
+    "has_new_line":  false,
+    "truncated":  false,
+    "stop_type":  "limit",
+    "stopping_word":  "",
+    "tokens_cached":  8,
+    "timings":  {
+                    "cache_n":  0,
+                    "prompt_n":  8,
+                    "prompt_ms":  295.865,
+                    "prompt_per_token_ms":  36.983125,
+                    "prompt_per_second":  27.039359167187737,
+                    "predicted_n":  1,
+                    "predicted_ms":  0.001,
+                    "predicted_per_token_ms":  0.0,
+                    "predicted_per_second":  0.0
+                },
+    "completion_probabilities":  [
+                                     {
+                                         "id":  30,
+                                         "token":  "",
+                                         "bytes":  [
+
+                                                   ],
+                                         "logprob":  null,
+                                         "top_logprobs":  [
+                                                              {
+                                                                  "id":  18,
+                                                                  "token":  "",
+                                                                  "bytes":  [
+
+                                                                            ],
+                                                                  "logprob":  null
+                                                              },
+                                                              {
+                                                                  "id":  10,
+                                                                  "token":  "",
+                                                                  "bytes":  [
+
+                                                                            ],
+                                                                  "logprob":  null
+                                                              },
+                                                              {
+                                                                  "id":  4,
+                                                                  "token":  "",
+                                                                  "bytes":  [
+
+                                                                            ],
+                                                                  "logprob":  null
+                                                              },
+                                                              {
+                                                                  "id":  16,
+                                                                  "token":  "",
+                                                                  "bytes":  [
+
+                                                                            ],
+                                                                  "logprob":  null
+                                                              },
+                                                              {
+                                                                  "id":  12,
+                                                                  "token":  "",
+                                                                  "bytes":  [
+
+                                                                            ],
+                                                                  "logprob":  null
+                                                              },
+                                                              {
+                                                                  "id":  8,
+                                                                  "token":  "",
+                                                                  "bytes":  [
+
+                                                                            ],
+                                                                  "logprob":  null
+                                                              },
+                                                              {
+                                                                  "id":  19,
+                                                                  "token":  "",
+                                                                  "bytes":  [
+
+                                                                            ],
+                                                                  "logprob":  null
+                                                              },
+                                                              {
+                                                                  "id":  1,
+                                                                  "token":  "",
+                                                                  "bytes":  [
+
+                                                                            ],
+                                                                  "logprob":  null
+                                                              },
+                                                              {
+                                                                  "id":  11,
+                                                                  "token":  "",
+                                                                  "bytes":  [
+
+                                                                            ],
+                                                                  "logprob":  null
+                                                              },
+                                                              {
+                                                                  "id":  5,
+                                                                  "token":  "",
+                                                                  "bytes":  [
+
+                                                                            ],
+                                                                  "logprob":  null
+                                                              },
+                                                              {
+                                                                  "id":  15,
+                                                                  "token":  "",
+                                                                  "bytes":  [
+
+                                                                            ],
+                                                                  "logprob":  null
+                                                              },
+                                                              {
+                                                                  "id":  13,
+                                                                  "token":  "",
+                                                                  "bytes":  [
+
+                                                                            ],
+                                                                  "logprob":  null
+                                                              },
+                                                              {
+                                                                  "id":  7,
+                                                                  "token":  "",
+                                                                  "bytes":  [
+
+                                                                            ],
+                                                                  "logprob":  null
+                                                              },
+                                                              {
+                                                                  "id":  17,
+                                                                  "token":  "",
+                                                                  "bytes":  [
+
+                                                                            ],
+                                                                  "logprob":  null
+                                                              },
+                                                              {
+                                                                  "id":  3,
+                                                                  "token":  "",
+                                                                  "bytes":  [
+
+                                                                            ],
+                                                                  "logprob":  null
+                                                              },
+                                                              {
+                                                                  "id":  9,
+                                                                  "token":  "",
+                                                                  "bytes":  [
+
+                                                                            ],
+                                                                  "logprob":  null
+                                                              },
+                                                              {
+                                                                  "id":  0,
+                                                                  "token":  "",
+                                                                  "bytes":  [
+
+                                                                            ],
+                                                                  "logprob":  null
+                                                              },
+                                                              {
+                                                                  "id":  2,
+                                                                  "token":  "",
+                                                                  "bytes":  [
+
+                                                                            ],
+                                                                  "logprob":  null
+                                                              },
+                                                              {
+                                                                  "id":  6,
+                                                                  "token":  "",
+                                                                  "bytes":  [
+
+                                                                            ],
+                                                                  "logprob":  null
+                                                              },
+                                                              {
+                                                                  "id":  14,
+                                                                  "token":  "",
+                                                                  "bytes":  [
+
+                                                                            ],
+                                                                  "logprob":  null
+                                                              }
+                                                          ]
+                                     }
+                                 ]
+}

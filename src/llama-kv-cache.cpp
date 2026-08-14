@@ -1760,6 +1760,132 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
     //LLAMA_LOG_ERROR("%s: kq mask time: %0.3f ms\n", __func__, (t_end - t_start)/1000.0);
 }
 
+void llama_kv_cache::set_input_longcat_lsa_mask(
+        ggml_tensor * dst,
+        const llama_ubatch * ubatch,
+        uint32_t num_init_tokens,
+        uint32_t num_local_tokens) const {
+    GGML_ASSERT(dst != nullptr);
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
+    GGML_ASSERT(!ubatch->is_pos_2d());
+
+    const int64_t n_tokens = ubatch->n_tokens;
+    const int64_t n_kv     = dst->ne[0];
+    const int64_t n_stream = dst->ne[3];
+
+    GGML_ASSERT(n_stream > 0);
+    GGML_ASSERT(n_tokens % n_stream == 0);
+    GGML_ASSERT(dst->ne[1] == n_tokens / n_stream);
+    GGML_ASSERT(dst->ne[2] == 1);
+
+    float * data = (float *) dst->data;
+    std::fill(data, data + ggml_nelements(dst), -INFINITY);
+
+    const int64_t n_tps = n_tokens / n_stream;
+
+    // HF LongCat defines sink/local membership by valid-token rank, not by
+    // physical ring-buffer cell index. Reconstruct that rank per query from
+    // the cache metadata. Empty cells, other sequences, and future positions
+    // remain -inf.
+    for (int64_t s = 0; s < n_stream; ++s) {
+        for (int64_t ii = 0; ii < n_tps; ++ii) {
+            const int64_t i = s*n_tps + ii;
+            GGML_ASSERT(ubatch->n_seq_id[i] > 0);
+
+            const llama_seq_id seq_id = ubatch->seq_id[i][0];
+            GGML_ASSERT(seq_id >= 0 && (size_t) seq_id < seq_to_stream.size());
+
+            const llama_pos p1 = ubatch->pos[i];
+            const auto & cells = v_cells.at(seq_to_stream[seq_id]);
+
+            std::vector<std::pair<llama_pos, uint32_t>> visible;
+            visible.reserve(std::min<int64_t>(n_kv, cells.size()));
+
+            for (uint32_t j = 0; j < (uint32_t) n_kv; ++j) {
+                if (j >= cells.size() || cells.is_empty(j)) {
+                    continue;
+                }
+                if (!cells.seq_has(j, seq_id)) {
+                    continue;
+                }
+
+                const llama_pos p0 = cells.pos_get(j);
+                if (p0 > p1) {
+                    continue;
+                }
+
+                visible.emplace_back(p0, j);
+            }
+
+            std::sort(visible.begin(), visible.end(),
+                    [](const auto & a, const auto & b) {
+                        return a.first < b.first || (a.first == b.first && a.second < b.second);
+                    });
+
+            const int64_t idst = n_kv*i;
+
+            for (const auto & [_, j] : visible) {
+                data[idst + j] = 0.0f;
+            }
+
+            const size_t n_visible = visible.size();
+            const size_t n_init = std::min<size_t>(num_init_tokens, n_visible);
+            for (size_t r = 0; r < n_init; ++r) {
+                data[idst + visible[r].second] = INFINITY;
+            }
+
+            const size_t local_begin =
+                n_visible > num_local_tokens ? n_visible - num_local_tokens : 0;
+            for (size_t r = local_begin; r < n_visible; ++r) {
+                data[idst + visible[r].second] = INFINITY;
+            }
+
+            if (n_visible > 2048) {
+                size_t forced_count = 0;
+                for (const auto & [_, j] : visible) {
+                    if (std::isinf(data[idst + j]) && data[idst + j] > 0.0f) {
+                        ++forced_count;
+                    }
+                }
+
+                const size_t local_count = n_visible - local_begin;
+                const size_t overlap =
+                    local_begin < n_init ? n_init - local_begin : 0;
+                const size_t expected_forced =
+                    n_init + local_count - overlap;
+
+                GGML_ASSERT(forced_count == expected_forced);
+                GGML_ASSERT(expected_forced <= 2048);
+
+                if (ii + 1 == n_tps) {
+                    const llama_pos first_pos =
+                        visible.empty() ? -1 : visible.front().first;
+                    const llama_pos init_last_pos =
+                        n_init ? visible[n_init - 1].first : -1;
+                    const llama_pos local_first_pos =
+                        local_count ? visible[local_begin].first : -1;
+                    const llama_pos last_pos =
+                        visible.empty() ? -1 : visible.back().first;
+
+                    LLAMA_LOG_DEBUG(
+                        "LONGCAT_LSA_AUDIT mask seq=%d query_pos=%d "
+                        "visible=%zu forced=%zu init_pos=[%d,%d] "
+                        "local_pos=[%d,%d]\n",
+                        (int) seq_id,
+                        (int) p1,
+                        n_visible,
+                        forced_count,
+                        (int) first_pos,
+                        (int) init_last_pos,
+                        (int) local_first_pos,
+                        (int) last_pos);
+                }
+            }
+        }
+    }
+}
+
 void llama_kv_cache::set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const {
     const int64_t n_tokens = ubatch->n_tokens;
 
@@ -2636,6 +2762,15 @@ void llama_kv_cache_context::set_input_v_idxs(ggml_tensor * dst, const llama_uba
 
 void llama_kv_cache_context::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const {
     kv->set_input_kq_mask(dst, ubatch, causal_attn);
+}
+
+void llama_kv_cache_context::set_input_longcat_lsa_mask(
+        ggml_tensor * dst,
+        const llama_ubatch * ubatch,
+        uint32_t num_init_tokens,
+        uint32_t num_local_tokens) const {
+    kv->set_input_longcat_lsa_mask(
+        dst, ubatch, num_init_tokens, num_local_tokens);
 }
 
 void llama_kv_cache_context::set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const {

@@ -4,6 +4,7 @@
 #include "log.h"
 
 #include <cmath>
+#include <cstdlib>
 #include <regex>
 #include <string>
 #include <vector>
@@ -76,15 +77,22 @@ static float common_ggml_get_float_value(const uint8_t * data,
 
 #define INDENT "    "
 
-static void common_debug_print_tensor(uint8_t * data, ggml_type type, const int64_t * ne, const size_t * nb, int64_t n, bool abort_on_nan) {
+// LONGCAT_GATE4_NAN_AUDIT: return whether any actual element is NaN.
+// Do not infer NaN from the aggregate sum: LongCat LSA score tensors
+// legitimately contain both +inf and -inf, whose sum itself is NaN.
+static bool common_debug_print_tensor(uint8_t * data, ggml_type type, const int64_t * ne, const size_t * nb, int64_t n) {
     GGML_ASSERT(n > 0);
     float sum = 0;
+    uint64_t nan_count = 0;
     for (int64_t i3 = 0; i3 < ne[3]; i3++) {
         for (int64_t i2 = 0; i2 < ne[2]; i2++) {
             for (int64_t i1 = 0; i1 < ne[1]; i1++) {
                 for (int64_t i0 = 0; i0 < ne[0]; i0++) {
                     const float v = common_ggml_get_float_value(data, type, nb, i0, i1, i2, i3);
                     sum += v;
+                    if (std::isnan(v)) {
+                        ++nan_count;
+                    }
                 }
             }
         }
@@ -122,12 +130,8 @@ static void common_debug_print_tensor(uint8_t * data, ggml_type type, const int6
         LOG(INDENT "sum = %f\n", sum);
     }
 
-    if (abort_on_nan) {
-        if (std::isnan(sum)) {
-            LOG("encountered NaN - aborting\n");
-            exit(0);
-        }
-    }
+    LOG(INDENT "nan_count = %llu\n", (unsigned long long) nan_count);
+    return nan_count != 0;
 }
 
 /**
@@ -147,10 +151,6 @@ bool common_debug_cb_eval(struct ggml_tensor * t, bool ask, void * user_data) {
     const struct ggml_tensor * src0 = t->src[0];
     const struct ggml_tensor * src1 = t->src[1];
 
-    if (ask) {
-        return true;  // Always retrieve data
-    }
-
     bool matches_filter = pimpl->tensor_filters.empty();
 
     if (!matches_filter) {
@@ -160,6 +160,13 @@ bool common_debug_cb_eval(struct ggml_tensor * t, bool ask, void * user_data) {
                 break;
             }
         }
+    }
+
+    // LONGCAT_GATE4_NAN_AUDIT: at ask time, request only tensors that
+    // match --tensor-filter. The stock callback asks for every tensor,
+    // forcing needless device-to-host copies even for filtered output.
+    if (ask) {
+        return matches_filter;
     }
 
     char src1_str[128] = { 0 };
@@ -183,7 +190,11 @@ bool common_debug_cb_eval(struct ggml_tensor * t, bool ask, void * user_data) {
 
     if (!ggml_is_quantized(t->type) && matches_filter) {
         uint8_t * data = is_host ? (uint8_t *) t->data : pimpl->data.data();
-        common_debug_print_tensor(data, t->type, t->ne, t->nb, 3, pimpl->abort_on_nan);
+        const bool saw_nan = common_debug_print_tensor(data, t->type, t->ne, t->nb, 3);
+        if (pimpl->abort_on_nan && saw_nan) {
+            LOG("LONGCAT_GATE4_NAN_AUDIT FIRST_NAN tensor=%s\n", t->name);
+            std::exit(86);
+        }
     }
 
     return true;
