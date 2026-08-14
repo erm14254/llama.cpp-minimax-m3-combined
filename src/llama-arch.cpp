@@ -148,7 +148,8 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
     { LLM_ARCH_NANBEIGE,         "nanbeige"         },
     { LLM_ARCH_QWEN3TTS,         "qwen3tts"         },
     { LLM_ARCH_POCKETTTS,        "pockettts"        },
-    { LLM_ARCH_LONGCAT_FLASH_NGRAM, "longcat-flash-ngram" },
+    { LLM_ARCH_LONGCAT_FLASH_NGRAM,  "longcat-flash-ngram"  },
+    { LLM_ARCH_LONGCAT_FLASH_SPARSE, "longcat-flash-sparse" },
     { LLM_ARCH_UNKNOWN,          "(unknown)"        },
 };
 
@@ -212,6 +213,9 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
     { LLM_KV_NGRAM_NEIGHBOR_NUM,                   "%s.ngram.neighbor_num" },
     { LLM_KV_NGRAM_SPLIT_NUM,                      "%s.ngram.split_num" },
     { LLM_KV_NGRAM_VOCAB_SIZE_RATIO,               "%s.ngram.vocab_size_ratio" },
+    { LLM_KV_MTP_NUM_LAYERS,                       "%s.mtp.num_layers" },
+    { LLM_KV_MTP_REPLICATE_MODULES,                "%s.mtp.replicate_modules" },
+    { LLM_KV_MTP_DSA_CLI,                          "%s.mtp.dsa_cli" },
     { LLM_KV_NUM_DEEPSTACK_LAYERS,              "%s.n_deepstack_layers"                },
     { LLM_KV_DEEPSTACK_MAPPING,                 "%s.deepstack_mapping"                 },
     { LLM_KV_HIDDEN_ACT,                        "%s.hidden_activation"                 },
@@ -271,6 +275,12 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
     { LLM_KV_ATTENTION_INDEXER_HEAD_COUNT,           "%s.attention.indexer.head_count"           },
     { LLM_KV_ATTENTION_INDEXER_KEY_LENGTH,           "%s.attention.indexer.key_length"           },
     { LLM_KV_ATTENTION_INDEXER_TOP_K,                "%s.attention.indexer.top_k"                },
+    { LLM_KV_ATTENTION_INDEXER_INIT_TOKENS,          "%s.attention.indexer.init_tokens"          },
+    { LLM_KV_ATTENTION_INDEXER_LOCAL_TOKENS,         "%s.attention.indexer.local_tokens"         },
+    { LLM_KV_ATTENTION_INDEXER_K_NORM_TYPE,          "%s.attention.indexer.k_norm_type"          },
+    { LLM_KV_ATTENTION_INDEXER_K_NORM_EPS,           "%s.attention.indexer.k_norm_epsilon"       },
+    { LLM_KV_ATTENTION_INDEXER_ROPE_INTERLEAVE,      "%s.attention.indexer.rope_interleave"      },
+    { LLM_KV_ATTENTION_INDEXER_CLI_FACTOR,           "%s.attention.indexer.cli_factor"           },
     { LLM_KV_ATTENTION_INDEXER_BLOCK_SIZE,           "%s.attention.indexer.block_size"           },
     { LLM_KV_ATTENTION_INDEXER_LOCAL_BLOCKS,         "%s.attention.indexer.local_blocks"         },
     { LLM_KV_ATTENTION_INDEXER_TYPES,                "%s.attention.indexer.types"                },
@@ -2675,6 +2685,14 @@ static std::set<llm_tensor> llm_get_tensor_names(llm_arch arch) {
                 LLM_TENSOR_NGRAM_EMBD,
                 LLM_TENSOR_NGRAM_PROJ,
             };
+        case LLM_ARCH_LONGCAT_FLASH_SPARSE: {
+            auto tensors = llm_get_tensor_names(LLM_ARCH_LONGCAT_FLASH_NGRAM);
+            tensors.insert(LLM_TENSOR_INDEXER_K_NORM);
+            tensors.insert(LLM_TENSOR_INDEXER_PROJ);
+            tensors.insert(LLM_TENSOR_INDEXER_ATTN_K);
+            tensors.insert(LLM_TENSOR_INDEXER_ATTN_Q_B);
+            return tensors;
+        }
         default:
             GGML_ABORT("unknown architecture for tensor mapping");
     }

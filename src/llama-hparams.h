@@ -115,6 +115,12 @@ struct llama_hparams {
     uint32_t ngram_split_num        = 0;
     uint32_t ngram_vocab_size_ratio = 0;
 
+    // LongCat Sparse: physical NextN/MTP count stays in n_layer_nextn.
+    // mtp_num_layers is the conceptual multi-token prediction step count.
+    uint32_t mtp_num_layers        = 0;
+    bool     mtp_replicate_modules = false;
+    bool     mtp_dsa_cli           = false;
+
     float f_norm_eps;
     float f_norm_rms_eps;
     float f_norm_group_eps;
@@ -239,6 +245,14 @@ struct llama_hparams {
     uint32_t indexer_n_head    = 0;
     uint32_t indexer_head_size = 0;
     uint32_t indexer_top_k     = 0;
+
+    // LongCat Sparse LSA metadata.
+    uint32_t indexer_init_tokens     = 0;
+    uint32_t indexer_local_tokens    = 0;
+    float    indexer_k_norm_eps      = 0.0f;
+    bool     indexer_rope_interleave = false;
+    uint32_t indexer_cli_factor      = 0;
+
     // MSA
     uint32_t indexer_block_size  = 0;
     uint32_t indexer_local_blocks = 0;

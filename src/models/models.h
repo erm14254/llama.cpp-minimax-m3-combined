@@ -477,6 +477,18 @@ struct llama_model_longcat_flash_ngram : public llama_model_base {
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
 };
+// Gate 2: Sparse reuses the proven LongCat N-gram/MLA/MoE graph while
+// adding the Sparse metadata and parameterized indexer tensors. A dedicated
+// >2048 LSA graph replaces the inherited graph in the sparse-runtime gate.
+struct llama_model_longcat_flash_sparse : public llama_model_longcat_flash_ngram {
+    llama_model_longcat_flash_sparse(const struct llama_model_params & params)
+        : llama_model_longcat_flash_ngram(params) {}
+
+    void load_arch_hparams(llama_model_loader & ml) override;
+    void load_arch_tensors(llama_model_loader & ml) override;
+};
+
+
 struct llama_model_qwen : public llama_model_base {
     llama_model_qwen(const struct llama_model_params & params) : llama_model_base(params) {}
     void load_arch_hparams(llama_model_loader & ml) override;

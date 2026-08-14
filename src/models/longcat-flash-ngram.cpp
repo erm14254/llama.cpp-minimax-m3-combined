@@ -284,6 +284,123 @@ void llama_model_longcat_flash_ngram::load_arch_tensors(llama_model_loader &) {
     }
 }
 
+void llama_model_longcat_flash_sparse::load_arch_hparams(llama_model_loader & ml) {
+    // Load the existing LongCat MLA/MoE/N-gram contract first. This also reads
+    // nextn_predict_layers into n_layer_nextn: the physical appended MTP block
+    // count. It must stay 1; it is not the conceptual MTP step count.
+    llama_model_longcat_flash_ngram::load_arch_hparams(ml);
+
+    ml.get_key(LLM_KV_ATTENTION_INDEXER_HEAD_COUNT,      hparams.indexer_n_head);
+    ml.get_key(LLM_KV_ATTENTION_INDEXER_KEY_LENGTH,      hparams.indexer_head_size);
+    ml.get_key(LLM_KV_ATTENTION_INDEXER_TOP_K,           hparams.indexer_top_k);
+    ml.get_key(LLM_KV_ATTENTION_INDEXER_INIT_TOKENS,     hparams.indexer_init_tokens);
+    ml.get_key(LLM_KV_ATTENTION_INDEXER_LOCAL_TOKENS,    hparams.indexer_local_tokens);
+    ml.get_key(LLM_KV_ATTENTION_INDEXER_K_NORM_EPS,      hparams.indexer_k_norm_eps);
+    ml.get_key(LLM_KV_ATTENTION_INDEXER_ROPE_INTERLEAVE, hparams.indexer_rope_interleave);
+    ml.get_key(LLM_KV_ATTENTION_INDEXER_CLI_FACTOR,      hparams.indexer_cli_factor);
+
+    std::string indexer_k_norm_type;
+    ml.get_key(LLM_KV_ATTENTION_INDEXER_K_NORM_TYPE, indexer_k_norm_type);
+
+    ml.get_key(LLM_KV_MTP_NUM_LAYERS,        hparams.mtp_num_layers);
+    ml.get_key(LLM_KV_MTP_REPLICATE_MODULES, hparams.mtp_replicate_modules);
+    ml.get_key(LLM_KV_MTP_DSA_CLI,           hparams.mtp_dsa_cli);
+
+    // This array covers only the 28 physical trunk blocks. The appended
+    // physical MTP block owns its own parameterized indexer separately.
+    ml.get_key_or_arr(
+        LLM_KV_ATTENTION_INDEXER_TYPES,
+        hparams.is_indexer_full_impl,
+        hparams.n_layer());
+
+    // Gate 2 supports the exact published LongCat Flash Lite Sparse contract.
+    // Fail closed rather than silently interpreting a different variant.
+    if (hparams.n_layer() != 28 || hparams.n_layer_nextn != 1) {
+        throw std::runtime_error(
+            "LongCat Flash Lite Sparse requires 28 trunk blocks and one physical MTP block");
+    }
+    if (hparams.indexer_n_head != 16 ||
+        hparams.indexer_head_size != 128 ||
+        hparams.indexer_top_k != 2048 ||
+        hparams.indexer_init_tokens != 16 ||
+        hparams.indexer_local_tokens != 1024 ||
+        hparams.indexer_cli_factor != 2) {
+        throw std::runtime_error("unsupported LongCat Flash Lite Sparse LSA metadata");
+    }
+    if (indexer_k_norm_type != "rms") {
+        throw std::runtime_error(
+            "LongCat Flash Lite Sparse requires RMS indexer K normalization");
+    }
+    if (std::fabs(hparams.indexer_k_norm_eps - 1.0e-6f) > 1.0e-12f) {
+        throw std::runtime_error(
+            "LongCat Flash Lite Sparse requires indexer K RMSNorm epsilon 1e-6");
+    }
+    if (!hparams.indexer_rope_interleave) {
+        throw std::runtime_error(
+            "LongCat Flash Lite Sparse requires interleaved indexer RoPE");
+    }
+    if (hparams.mtp_num_layers != 3 ||
+        !hparams.mtp_replicate_modules ||
+        !hparams.mtp_dsa_cli) {
+        throw std::runtime_error(
+            "LongCat Flash Lite Sparse requires one replicated physical MTP "
+            "module for three conceptual steps with DSA MTP CLI");
+    }
+
+    for (uint32_t i = 0; i < hparams.n_layer(); ++i) {
+        const bool expected_owner = (i % 2) == 0;
+        if (hparams.is_indexer_full(i) != expected_owner) {
+            throw std::runtime_error(
+                "LongCat Flash Lite Sparse indexer.types must alternate "
+                "owner/reuse as [true,false] across 28 trunk blocks");
+        }
+    }
+}
+
+void llama_model_longcat_flash_sparse::load_arch_tensors(llama_model_loader & ml) {
+    // Existing LongCat loads MLA, MoE, N-gram, and the physical MTP block.
+    llama_model_longcat_flash_ngram::load_arch_tensors(ml);
+
+    LLAMA_LOAD_LOCALS;
+
+    const int64_t q_lora_rank = hparams.n_lora_q;
+    const int64_t indexer_width =
+        (int64_t) hparams.indexer_n_head * hparams.indexer_head_size;
+
+    // Trunk owners: blk.0,2,...,26. Reuse blocks have no independent trained
+    // indexer parameters. blk.28 is the one physical MTP indexer owner.
+    for (int i = 0; i < n_layer_all; ++i) {
+        const bool is_trunk_owner =
+            i < n_layer && hparams.is_indexer_full((uint32_t) i);
+        const bool is_physical_mtp_owner =
+            i == n_layer && hparams.n_layer_nextn == 1;
+
+        if (!is_trunk_owner && !is_physical_mtp_owner) {
+            continue;
+        }
+
+        auto & layer = layers[i];
+
+        layer.indexer_k_norm = create_tensor(
+            tn(LLM_TENSOR_INDEXER_K_NORM, "weight", i),
+            {hparams.indexer_head_size},
+            0);
+        layer.indexer_proj = create_tensor(
+            tn(LLM_TENSOR_INDEXER_PROJ, "weight", i),
+            {n_embd, hparams.indexer_n_head},
+            0);
+        layer.indexer_attn_k = create_tensor(
+            tn(LLM_TENSOR_INDEXER_ATTN_K, "weight", i),
+            {n_embd, hparams.indexer_head_size},
+            0);
+        layer.indexer_attn_q_b = create_tensor(
+            tn(LLM_TENSOR_INDEXER_ATTN_Q_B, "weight", i),
+            {q_lora_rank, indexer_width},
+            0);
+    }
+}
+
+
 std::unique_ptr<llm_graph_context> llama_model_longcat_flash_ngram::build_arch_graph(
         const llm_graph_params & params) const {
     if (params.gtype == LLM_GRAPH_TYPE_DECODER_MTP) {

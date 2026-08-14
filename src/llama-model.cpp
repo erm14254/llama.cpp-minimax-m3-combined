@@ -92,6 +92,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_nanbeige(params);
         case LLM_ARCH_LONGCAT_FLASH_NGRAM:
             return new llama_model_longcat_flash_ngram(params);
+        case LLM_ARCH_LONGCAT_FLASH_SPARSE:
+            return new llama_model_longcat_flash_sparse(params);
         case LLM_ARCH_QWEN:
             return new llama_model_qwen(params);
         case LLM_ARCH_QWEN2:
@@ -2625,6 +2627,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_DEEPSEEK4:
         case LLM_ARCH_MUSE_GLIMMER:
         case LLM_ARCH_LONGCAT_FLASH_NGRAM:
+        case LLM_ARCH_LONGCAT_FLASH_SPARSE:
         case LLM_ARCH_PLM:
         case LLM_ARCH_CHATGLM:
         case LLM_ARCH_GRANITE:
