@@ -392,6 +392,16 @@ llama_context::llama_context(
             /*.mem_other =*/ llama_get_memory(cparams.ctx_other),
         };
 
+        bool cache_promoted = false;
+        std::string cache_error;
+        if (!llama_memory_params_resolve(model.arch, params_mem, cache_promoted, cache_error)) {
+            throw std::runtime_error(cache_error);
+        }
+        if (cache_promoted) {
+            LLAMA_LOG_WARN("%s: LongCat-Flash-Sparse absorbed MLA requires BF16 or F32 KV cache; "
+                    "promoting the K/V cache from F16 to BF16\n", __func__);
+        }
+
         memory.reset(model.create_memory(params_mem, cparams));
     }
 
