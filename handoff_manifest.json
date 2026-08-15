@@ -1,0 +1,31 @@
+{
+  "date": "2026-08-15",
+  "repo": "D:\\llama.cpp-longcat-pre-gate4",
+  "build_dir": "D:\\llama.cpp-longcat-pre-gate4-build-cuda132",
+  "recommended_remote_branch": "handoff/longcat-parity-diagnostics-20260815",
+  "existing_gate4_handoff_branch_do_not_rewrite": "handoff/longcat-sparse-gate4-wip-20260814",
+  "current_expected_shas": {
+    "src/models/longcat-flash-ngram.cpp": "aaff66b65e5fc4ca245cfe6b379a60b6bfae268b94cf5b69f0dfd7ca10486cf1",
+    "common/debug.cpp": "ee673463453c3c7f39de4d43a778551c7db97f8ee42bd0e936ddffd3994c3fc4",
+    "frozen_hf_runtime": "a3bc31616c1f0ddff9f195cbc78f4561a40187c50fe3bf29e2e98d9228947428",
+    "token_stream_512": "4893d78751e8577f817da21a7e00718c7c14e0d80732e1b7e4da36da6677821c"
+  },
+  "frozen_vectors": {
+    "hf_inp_embd_ngram": "d0e9edc8503e388d62b27f39c6ad24560021b1f4533410bf4f86a28fef4ea45f",
+    "hf_attn0_norm": "a1c4c20cf346cbc5d13a0ea3d1d142f1b54f8e024ff3f04fdb31e9120e75b0af",
+    "hf_attn0_resid": "2e9b65ebbdf015899af9f18add5587dbc78735c121ac009fccbd0a0fb4cbd177",
+    "cpp_best_exact_main_norm_attn0_resid": "8ea9b911d4810982af4186e66562cb5f316e7a0a9c2439101f6654eb10887dfd",
+    "cpp_eps1e6_attn0_resid": "c2b8473b9d044ba50a978e7249a694b81f111cd5bc434b585ecd776a922c2199",
+    "cpp_current_qbf16_attn0_resid": "2c804a35a0397e380d77f08d2a7ffd11fc6e4672722c31a98f7f96620c2a4a4e"
+  },
+  "gate_status": {
+    "gate1": "PASS",
+    "gate2": "PASS",
+    "gate3": "PASS",
+    "gate4": "OPEN - structural LSA passes, numerical parity unresolved",
+    "gate5": "PENDING",
+    "gate6": "PENDING",
+    "gate7": "PENDING"
+  },
+  "immediate_next_action": "Capture HF full-sequence 512-token block0 MLA q_a/q_norm/q_b/kv_a/kv_norm/o_proj final-token surfaces, then add callback-only matching C++ dumps before any further arithmetic patch."
+}

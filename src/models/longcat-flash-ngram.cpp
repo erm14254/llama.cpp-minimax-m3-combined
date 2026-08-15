@@ -469,6 +469,11 @@ llama_model_longcat_flash_ngram::graph::graph(
             ggml_set_input(inp->ngram_ids[j]);
         }
 
+        // LONGCAT_NGRAM_BF16_PARITY_DIAGNOSTIC:
+        // HF keeps the running N-gram embedding state on the BF16 lattice.
+        // Round the base embedding before beginning the sequential accumulation.
+        inpL = ggml_cast(ctx0, inpL, GGML_TYPE_BF16);
+
         // For each embedder: lookup embedding table, project to hidden_size, accumulate
         for (uint32_t j = 0; j < n_ngram && j < (uint32_t)llama_model::NGRAM_MAX; j++) {
             // ngram_embd[j] shape: [emb_dim, vocab_j]  (emb_dim = hidden_size / n_ngram = 256)
@@ -479,12 +484,33 @@ llama_model_longcat_flash_ngram::graph::graph(
             ggml_tensor * proj = ggml_mul_mat(ctx0, model.ngram_proj[j], emb);
             cb(proj, "ngram_proj", j);
 
-            inpL = ggml_add(ctx0, inpL, proj);
+            // ggml_mul_mat returns F32. HF parity only requires that each
+            // projection be rounded to BF16 before the sequential BF16 add.
+            proj = ggml_cast(ctx0, proj, GGML_TYPE_BF16);
+
+            // Perform the arithmetic in F32 using already-BF16-rounded operands,
+            // then round the running accumulator back to BF16 after every add.
+            // This avoids depending on native BF16 ADD kernel semantics while
+            // reproducing the validated standalone HF arithmetic.
+            ggml_tensor * inpL_f32 = ggml_cast(ctx0, inpL, GGML_TYPE_F32);
+            ggml_tensor * proj_f32 = ggml_cast(ctx0, proj, GGML_TYPE_F32);
+
+            inpL = ggml_add(ctx0, inpL_f32, proj_f32);
+            inpL = ggml_cast(ctx0, inpL, GGML_TYPE_BF16);
         }
 
         // Normalize: x = (base + sum_of_projections) / (1 + n_ngram)
+        // Compute from the BF16-rounded accumulator and round the result back
+        // to BF16, matching frozen HF NgramEmbedding.forward().
+        inpL = ggml_cast(ctx0, inpL, GGML_TYPE_F32);
         inpL = ggml_scale(ctx0, inpL, 1.0f / (1.0f + (float)n_ngram));
+        inpL = ggml_cast(ctx0, inpL, GGML_TYPE_BF16);
         cb(inpL, "inp_embd_ngram", -1);
+
+        // LONGCAT_NGRAM_BF16_RESTORE_F32_DIAGNOSTIC:
+        // BF16 values are exactly representable in F32. Restore the graph's
+        // expected activation type without changing the HF-exact values.
+        inpL = ggml_cast(ctx0, inpL, GGML_TYPE_F32);
 
         res->add_input(std::move(inp));
     }
@@ -501,7 +527,41 @@ llama_model_longcat_flash_ngram::graph::graph(
         const bool is_even_block = (il % 2 == 0);
 
         // norm
-        cur = build_norm(inpL, model.layers[il].attn_norm, NULL, LLM_NORM_RMS, il);
+        if (il == 0) {
+            // LONGCAT_ATTN0_HF_RMSNORM_DIAGNOSTIC:
+            //
+            // Transformers LongCat RMSNorm semantics for BF16 activations:
+            //
+            //   1. RMS normalization in F32
+            //   2. round normalized activation to BF16
+            //   3. multiply by the BF16 norm weight
+            //   4. round output to BF16
+            //
+            // The GGUF norm weight is F32 but was proven to be the exact
+            // numerical expansion of the HF BF16 weight, so multiplying the
+            // BF16-rounded activation by that F32 value is numerically the
+            // same pre-output-rounding product.
+            //
+            // Restore F32 afterward because the existing llama.cpp LongCat
+            // trunk expects F32 activations.
+            cur = ggml_rms_norm(ctx0, inpL, hparams.f_norm_rms_eps);
+
+            cur = ggml_cast(ctx0, cur, GGML_TYPE_BF16);
+            cur = ggml_cast(ctx0, cur, GGML_TYPE_F32);
+
+            cur = ggml_mul(ctx0, cur, model.layers[il].attn_norm);
+
+            cur = ggml_cast(ctx0, cur, GGML_TYPE_BF16);
+            cur = ggml_cast(ctx0, cur, GGML_TYPE_F32);
+        } else {
+            cur = build_norm(
+                inpL,
+                model.layers[il].attn_norm,
+                NULL,
+                LLM_NORM_RMS,
+                il);
+        }
+
         cb(cur, "attn_norm", il);
 
         // MLA self-attention (same as DeepSeek2 with absorption optimization)
@@ -510,18 +570,86 @@ llama_model_longcat_flash_ngram::graph::graph(
 
             if (model.layers[il].wq_a) {
                 // LoRA Q path
-                q = ggml_mul_mat(ctx0, model.layers[il].wq_a, cur);
-                cb(q, "q", il);
+                if (il == 0) {
+                    // LONGCAT_ATTN0_Q_BF16_SEMANTICS_DIAGNOSTIC:
+                    //
+                    // HF block-0 Q path is BF16 at the Linear/RMSNorm
+                    // boundaries. Widen only where ggml RMSNorm / downstream
+                    // graph operations require F32.
+                    ggml_tensor * q_in_bf16 =
+                        ggml_cast(ctx0, cur, GGML_TYPE_BF16);
 
-                q = build_norm(q, model.layers[il].attn_q_a_norm, nullptr, LLM_NORM_RMS, il);
-                cb(q, "q", il);
+                    q = ggml_mul_mat(
+                        ctx0,
+                        model.layers[il].wq_a,
+                        q_in_bf16);
 
-                q = ggml_mul_mat(ctx0, model.layers[il].wq_b, q);
-                cb(q, "q", il);
+                    // q_a_proj output is BF16 in the HF BF16 model.
+                    q = ggml_cast(ctx0, q, GGML_TYPE_BF16);
+                    cb(q, "q", il);
 
-                // MLA LoRA scaling: q *= sqrt(hidden_size / q_lora_rank)
-                q = ggml_scale(ctx0, q, mla_scale_q);
-                cb(q, "q_scaled", il);
+                    // LONGCAT_ATTN0_QA_NORM_EPS_DIAGNOSTIC:
+                    // HF q_a_layernorm uses eps=1e-6 and computes the RMS
+                    // reduction in F32.
+                    q = ggml_cast(ctx0, q, GGML_TYPE_F32);
+                    q = ggml_rms_norm(ctx0, q, 1.0e-6f);
+
+                    // LongcatFlashRMSNorm casts the normalized activation
+                    // back to BF16 before multiplying by its BF16 weight.
+                    q = ggml_cast(ctx0, q, GGML_TYPE_BF16);
+                    q = ggml_cast(ctx0, q, GGML_TYPE_F32);
+
+                    q = ggml_mul(
+                        ctx0,
+                        q,
+                        model.layers[il].attn_q_a_norm);
+
+                    // RMSNorm output is BF16.
+                    q = ggml_cast(ctx0, q, GGML_TYPE_BF16);
+                    cb(q, "q", il);
+
+                    // q_b_proj consumes BF16 and produces BF16 in HF.
+                    q = ggml_mul_mat(
+                        ctx0,
+                        model.layers[il].wq_b,
+                        q);
+
+                    q = ggml_cast(ctx0, q, GGML_TYPE_BF16);
+                    cb(q, "q", il);
+
+                    // HF scales the BF16 q_pass/q_rot tensors and therefore
+                    // returns to the BF16 lattice here as well. Widen the
+                    // rounded result for the existing llama.cpp RoPE path.
+                    q = ggml_cast(ctx0, q, GGML_TYPE_F32);
+                    q = ggml_scale(ctx0, q, mla_scale_q);
+                    q = ggml_cast(ctx0, q, GGML_TYPE_BF16);
+                    q = ggml_cast(ctx0, q, GGML_TYPE_F32);
+                    cb(q, "q_scaled", il);
+                } else {
+                    q = ggml_mul_mat(
+                        ctx0,
+                        model.layers[il].wq_a,
+                        cur);
+                    cb(q, "q", il);
+
+                    q = build_norm(
+                        q,
+                        model.layers[il].attn_q_a_norm,
+                        nullptr,
+                        LLM_NORM_RMS,
+                        il);
+                    cb(q, "q", il);
+
+                    q = ggml_mul_mat(
+                        ctx0,
+                        model.layers[il].wq_b,
+                        q);
+                    cb(q, "q", il);
+
+                    // MLA LoRA scaling: q *= sqrt(hidden_size / q_lora_rank)
+                    q = ggml_scale(ctx0, q, mla_scale_q);
+                    cb(q, "q_scaled", il);
+                }
             } else {
                 q = ggml_mul_mat(ctx0, model.layers[il].wq, cur);
                 cb(q, "q", il);
@@ -566,7 +694,22 @@ llama_model_longcat_flash_ngram::graph::graph(
             cb(k_pe, "k_pe", il);
 
             // normalize compressed KV
-            kv_cmpr = build_norm(kv_cmpr, model.layers[il].attn_kv_a_norm, nullptr, LLM_NORM_RMS, il);
+            if (il == 0) {
+                // LONGCAT_ATTN0_KVA_NORM_EPS_DIAGNOSTIC:
+                // HF LongCat kv_a_layernorm uses the RMSNorm default eps=1e-6.
+                kv_cmpr = ggml_rms_norm(ctx0, kv_cmpr, 1.0e-6f);
+                kv_cmpr = ggml_mul(
+                    ctx0,
+                    kv_cmpr,
+                    model.layers[il].attn_kv_a_norm);
+            } else {
+                kv_cmpr = build_norm(
+                    kv_cmpr,
+                    model.layers[il].attn_kv_a_norm,
+                    nullptr,
+                    LLM_NORM_RMS,
+                    il);
+            }
             cb(kv_cmpr, "kv_cmpr", il);
 
             // MLA LoRA scaling: kv_cmpr *= sqrt(hidden_size / kv_lora_rank)

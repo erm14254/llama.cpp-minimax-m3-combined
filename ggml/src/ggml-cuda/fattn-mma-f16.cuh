@@ -1227,7 +1227,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
                     const int k = k0 + (stride_k == warp_size ? threadIdx.x : threadIdx.x % stride_k);
 
                     const float2 tmp = Q_f2[(jt*ncols1 + j)*stride_Q1 + c*stride_Q2 + k];
-                    tile_Q[jc*stride_tile_Q + k] = scale_h2 * make_half2(tmp.x, tmp.y);
+                    tile_Q[jc*stride_tile_Q + k] = make_half2(scale*tmp.x, scale*tmp.y);
                 }
             } else {
 #pragma unroll

@@ -229,7 +229,9 @@ int main(int argc, char ** argv) {
 
     std::optional<common_debug_cb_user_data> cb_data;
     if (!params.save_logits) {
-        cb_data.emplace(params, params.tensor_filter);
+        // LONGCAT_GATE4_NAN_AUDIT: diagnostic llama-debug runs stop
+        // at the first actual NaN in a selected tensor.
+        cb_data.emplace(params, params.tensor_filter, true);
     }
 
     auto llama_init = common_init_from_params(params);
