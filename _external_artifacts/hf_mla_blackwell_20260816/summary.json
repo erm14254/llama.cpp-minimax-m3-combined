@@ -1,0 +1,105 @@
+{
+  "attn_implementation": "sdpa",
+  "gates": {
+    "attn0_resid": "2e9b65ebbdf015899af9f18add5587dbc78735c121ac009fccbd0a0fb4cbd177",
+    "attn_norm": "a1c4c20cf346cbc5d13a0ea3d1d142f1b54f8e024ff3f04fdb31e9120e75b0af",
+    "input": "d0e9edc8503e388d62b27f39c6ad24560021b1f4533410bf4f86a28fef4ea45f"
+  },
+  "lsa_mode": "full-owner",
+  "runtime_sha256": "a3bc31616c1f0ddff9f195cbc78f4561a40187c50fe3bf29e2e98d9228947428",
+  "surfaces": {
+    "kv_a_layernorm": {
+      "bytes": 1048576,
+      "dtype": "float32-le",
+      "final_row_sha256": "24447e85dc70ff855071e47e3c341f232f3668e75b268d3fe0afdec966289ef6",
+      "max": 0.33203125,
+      "min": -11.5625,
+      "name": "kv_a_layernorm",
+      "order": "token-major",
+      "sha256": "b44cc101b03b11d96c0d9c52613f7469141dd7786b8128f93e3b7e912c550373",
+      "shape": [
+        512,
+        512
+      ],
+      "source_dtype": "torch.bfloat16"
+    },
+    "kv_a_proj_with_mqa": {
+      "bytes": 1179648,
+      "dtype": "float32-le",
+      "final_row_sha256": "f726babbeb051f5f73b11ca70c966ac4d03b4232fa2d56f55b48b022f45488f5",
+      "max": 10.625,
+      "min": -10.75,
+      "name": "kv_a_proj_with_mqa",
+      "order": "token-major",
+      "sha256": "513390418c9877fa46286d397db7c9c9fb6408852836fb7827106acd183ceecc",
+      "shape": [
+        512,
+        576
+      ],
+      "source_dtype": "torch.bfloat16"
+    },
+    "o_proj": {
+      "bytes": 6291456,
+      "dtype": "float32-le",
+      "final_row_sha256": "fd51e17671302bf649c06408a732690d9b1c5a9d776af0377318b7bc89a6a6f9",
+      "max": 0.1796875,
+      "min": -0.2373046875,
+      "name": "o_proj",
+      "order": "token-major",
+      "sha256": "3e0f7ee2564a3fdef8878549db48b873ecb22aa18e452785c8e3d5284abadd84",
+      "shape": [
+        512,
+        3072
+      ],
+      "source_dtype": "torch.bfloat16"
+    },
+    "q_a_layernorm": {
+      "bytes": 3145728,
+      "dtype": "float32-le",
+      "final_row_sha256": "3c7f84cd43bcf8dde07dc891d4b4b51d70878f3aa32e6a9ebc2eb835304895d4",
+      "max": 31.75,
+      "min": -24.625,
+      "name": "q_a_layernorm",
+      "order": "token-major",
+      "sha256": "956bd3e87b02a89ad1e3dd71801decffd10103d37bade7c490836aedd384dd37",
+      "shape": [
+        512,
+        1536
+      ],
+      "source_dtype": "torch.bfloat16"
+    },
+    "q_a_proj": {
+      "bytes": 3145728,
+      "dtype": "float32-le",
+      "final_row_sha256": "1706d3a5084e3b337d671dd14ae6219e24f27fe42c242961cb4a0881eb841d42",
+      "max": 4.875,
+      "min": -3.59375,
+      "name": "q_a_proj",
+      "order": "token-major",
+      "sha256": "ddf69fe4d372184806d5941ca87c7a629149b15cdc1fa7f2ae1f81792dcf95ed",
+      "shape": [
+        512,
+        1536
+      ],
+      "source_dtype": "torch.bfloat16"
+    },
+    "q_b_proj": {
+      "bytes": 12582912,
+      "dtype": "float32-le",
+      "final_row_sha256": "7649483fdbaf6c1eb1a7b5d87fd2368961bd01999c9d3b081ad4144c32a2c28d",
+      "max": 1896.0,
+      "min": -1872.0,
+      "name": "q_b_proj",
+      "order": "token-major",
+      "sha256": "4f3b647b62c60475fc03f023ce46a5c01951c45847ced2557b5692b2ed3e79b1",
+      "shape": [
+        512,
+        6144
+      ],
+      "source_dtype": "torch.bfloat16"
+    }
+  },
+  "tokens_bin_sha256": "4893d78751e8577f817da21a7e00718c7c14e0d80732e1b7e4da36da6677821c",
+  "torch": "2.13.0+cu132",
+  "transformers": "5.15.0"
+}
