@@ -1,0 +1,42 @@
+# LongCat MLA diagnostics - artifact SHA256 manifest
+# Generated 2026-08-16. Branch handoff/longcat-parity-diagnostics-20260815 @ b44a95268
+
+
+## Modified source (committed)
+
+7f726913922e58bbffbc008eba0067e328543683094904107af4f7501b2e9a47       46446  src/models/longcat-flash-ngram.cpp
+9cbaddc5ed7eb3413ddbd5cf276da83a4c4a50d6aea3c06ddf821fe52497a4a7       20184  common/debug.cpp
+
+## Generated scripts (committed; py_compile clean)
+
+4aaec929452402fddec4c56f043799ba46ef424b0754e88723816d1fa9d27db0       20305  capture_longcat_hf_attn0_mla_stages.py
+cd51d4318ade525703ef1ac3045f13382994b7f5444b355f1cff5e1718789a12        7438  compare_longcat_attn0_mla_stages.py
+3083f2f8acca3f6851fd7c6acb1a0ce14d3fdbac591126854e012d630e03996b        7952  phase5_feasibility/measure_phase5_run.ps1
+
+## Runbooks (committed)
+
+c579986f465ba2608e2bce44e778dbbab8f36139f52f538e6d4f93b64c98cd36        8365  WIN11_MLA_CAPTURE_RUNBOOK.md
+30f7ab53ef43b10155654a54a08a5be01145a67d6fff6e6fc70d3153dae0f022        8070  WIN11_CPP_MLA_CAPTURE_RUNBOOK.md
+e5ec798dd6111a474fcf5d6d05efc26fd50f5676e47d28e2dfdf97dad9954736       10192  phase5_feasibility/PHASE5_FEASIBILITY_REPORT.md
+
+## AUTHORITATIVE HF oracles - Blackwell RTX PRO 6000 (vectors gitignored)
+
+ddf69fe4d372184806d5941ca87c7a629149b15cdc1fa7f2ae1f81792dcf95ed     3145728  _external_artifacts/hf_mla_blackwell_20260816/q_a_proj.bin
+956bd3e87b02a89ad1e3dd71801decffd10103d37bade7c490836aedd384dd37     3145728  _external_artifacts/hf_mla_blackwell_20260816/q_a_layernorm.bin
+4f3b647b62c60475fc03f023ce46a5c01951c45847ced2557b5692b2ed3e79b1    12582912  _external_artifacts/hf_mla_blackwell_20260816/q_b_proj.bin
+513390418c9877fa46286d397db7c9c9fb6408852836fb7827106acd183ceecc     1179648  _external_artifacts/hf_mla_blackwell_20260816/kv_a_proj_with_mqa.bin
+b44cc101b03b11d96c0d9c52613f7469141dd7786b8128f93e3b7e912c550373     1048576  _external_artifacts/hf_mla_blackwell_20260816/kv_a_layernorm.bin
+3e0f7ee2564a3fdef8878549db48b873ecb22aa18e452785c8e3d5284abadd84     6291456  _external_artifacts/hf_mla_blackwell_20260816/o_proj.bin
+20461cd5d706590855bdd73c825ac3c4e932801050bfdde92bfca96454954646        3418  _external_artifacts/hf_mla_blackwell_20260816/summary.json
+
+## INDICATIVE ONLY - local Ampere C++ run (FAILED Phase 3a gate; not for parity conclusions)
+
+346879eaff4d80003226d3abba45fdb792859856ee33bd73c7d254f69975f462     3145728  cpp_attn0_mla_3a_512/q_a_proj.bin
+956bd3e87b02a89ad1e3dd71801decffd10103d37bade7c490836aedd384dd37     3145728  cpp_attn0_mla_3a_512/q_a_layernorm.bin
+94681374c3d3e9858528558f77512319059c8d945ba7eab3f141f2aa60049ab7    12582912  cpp_attn0_mla_3a_512/q_b_proj.bin
+e7460e4e57318a2b9f5f5ebf2a09513f978967070df79f827525fb2d4463f836     1179648  cpp_attn0_mla_3a_512/kv_a_proj_with_mqa.bin
+b78077c293adbb2e24128e4b4f2cb6bcc94c362a37dd9a2737f2dbf3f932f7b9     1048576  cpp_attn0_mla_3a_512/kv_a_layernorm.bin
+cf75180463d95731fff3d4889ce1de75c045d72a14a3323d5d82ade80a085524     6291456  cpp_attn0_mla_3a_512/o_proj.bin
+88defe30c9fe48fbd4296b21bffef5bb3f0d6456c6ec42ded64340a1a73d15cf       12288  cpp_attn0_mla_3a_512/logical0_attn0_resid.bin
+a1c4c20cf346cbc5d13a0ea3d1d142f1b54f8e024ff3f04fdb31e9120e75b0af       12288  cpp_attn0_mla_3a_512/logical0_attn0_norm.bin
+d0e9edc8503e388d62b27f39c6ad24560021b1f4533410bf4f86a28fef4ea45f       12288  cpp_attn0_mla_3a_512/inp_embd_ngram.bin
