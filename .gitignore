@@ -55,6 +55,10 @@
 /autogen-*.md
 /common/build-info.cpp
 
+# LongCat Phase 5: throwaway hidden-vector dumps from the feasibility harness.
+# Kept out of the parity capture directories on purpose; no diagnostic value.
+/phase5_feasibility/scratch_dumps_*/
+
 # Deprecated
 
 /main
