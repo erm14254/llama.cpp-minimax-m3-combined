@@ -586,7 +586,9 @@ llama_model_longcat_flash_ngram::graph::graph(
 
                     // q_a_proj output is BF16 in the HF BF16 model.
                     q = ggml_cast(ctx0, q, GGML_TYPE_BF16);
-                    cb(q, "q", il);
+                    // LONGCAT_MLA_STAGE_SURFACE: distinct name so the parity
+                    // dump can tell the three block-0 Q boundaries apart.
+                    cb(q, "q_a_proj", il);
 
                     // LONGCAT_ATTN0_QA_NORM_EPS_DIAGNOSTIC:
                     // HF q_a_layernorm uses eps=1e-6 and computes the RMS
@@ -606,7 +608,8 @@ llama_model_longcat_flash_ngram::graph::graph(
 
                     // RMSNorm output is BF16.
                     q = ggml_cast(ctx0, q, GGML_TYPE_BF16);
-                    cb(q, "q", il);
+                    // LONGCAT_MLA_STAGE_SURFACE: HF q_a_layernorm boundary.
+                    cb(q, "q_a_norm", il);
 
                     // q_b_proj consumes BF16 and produces BF16 in HF.
                     q = ggml_mul_mat(
@@ -615,7 +618,9 @@ llama_model_longcat_flash_ngram::graph::graph(
                         q);
 
                     q = ggml_cast(ctx0, q, GGML_TYPE_BF16);
-                    cb(q, "q", il);
+                    // LONGCAT_MLA_STAGE_SURFACE: HF q_b_proj boundary, before
+                    // the MLA LoRA q scaling below.
+                    cb(q, "q_b_proj", il);
 
                     // HF scales the BF16 q_pass/q_rot tensors and therefore
                     // returns to the BF16 lattice here as well. Widen the
@@ -710,7 +715,10 @@ llama_model_longcat_flash_ngram::graph::graph(
                     LLM_NORM_RMS,
                     il);
             }
-            cb(kv_cmpr, "kv_cmpr", il);
+            // LONGCAT_MLA_STAGE_SURFACE: HF kv_a_layernorm boundary, before
+            // the MLA LoRA kv scaling below. Renamed because the pre-norm view
+            // at the top of this block already uses "kv_cmpr".
+            cb(kv_cmpr, "kv_a_norm", il);
 
             // MLA LoRA scaling: kv_cmpr *= sqrt(hidden_size / kv_lora_rank)
             kv_cmpr = ggml_scale(ctx0, kv_cmpr, mla_scale_kv);
@@ -741,6 +749,14 @@ llama_model_longcat_flash_ngram::graph::graph(
             cur = build_attn(inp_attn_k,
                     model.layers[il].wo, NULL, model.layers[il].wo_s,
                     Qcur, Kcur, Vcur, nullptr, nullptr, model.layers[il].wv_b, kq_scale, il);
+
+            // LONGCAT_MLA_STAGE_SURFACE: HF o_proj boundary.
+            //
+            // build_attn emits "kqv_out" BEFORE applying wo, so kqv_out-0 is
+            // the pre-projection attention output and is n_head*v_head_dim
+            // (4096) wide. HF o_proj output is n_embd (3072) wide. This is the
+            // post-wo, pre-residual surface and the only one comparable to it.
+            cb(cur, "attn_out", il);
         }
 
         if (il == n_layer - 1 && inp_out_ids && cparams.embeddings_nextn_masked) {

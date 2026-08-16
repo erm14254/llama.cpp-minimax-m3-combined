@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <system_error>
@@ -178,21 +179,67 @@ static bool common_debug_print_tensor(uint8_t * data, ggml_type type, const int6
 
 
 // LONGCAT_HIDDEN_VECTOR_DUMP:
-// When LONGCAT_HIDDEN_DUMP_DIR is set, dump the final-token hidden vector
-// for the 15 HF-comparable LongCat 512-token diagnostic surfaces.
-// Files are always little/native-endian F32, 3072 values = 12288 bytes.
-static bool common_debug_longcat_hidden_filename(
+// When LONGCAT_HIDDEN_DUMP_DIR is set, dump HF-comparable LongCat 512-token
+// diagnostic surfaces. Two modes:
+//
+//   full_sequence = false -> final-token row only, 3072 F32 = 12288 bytes.
+//        This is the historical layout. Every frozen oracle, including the
+//        attn0 residual 2c804a35..., is a final-row file, so these must not
+//        change or the Phase 3a regression gate is invalidated.
+//
+//   full_sequence = true  -> all ne[1] rows in canonical token-major
+//        [n_tokens, width] F32 order, plus a JSON sidecar. Used for the
+//        block-0 MLA stage surfaces, where the final token's attention output
+//        depends on K/V at every earlier position.
+//
+// Rows are always read through the tensor's own nb[] strides, so a view or
+// permuted layout can never be mistaken for an arithmetic divergence.
+struct common_debug_longcat_dump_spec {
+    std::string filename;
+    bool        full_sequence = false;
+    int64_t     expect_ne0    = 0;
+};
+
+static bool common_debug_longcat_dump_spec_for(
         const ggml_tensor * t,
-        std::string & filename) {
+        common_debug_longcat_dump_spec & spec) {
     const std::string tensor_name = t->name;
 
+    // LONGCAT_MLA_STAGE_VECTOR_DUMP: physical block-0 MLA boundaries.
+    // Filenames deliberately match the HF capture surface names so the
+    // comparator can pair the two sides directly.
+    static const struct {
+        const char * name;
+        const char * file;
+        int64_t      ne0;
+    } mla_surfaces[] = {
+        { "q_a_proj-0",   "q_a_proj.bin",           1536 },
+        { "q_a_norm-0",   "q_a_layernorm.bin",      1536 },
+        { "q_b_proj-0",   "q_b_proj.bin",           6144 },
+        { "kv_cmpr_pe-0", "kv_a_proj_with_mqa.bin",  576 },
+        { "kv_a_norm-0",  "kv_a_layernorm.bin",      512 },
+        { "attn_out-0",   "o_proj.bin",             3072 },
+    };
+
+    for (const auto & surface : mla_surfaces) {
+        if (tensor_name == surface.name) {
+            spec.filename      = surface.file;
+            spec.full_sequence = true;
+            spec.expect_ne0    = surface.ne0;
+            return true;
+        }
+    }
+
+    spec.full_sequence = false;
+    spec.expect_ne0    = 3072;
+
     if (tensor_name == "inp_embd_ngram") {
-        filename = "inp_embd_ngram.bin";
+        spec.filename = "inp_embd_ngram.bin";
         return true;
     }
 
     if (tensor_name == "result_norm") {
-        filename = "result_norm.bin";
+        spec.filename = "result_norm.bin";
         return true;
     }
 
@@ -200,24 +247,24 @@ static bool common_debug_longcat_hidden_filename(
     // Additional logical-layer-0 parity boundaries.
     // l_out-1 intentionally remains handled by the existing logical_00 mapping.
     if (tensor_name == "ffn_inp-0") {
-        filename = "logical0_attn0_resid.bin";
+        spec.filename = "logical0_attn0_resid.bin";
         return true;
     }
 
     if (tensor_name == "l_out-0") {
-        filename = "logical0_mlp0_resid.bin";
+        spec.filename = "logical0_mlp0_resid.bin";
         return true;
     }
 
     if (tensor_name == "ffn_inp-1") {
-        filename = "logical0_attn1_resid.bin";
+        spec.filename = "logical0_attn1_resid.bin";
         return true;
     }
 
     // LONGCAT_LOGICAL0_ATTN0_NORM_VECTOR_DUMP:
     // First normalized activation entering physical attention block 0.
     if (tensor_name == "attn_norm-0") {
-        filename = "logical0_attn0_norm.bin";
+        spec.filename = "logical0_attn0_norm.bin";
         return true;
     }
 
@@ -226,12 +273,44 @@ static bool common_debug_longcat_hidden_filename(
         if (tensor_name == "l_out-" + std::to_string(physical)) {
             char buf[64];
             snprintf(buf, sizeof(buf), "logical_%02d.bin", logical);
-            filename = buf;
+            spec.filename = buf;
             return true;
         }
     }
 
     return false;
+}
+
+// NOTE: an early-abort hook (LONGCAT_ABORT_AFTER_TENSOR) was attempted here
+// and deliberately removed.
+//
+// Returning false from a ggml_backend_sched eval callback does NOT stop graph
+// evaluation. In ggml_backend_sched_compute_splits the return value only
+// breaks the node loop of the *current split*; the enclosing loop over splits
+// continues and the rest of the graph still runs. See
+// ggml/src/ggml-backend.cpp: "if (need && !sched->callback_eval(t, false, ...))
+// { break; }".
+//
+// Worse, that break also skips the remaining nodes of the split it fires in,
+// so anything downstream is computed from incomplete state -- a surface dumped
+// after the trigger point would be silently invalid rather than absent.
+//
+// A full 512-token forward completes on the diagnostic hardware, so no abort
+// is needed. Do not reintroduce one without a real ggml-level mechanism.
+
+// True when this tensor has a dump mapping and dumping is enabled. The eval
+// callback must request such tensors at ask time even if --tensor-filter does
+// not cover them, otherwise the dump would silently never fire.
+static bool common_debug_longcat_wants_dump(const ggml_tensor * t) {
+    const char * dump_dir = std::getenv("LONGCAT_HIDDEN_DUMP_DIR");
+
+    if (dump_dir == nullptr || dump_dir[0] == '\0') {
+        return false;
+    }
+
+    common_debug_longcat_dump_spec spec;
+
+    return common_debug_longcat_dump_spec_for(t, spec);
 }
 
 static void common_debug_maybe_dump_longcat_hidden(
@@ -242,39 +321,52 @@ static void common_debug_maybe_dump_longcat_hidden(
         return;
     }
 
-    std::string filename;
-    if (!common_debug_longcat_hidden_filename(t, filename)) {
+    common_debug_longcat_dump_spec spec;
+    if (!common_debug_longcat_dump_spec_for(t, spec)) {
         return;
     }
 
-    if (t->ne[0] != 3072 || t->ne[1] < 1 ||
+    if (t->ne[0] != spec.expect_ne0 || t->ne[1] < 1 ||
         t->ne[2] != 1 || t->ne[3] != 1) {
         LOG_ERR(
             "LONGCAT_HIDDEN_VECTOR_DUMP bad shape tensor=%s "
-            "ne={%lld,%lld,%lld,%lld}\n",
+            "ne={%lld,%lld,%lld,%lld} expected ne0=%lld\n",
             t->name,
             (long long) t->ne[0],
             (long long) t->ne[1],
             (long long) t->ne[2],
-            (long long) t->ne[3]);
+            (long long) t->ne[3],
+            (long long) spec.expect_ne0);
         common_log_flush(common_log_main());
         std::exit(87);
     }
 
-    const size_t final_i1 = (size_t) t->ne[1] - 1;
+    const int64_t width     = t->ne[0];
+    const int64_t n_rows    = spec.full_sequence ? t->ne[1] : 1;
+    const int64_t first_i1  = spec.full_sequence ? 0 : t->ne[1] - 1;
+    const size_t  final_i1  = (size_t) t->ne[1] - 1;
 
-    std::vector<float> row(3072);
-    for (size_t i0 = 0; i0 < row.size(); ++i0) {
-        row[i0] = common_ggml_get_float_value(
-            data, t->type, t->nb, i0, final_i1, 0, 0);
+    // Canonical token-major [n_rows, width]. Values are read through nb[] so a
+    // non-contiguous view is normalized here rather than dumped verbatim.
+    std::vector<float> row((size_t) (width * n_rows));
 
-        if (!std::isfinite(row[i0])) {
-            LOG_ERR(
-                "LONGCAT_HIDDEN_VECTOR_DUMP nonfinite "
-                "tensor=%s i0=%zu value=%f\n",
-                t->name, i0, row[i0]);
-            common_log_flush(common_log_main());
-            std::exit(88);
+    for (int64_t r = 0; r < n_rows; ++r) {
+        const int64_t i1 = first_i1 + r;
+
+        for (int64_t i0 = 0; i0 < width; ++i0) {
+            const float v = common_ggml_get_float_value(
+                data, t->type, t->nb, (size_t) i0, (size_t) i1, 0, 0);
+
+            if (!std::isfinite(v)) {
+                LOG_ERR(
+                    "LONGCAT_HIDDEN_VECTOR_DUMP nonfinite "
+                    "tensor=%s i0=%lld i1=%lld value=%f\n",
+                    t->name, (long long) i0, (long long) i1, v);
+                common_log_flush(common_log_main());
+                std::exit(88);
+            }
+
+            row[(size_t) (r * width + i0)] = v;
         }
     }
 
@@ -289,7 +381,7 @@ static void common_debug_maybe_dump_longcat_hidden(
         std::exit(89);
     }
 
-    const auto output_path = root / filename;
+    const auto output_path = root / spec.filename;
 
     std::ofstream out(
         output_path,
@@ -316,13 +408,63 @@ static void common_debug_maybe_dump_longcat_hidden(
         std::exit(91);
     }
 
+    // Sidecar carries the source layout so the comparator reads shape from
+    // metadata instead of inferring it from file length, and so a storage
+    // difference is distinguishable from an arithmetic one.
+    if (spec.full_sequence) {
+        auto sidecar_path = output_path;
+        sidecar_path.replace_extension(".json");
+
+        std::ofstream meta(sidecar_path, std::ios::trunc);
+
+        if (!meta) {
+            LOG_ERR(
+                "LONGCAT_HIDDEN_VECTOR_DUMP sidecar open failed: %s\n",
+                sidecar_path.string().c_str());
+            common_log_flush(common_log_main());
+            std::exit(92);
+        }
+
+        meta << "{\n";
+        meta << "  \"tensor\": \"" << t->name << "\",\n";
+        meta << "  \"shape\": [" << (long long) n_rows << ", "
+             << (long long) width << "],\n";
+        meta << "  \"order\": \"token-major\",\n";
+        meta << "  \"dtype\": \"float32-le\",\n";
+        meta << "  \"bytes\": "
+             << (long long) (row.size() * sizeof(float)) << ",\n";
+        meta << "  \"source_type\": \"" << ggml_type_name(t->type) << "\",\n";
+        meta << "  \"source_contiguous\": "
+             << (ggml_is_contiguous(t) ? "true" : "false") << ",\n";
+        meta << "  \"source_ne\": [" << (long long) t->ne[0] << ", "
+             << (long long) t->ne[1] << ", " << (long long) t->ne[2] << ", "
+             << (long long) t->ne[3] << "],\n";
+        meta << "  \"source_nb\": [" << (long long) t->nb[0] << ", "
+             << (long long) t->nb[1] << ", " << (long long) t->nb[2] << ", "
+             << (long long) t->nb[3] << "]\n";
+        meta << "}\n";
+        meta.close();
+
+        if (!meta) {
+            LOG_ERR(
+                "LONGCAT_HIDDEN_VECTOR_DUMP sidecar write failed: %s\n",
+                sidecar_path.string().c_str());
+            common_log_flush(common_log_main());
+            std::exit(93);
+        }
+    }
+
     LOG(
-        "LONGCAT_HIDDEN_VECTOR_DUMP tensor=%s "
-        "file=%s final_i1=%zu type=%s\n",
+        "LONGCAT_HIDDEN_VECTOR_DUMP tensor=%s file=%s rows=%lld width=%lld "
+        "mode=%s final_i1=%zu type=%s contiguous=%d\n",
         t->name,
         output_path.string().c_str(),
+        (long long) n_rows,
+        (long long) width,
+        spec.full_sequence ? "full-sequence" : "final-row",
         final_i1,
-        ggml_type_name(t->type));
+        ggml_type_name(t->type),
+        ggml_is_contiguous(t) ? 1 : 0);
 }
 
 /**
@@ -356,8 +498,10 @@ bool common_debug_cb_eval(struct ggml_tensor * t, bool ask, void * user_data) {
     // LONGCAT_GATE4_NAN_AUDIT: at ask time, request only tensors that
     // match --tensor-filter. The stock callback asks for every tensor,
     // forcing needless device-to-host copies even for filtered output.
+    // Also request dump targets, so LONGCAT_HIDDEN_DUMP_DIR works whether or
+    // not the tensor is covered by --tensor-filter.
     if (ask) {
-        return matches_filter;
+        return matches_filter || common_debug_longcat_wants_dump(t);
     }
 
     char src1_str[128] = { 0 };
@@ -379,14 +523,21 @@ bool common_debug_cb_eval(struct ggml_tensor * t, bool ask, void * user_data) {
         ggml_backend_tensor_get(t, pimpl->data.data(), 0, n_bytes);
     }
 
-    if (!ggml_is_quantized(t->type) && matches_filter) {
+    if (!ggml_is_quantized(t->type)) {
         uint8_t * data = is_host ? (uint8_t *) t->data : pimpl->data.data();
+
+        // The dump is keyed on tensor name, not on --tensor-filter, so an
+        // abort target that was requested only for its side effect still gets
+        // written before evaluation stops.
         common_debug_maybe_dump_longcat_hidden(data, t);
-        const bool saw_nan = common_debug_print_tensor(data, t->type, t->ne, t->nb, 3);
-        if (pimpl->abort_on_nan && saw_nan) {
-            LOG("LONGCAT_GATE4_NAN_AUDIT FIRST_NAN tensor=%s\n", t->name);
-            common_log_flush(common_log_main());
-            std::exit(86);
+
+        if (matches_filter) {
+            const bool saw_nan = common_debug_print_tensor(data, t->type, t->ne, t->nb, 3);
+            if (pimpl->abort_on_nan && saw_nan) {
+                LOG("LONGCAT_GATE4_NAN_AUDIT FIRST_NAN tensor=%s\n", t->name);
+                common_log_flush(common_log_main());
+                std::exit(86);
+            }
         }
     }
 
