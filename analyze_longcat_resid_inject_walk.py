@@ -253,6 +253,14 @@ def main() -> int:
             "boundary's e_reset still contains error inherited from the "
             "post-reset boundaries BEFORE it; only logical_01's e_reset is "
             "purely single-logical-layer-generated.",
+            "Non-additivity: ||e_reset||/||e_observed|| quantifies the "
+            "exact-upstream counterfactual (what remains when everything "
+            "upstream of logical_00 is byte-exact). It proves substantial, "
+            "dominant downstream-local regeneration UNDER THIS INTERVENTION, "
+            "but it is NOT an additive downstream/upstream causal "
+            "decomposition of the observed error: the downstream network is "
+            "nonlinear, so upstream and downstream contributions do not "
+            "superpose, and (1 - ratio) is not 'the upstream share'.",
             "result_norm is a post-RMSNorm space change; its rel-RMSE is not "
             "directly comparable to residual-stream boundaries.",
         ],

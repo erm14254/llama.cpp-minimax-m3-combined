@@ -100,10 +100,13 @@ checkpoint; HF full-seq capture with 14/14 row-511 + same-pass norm gates;
 control run 29/29 final-row regression; injection landing byte-exact with
 15/15 upstream inertness; known-answer row-511 slice ≤ 1e-12).
 **Causal result: the downstream trunk locally regenerates the dominant share
-of the residual divergence** — with a byte-exact `logical_00` input, logical
-block 1 alone regenerates rel 9.05e-3 (68% of the observed error L2 at that
-boundary), and zeroing everything upstream of `logical_00` removes only
-~23% of the endpoint error L2 (`result_norm` ratio 0.773). First-raw and
+of the residual divergence under this intervention** — with a byte-exact
+`logical_00` input, logical block 1 alone regenerates rel 9.05e-3
+(‖e_reset‖ = 0.679 of the observed error L2 at that boundary), and with all
+upstream divergence zeroed the endpoint error L2 remains at 0.773 of the
+observed value (`result_norm`). **These ratios quantify the exact-upstream
+counterfactual and are NOT additive downstream/upstream partitions — the
+nonlinear downstream means contributions do not superpose.** First-raw and
 the 0.01/0.10/0.50 crossings all coincide at `logical_01`.
 
 **Immediate next action (per the pre-registered stop rule; design proposed,
