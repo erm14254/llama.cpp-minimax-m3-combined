@@ -1,0 +1,11 @@
+{
+  "tensor": "attn_norm-3",
+  "shape": [512, 3072],
+  "order": "token-major",
+  "dtype": "float32-le",
+  "bytes": 6291456,
+  "source_type": "f32",
+  "source_contiguous": true,
+  "source_ne": [3072, 512, 1, 1],
+  "source_nb": [4, 12288, 6291456, 6291456]
+}

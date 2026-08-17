@@ -1,0 +1,239 @@
+{
+  "description": "Block-2 MLA-internal walk under the dual reset - causal frontier",
+  "run_dir": "D:\\llama.cpp-longcat-claude\\cpp_resid_walk_inject2_b2_512",
+  "hf_dir": "D:\\lc_block2_mla_512",
+  "targets_dir": "D:\\llama.cpp-longcat-claude\\block2_mla_targets",
+  "weight_provenance": {
+    "blk.2.attn_q_a.weight": {
+      "hf": "model.layers.1.self_attn.0.q_a_proj.weight",
+      "raw_bf16_bit_equal": "4718592/4718592",
+      "layout": "GGUF ne [3072,1536] row-major == HF [1536,3072] row-major"
+    },
+    "blk.2.attn_kv_a_mqa.weight": {
+      "hf": "model.layers.1.self_attn.0.kv_a_proj_with_mqa.weight",
+      "raw_bf16_bit_equal": "1769472/1769472",
+      "layout": "GGUF ne [3072,576] row-major == HF [576,3072] row-major"
+    }
+  },
+  "surfaces": {
+    "q_a_proj": {
+      "elements": 786432,
+      "raw_equal": 41,
+      "ref_on_bf16_lattice": 786432,
+      "bf16_cpp_equal_ref": 786432,
+      "classification": "bf16-reducible",
+      "rel_rmse": 0.0016528598436518877,
+      "max_abs": 0.0039042234420776367,
+      "first_divergent_token": 0,
+      "divergent_token_rows": 512,
+      "branch": "Q",
+      "attribution_eligible": true,
+      "eligibility_note": "ROOT GEMM: activation = injected attn_norm-2 oracle (landing-gated); weight raw-BF16 bit-identical -> ALL inputs exact, attribution permitted"
+    },
+    "q_a_norm": {
+      "elements": 786432,
+      "raw_equal": 14,
+      "ref_on_bf16_lattice": 786432,
+      "bf16_cpp_equal_ref": 511379,
+      "classification": "bf16-irreducible",
+      "rel_rmse": 0.002856388279318369,
+      "max_abs": 0.14537429809570312,
+      "first_divergent_token": 0,
+      "divergent_token_rows": 512,
+      "branch": "Q",
+      "attribution_eligible": false,
+      "eligibility_note": "input = C++ q_a_proj-2 (differs from HF); constants differ by source: C++ eps 1e-5 (f_norm_rms_eps) vs HF LoRA eps 1e-6 -> observational only"
+    },
+    "q_b_proj": {
+      "elements": 3145728,
+      "raw_equal": 40,
+      "ref_on_bf16_lattice": 3145728,
+      "bf16_cpp_equal_ref": 1638590,
+      "classification": "bf16-irreducible",
+      "rel_rmse": 0.0023608815256829048,
+      "max_abs": 0.22098922729492188,
+      "first_divergent_token": 0,
+      "divergent_token_rows": 512,
+      "branch": "Q",
+      "attribution_eligible": false,
+      "eligibility_note": "input = C++ q_a_norm-2 (differs) -> observational only"
+    },
+    "q_pe_rope": {
+      "elements": 1048576,
+      "raw_equal": 11,
+      "ref_on_bf16_lattice": 1048576,
+      "bf16_cpp_equal_ref": 489484,
+      "classification": "bf16-irreducible",
+      "rel_rmse": 0.0030441735423164004,
+      "max_abs": 0.79388427734375,
+      "first_divergent_token": 0,
+      "divergent_token_rows": 512,
+      "branch": "Q",
+      "attribution_eligible": false,
+      "eligibility_note": "production ggml angles vs captured HF cos/sin (known non-byte-exact) + differing q_b input -> localizes at most to the production-RoPE composite / angle-generation state (R1 covers rotation arithmetic)"
+    },
+    "kv_a_proj": {
+      "elements": 294912,
+      "raw_equal": 13,
+      "ref_on_bf16_lattice": 294912,
+      "bf16_cpp_equal_ref": 294912,
+      "classification": "bf16-reducible",
+      "rel_rmse": 0.0017401953752802636,
+      "max_abs": 0.04378700256347656,
+      "first_divergent_token": 0,
+      "divergent_token_rows": 512,
+      "branch": "KV",
+      "attribution_eligible": true,
+      "eligibility_note": "ROOT GEMM: activation = injected attn_norm-2 oracle (landing-gated); weight raw-BF16 bit-identical -> ALL inputs exact, attribution permitted"
+    },
+    "kv_a_norm": {
+      "elements": 262144,
+      "raw_equal": 3,
+      "ref_on_bf16_lattice": 262144,
+      "bf16_cpp_equal_ref": 157255,
+      "classification": "bf16-irreducible",
+      "rel_rmse": 0.0030908633774870044,
+      "max_abs": 0.001149490475654602,
+      "first_divergent_token": 0,
+      "divergent_token_rows": 512,
+      "branch": "KV",
+      "attribution_eligible": false,
+      "eligibility_note": "input = C++ kv_cmpr_pe-2 slice (differs); constants differ by source: C++ eps 1e-5 vs HF LoRA eps 1e-6 -> observational only"
+    },
+    "kv_cmpr_scaled": {
+      "elements": 262144,
+      "raw_equal": 1,
+      "ref_on_bf16_lattice": 262144,
+      "bf16_cpp_equal_ref": 144082,
+      "classification": "bf16-irreducible",
+      "rel_rmse": 0.0034890558280141434,
+      "max_abs": 0.0031377673149108887,
+      "first_divergent_token": 0,
+      "divergent_token_rows": 512,
+      "branch": "KV",
+      "attribution_eligible": false,
+      "eligibility_note": "input = C++ kv_a_norm-2 (differs); C++ has no post-scale round at il>=1 -> observational only"
+    },
+    "k_pe_rope": {
+      "elements": 32768,
+      "raw_equal": 1,
+      "ref_on_bf16_lattice": 32768,
+      "bf16_cpp_equal_ref": 24917,
+      "classification": "bf16-irreducible",
+      "rel_rmse": 0.001994825149050831,
+      "max_abs": 0.0060269832611083984,
+      "first_divergent_token": 0,
+      "divergent_token_rows": 512,
+      "branch": "KV",
+      "attribution_eligible": false,
+      "eligibility_note": "production-RoPE composite rule (as q_pe_rope) + differing kv input -> observational only"
+    },
+    "kqv_out": {
+      "elements": 2097152,
+      "raw_equal": 3,
+      "ref_on_bf16_lattice": 2097152,
+      "bf16_cpp_equal_ref": 633917,
+      "classification": "bf16-irreducible",
+      "rel_rmse": 0.005624848549161832,
+      "max_abs": 0.002918548882007599,
+      "first_divergent_token": 0,
+      "divergent_token_rows": 512,
+      "branch": "MERGE",
+      "attribution_eligible": false,
+      "eligibility_note": "multi-input merge: consumes Q-branch state, KV cache state, absorbed attn_k_b/attn_v_b weights, mask - incoming branch states differ -> observational only (all-input rule)"
+    },
+    "attn_out": {
+      "elements": 1572864,
+      "raw_equal": 9,
+      "ref_on_bf16_lattice": 1572864,
+      "bf16_cpp_equal_ref": 419261,
+      "classification": "bf16-irreducible",
+      "rel_rmse": 0.00613245600791222,
+      "max_abs": 0.004692882299423218,
+      "first_divergent_token": 0,
+      "divergent_token_rows": 512,
+      "branch": "MERGE",
+      "attribution_eligible": false,
+      "eligibility_note": "endpoint context (committed dual-reset result, reproduced 81/81); inputs differ -> observational"
+    }
+  },
+  "frontier": {
+    "per_branch_first_raw": {
+      "Q": "q_a_proj",
+      "KV": "kv_a_proj"
+    },
+    "per_branch_first_bf16_irreducible": {
+      "Q": "q_a_norm",
+      "KV": "kv_a_norm"
+    },
+    "root_classifications": {
+      "q_a_proj": "bf16-reducible",
+      "kv_a_proj": "bf16-reducible"
+    },
+    "verdict": "Neither root GEMM is bf16-irreducible (both reproduce HF under output rounding from all-exact inputs) -> no operator in this walk is both attribution-eligible and irreducible; every later irreducible surface sits behind differing inputs/constants -> stop for review; the designed next steps are the narrowest exact predecessor resets (e.g. exact bf16 projection-output injection) and/or the recorded parameter-difference review (LoRA-norm eps)"
+  },
+  "caveats": [
+    "All-input exactness (incl. parameters): only the two root GEMMs are eligible for causal attribution in this walk; every later operator consumes a differing activation and/or differing constants and is classified observationally.",
+    "Strict classification: a single differing element makes a surface bf16-irreducible; magnitudes and counts are recorded so review can weigh reduction-order-scale effects.",
+    "The C++ surfaces are F32 carriers (uncorrected il>=1 path); HF boundaries are BF16-on-lattice."
+  ],
+  "provenance": {
+    "mode": "inject2",
+    "invocation": "llama-debug.exe -m \"D:\\LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-GGUF-BF16\\LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-BF16-00001-of-00008.gguf\" -f \"D:\\llama.cpp-longcat-claude\\prompt_512_a.txt\" -c 4608 -b 4608 -ub 512 -fa off -ctk f32 -ctv f32 --no-warmup -fitt 4096 -v --tensor-filter \"^(q_a_proj|q_a_norm|q_b_proj|q_pe_rope|kv_cmpr_pe|k_pe_rope|kv_a_norm|kv_cmpr_scaled|kqv_out|attn_out|ffn_inp)-0$\"",
+    "cublas_module": "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\bin\\x64\\cublas64_13.dll",
+    "binaries": {
+      "llama-common.dll": "8f0f365cb93cd32ffcced813ae00795b0be8497e21d7648e55afedce0930170d",
+      "ggml-cuda.dll": "502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48",
+      "llama.dll": "97592bb7ad1338ef36fd608da19709ccd75a39bd04b5609324204e055c99a10c",
+      "llama-debug.exe": "df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0"
+    },
+    "oracle2_sha256": "afa16c6c3324387e9261c708cae044b8fcb08acda8c8f6315d2ba8d39a8f0fd7",
+    "oracle_sha256": "d810f93c50ea42c5909ab289ebf62a0c5629f40530d2e5fc706dde67f0eaf763",
+    "suffix": "b2",
+    "cublas_version": "6.14.11.1330",
+    "exit_code": 0,
+    "instrumentation_head": "02d9687dc58b8dfcd009e90a11e9c284b029090c",
+    "env_sweep_names": [
+      "LONGCAT_HIDDEN_DUMP_DIR",
+      "LONGCAT_ROPE_INJECT_DIR",
+      "LONGCAT_ROPE_ORACLE_DIR",
+      "LONGCAT_RESID_WALK_DUMP_DIR",
+      "LONGCAT_RESID_INJECT_DIR",
+      "LONGCAT_ATTN_NORM2_INJECT_DIR",
+      "GGML_CUDA_ALLREDUCE",
+      "GGML_CUDA_CUBLAS_COMPUTE_TYPE",
+      "GGML_CUDA_DEVICES",
+      "GGML_CUDA_DISABLE_FUSION",
+      "GGML_CUDA_DISABLE_GRAPHS",
+      "GGML_CUDA_ENABLE_UNIFIED_MEMORY",
+      "GGML_CUDA_GRAPH_OPT",
+      "GGML_CUDA_NO_PINNED",
+      "GGML_CUDA_P2P",
+      "GGML_CUDA_PDL",
+      "GGML_CUDA_REGISTER_HOST",
+      "GGML_CUDA_VALIDATE_MUL_MAT_ID",
+      "GGML_CUDA_AR_BF16_THRESHOLD",
+      "GGML_CUDA_AR_COPY_CHUNK_BYTES",
+      "GGML_CUDA_AR_COPY_THRESHOLD",
+      "GGML_OP_OFFLOAD_MIN_BATCH",
+      "GGML_CPU_DISABLE_FUSION",
+      "GGML_BACKEND_PATH",
+      "GGML_TOTAL_THREADS",
+      "GGML_SCHED_DEBUG",
+      "GGML_SCHED_DEBUG_REALLOC",
+      "LLAMA_ATTN_ROT_DISABLE",
+      "LLAMA_GRAPH_REUSE_DISABLE",
+      "LLAMA_BATCH_DEBUG",
+      "LLAMA_GRAPH_INPUT_DEBUG",
+      "LLAMA_GRAPH_RESULT_DEBUG",
+      "LLAMA_KV_CACHE_DEBUG",
+      "LLAMA_DSV4_COMPRESS_DEBUG",
+      "LLAMA_TRACE",
+      "CUBLAS_LOGINFO_DBG",
+      "CUBLAS_LOGDEST_DBG",
+      "CUBLASLT_LOG_LEVEL",
+      "CUBLASLT_LOG_FILE",
+      "TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"
+    ]
+  }
+}

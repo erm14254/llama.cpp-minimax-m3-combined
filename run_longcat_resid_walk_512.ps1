@@ -39,11 +39,13 @@ if ($Mode -eq 'inject2') {
     $priorDir = Join-Path $repo ("cpp_resid_walk_" + $Mode + "_512")
 }
 
-# Instrumentation HEAD bcbc3846d (attn_norm-2 injector + attn_out-2 dump).
+# Instrumentation HEAD 02d9687dc (block-2 MLA walk plumbing; the model-file
+# name plumbing lands in llama.dll - recorded, inertness proven by the full
+# reproduction gate below).
 $expectedBins = @{
     'llama-debug.exe'  = 'df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0'
-    'llama-common.dll' = '8f485ee231660270fb2e266ec7e6d52b1054227c33535afba60098d022e52905'
-    'llama.dll'        = '93466c40380729857eb43f7d4ccfa4cf7f336d634cec0b44bb359d2411465dc3'
+    'llama-common.dll' = '8f0f365cb93cd32ffcced813ae00795b0be8497e21d7648e55afedce0930170d'
+    'llama.dll'        = '97592bb7ad1338ef36fd608da19709ccd75a39bd04b5609324204e055c99a10c'
     'ggml-cuda.dll'    = '502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48'
 }
 $oracle2Dir = 'D:\lc_block1_stages_512'
@@ -102,7 +104,7 @@ foreach ($name in $expectedBins.Keys) {
     $h = Get-Sha256 $p
     if ($h -ne $expectedBins[$name]) { throw "binary SHA FAIL: $name $h != $($expectedBins[$name])" }
 }
-Write-Host "binary set: 4/4 match instrumentation build (HEAD bcbc3846d)"
+Write-Host "binary set: 4/4 match instrumentation build (HEAD 02d9687dc)"
 
 # 2. Environment-cleanliness sweep (parent session must be clean).
 # Source-audited fail-closed name list (wrapper-aware derivation 2026-08-17:
@@ -315,15 +317,55 @@ if ($Suffix -ne '') {
     $expectedFull += @(
         'block1_attn0_norm_full.bin','block1_attn0_out_full.bin',
         'block1_attn0_resid_full.bin','block1_mlp0_resid_full.bin',
-        'block1_attn1_norm_full.bin','block1_attn1_resid_full.bin'
+        'block1_attn1_norm_full.bin','block1_attn1_resid_full.bin',
+        'block2_q_a_proj_full.bin','block2_q_a_norm_full.bin',
+        'block2_q_b_proj_full.bin','block2_kv_a_proj_full.bin',
+        'block2_kv_a_norm_full.bin','block2_kv_cmpr_scaled_full.bin',
+        'block2_q_pe_rope_full.bin','block2_k_pe_rope_full.bin',
+        'block2_kqv_out_full.bin'
     )
+}
+$fullSeqSizes = @{
+    'block2_q_a_proj_full.bin'       = 1536 * 512 * 4
+    'block2_q_a_norm_full.bin'       = 1536 * 512 * 4
+    'block2_q_b_proj_full.bin'       = 6144 * 512 * 4
+    'block2_kv_a_proj_full.bin'      =  576 * 512 * 4
+    'block2_kv_a_norm_full.bin'      =  512 * 512 * 4
+    'block2_kv_cmpr_scaled_full.bin' =  512 * 512 * 4
+    'block2_q_pe_rope_full.bin'      = 2048 * 512 * 4
+    'block2_k_pe_rope_full.bin'      =   64 * 512 * 4
+    'block2_kqv_out_full.bin'        = 4096 * 512 * 4
 }
 foreach ($name in $expectedFull) {
     $p = Join-Path $runDir $name
     if (-not (Test-Path $p)) { throw "full-seq dump missing: $name" }
-    if ((Get-Item $p).Length -ne 6291456) { throw "full-seq dump size FAIL: $name" }
+    $expectSize = 6291456
+    if ($fullSeqSizes.ContainsKey($name)) { $expectSize = $fullSeqSizes[$name] }
+    if ((Get-Item $p).Length -ne $expectSize) { throw "full-seq dump size FAIL: $name" }
 }
 Write-Host "full-seq inventory: $($expectedFull.Count) dumps present, sizes OK"
+
+# Mandated endpoint/inertness gate for the block-2 walk: the FULL committed
+# dual-reset manifest (cpp_resid_walk_inject2_b1_512, incl. the attn_out-2
+# endpoint block1_attn0_out_full.bin) must reproduce byte-identically before
+# any localization is trusted.
+$dualPrior = Join-Path $repo 'cpp_resid_walk_inject2_b1_512'
+if ($Mode -eq 'inject2' -and $runDir -ne $dualPrior -and (Test-Path (Join-Path $dualPrior 'SHA256SUMS.txt'))) {
+    $dpFailed = 0
+    $dpCount = 0
+    foreach ($line in (Get-Content (Join-Path $dualPrior 'SHA256SUMS.txt'))) {
+        if ($line.Trim() -eq '') { continue }
+        $parts = $line.Trim() -split '\s+', 2
+        $sha = $parts[0].ToLower(); $name = $parts[1].Trim()
+        if ($name -eq 'run_provenance.json') { continue }
+        $dpCount++
+        $p = Join-Path $runDir $name
+        if (-not (Test-Path $p)) { Write-Host "DUAL-PRIOR MISSING $name"; $dpFailed++; continue }
+        if ((Get-Sha256 $p) -ne $sha) { Write-Host "DUAL-PRIOR MISMATCH $name"; $dpFailed++ }
+    }
+    if ($dpFailed -gt 0) { throw "dual-reset manifest reproduction FAIL: $dpFailed/$dpCount" }
+    Write-Host "dual-reset manifest reproduction: $dpCount/$dpCount byte-identical (incl. attn_out-2 endpoint)"
+}
 
 # Prior-generation manifest reproduction: every file the previous run of this
 # mode recorded (except run_provenance.json) must hash identically here,
@@ -366,7 +408,7 @@ Write-Host "manifest written: $manifest"
 $prov = @{
     mode = $Mode
     suffix = $Suffix
-    instrumentation_head = 'bcbc3846dbc287792bcbd52031e889f16b57d5b2'
+    instrumentation_head = '02d9687dc58b8dfcd009e90a11e9c284b029090c'
     binaries = $expectedBins
     cublas_module = $cublasPath
     cublas_version = $cublasVer

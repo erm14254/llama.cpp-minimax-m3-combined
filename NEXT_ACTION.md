@@ -141,18 +141,32 @@ full-sequence capture** by the exact-input S3 reconstruction
 supporting evidence, not closure basis: S1 count == `ffn_inp-2` bf16-match
 count, showing the C++ add introduces nothing beyond its operands.
 
+**Update 2026-08-17 (block-2 MLA-internal walk COMPLETE — see the final
+addendum of `STATUS_2026-08-17.md`):** executed under the dual reset with
+every gate passing (root-GEMM weights raw-BF16 bit-identical; block-0
+known-answer target-generation gates byte-exact; 81/81 dual-manifest
+reproduction incl. the `attn_out-2` endpoint). **Causal frontier verdict:
+both root projection GEMMs are BF16-REDUCIBLE from all-exact inputs
+(786,432/786,432 and 294,912/294,912 after output rounding) — pure
+F32-output boundaries, not irreducible — so no operator in the walk is both
+attribution-eligible and irreducible.** The per-branch first-irreducible
+surfaces (`q_a_norm-2`, `kv_a_norm-2`) sit behind differing F32
+predecessors AND a **source-cited parameter divergence: C++ il ≥ 1 LoRA
+norms run eps = 1e-5 (`f_norm_rms_eps`) while HF uses eps = 1e-6** —
+recorded for review, not attributed (inputs also differ). RoPE surfaces
+remain under the production-composite rule; the attention core under the
+multi-input rule.
+
 **Immediate next action (designed, NOT begun — awaiting review):** the
-narrowest **block-2 MLA-internal capture under the dual reset**, mirroring
-the proven block-0 methodology: full-sequence il=2 stage dumps
-(`q_a_proj-2`, `q_a_norm-2`, `q_b_proj-2`, `kv_cmpr_pe-2`, `kv_a_norm-2`,
-`kv_cmpr_scaled-2`, `q_pe_rope-2`, `k_pe_rope-2`, `kqv_out-2`) plus an HF
-layer-1 `self_attn[0]` internals capture extending the block-0 MLA stages
-script — locating the first divergent attention-internal surface with
-byte-exact upstream state. No block-0 mechanism transferred by assumption.
-Measurement-only; still forbidden: any arithmetic change (incl. MLP/MoE,
-any generalization of block-0 A+B or the trunk RMSNorm semantics),
-production FA, 2050-token runs, widening any frozen criterion, production
-RoPE changes.
+narrowest **exact projection-output predecessor resets** — inject
+`bf16(q_a_proj-2)` ≡ HF `q_a_proj` (and/or the KV analogue) at the
+respective nodes so the LoRA norms become the next operators with
+byte-exact activation inputs — together with a **reviewed decision on the
+LoRA-norm eps constant** (measure 1e-6 vs 1e-5 under exact inputs before
+any arithmetic change is proposed). Measurement-only; still forbidden: any
+arithmetic change (incl. MLP/MoE, any generalization of block-0 A+B or the
+trunk RMSNorm semantics), production FA, 2050-token runs, widening any
+frozen criterion, production RoPE changes.
 
 The executed design (for the record):
 
