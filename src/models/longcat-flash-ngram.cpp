@@ -767,6 +767,19 @@ llama_model_longcat_flash_ngram::graph::graph(
 
             // MLA LoRA scaling: kv_cmpr *= sqrt(hidden_size / kv_lora_rank)
             kv_cmpr = ggml_scale(ctx0, kv_cmpr, mla_scale_kv);
+            if (il == 0) {
+                // LONGCAT_ATTN0_KV_BF16_SEMANTICS_DIAGNOSTIC (Experiment B/D3):
+                //
+                // HF scales the BF16 k_pass tensor, so the scaled result is
+                // stored in BF16 (modeling_longcat_flash.py:426), mirroring
+                // the accepted Q-side post-scale rounding above. No capture
+                // surface gates this boundary; its effect lands in
+                // o_proj/residual and is measured as delta(A->B). Widen for
+                // the existing F32 cache path. The kv_cmpr_scaled label lands
+                // on the rounded tensor (graph label only, not a dump target).
+                kv_cmpr = ggml_cast(ctx0, kv_cmpr, GGML_TYPE_BF16);
+                kv_cmpr = ggml_cast(ctx0, kv_cmpr, GGML_TYPE_F32);
+            }
             cb(kv_cmpr, "kv_cmpr_scaled", il);
 
             // MLA absorption optimization: absorb k_b into q_nope
