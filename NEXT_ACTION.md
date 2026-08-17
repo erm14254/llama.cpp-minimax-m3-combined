@@ -205,16 +205,21 @@ causally established block-2 divergence machinery is missing BF16
 representation boundaries + the norm composite (cast dominant, eps
 secondary) — mirroring block-0 A+B without assumption transfer.
 
-**Awaiting review — natural next decisions (nothing begun):** (a) draft
-the reviewed arithmetic plan for the representation-boundary +
-norm-composite class (now causally grounded at blocks 0–2 with per-factor
-magnitudes); (b) continue the measurement chain via the recorded
-predecessor-reset designs (exact `q_b_proj-2` / `kv_cmpr_scaled-2` output
-resets → judging RoPE-composite/absorption and the attention core under
-progressively exact inputs). Measurement-only until reviewed; still
-forbidden: any arithmetic change (incl. MLP/MoE, any generalization of
-block-0 A+B or the trunk RMSNorm semantics), production FA, 2050-token
-runs, widening any frozen criterion, production RoPE changes.
+**Decision 2026-08-17 (recorded in
+`WIN11_HANDOFF_2026-08-17_DELTA_PREGATE4_CAUSAL.md`): option (a) selected.**
+The next action is to **prepare the reviewed narrow production arithmetic
+plan** from the independently measured il≥1 MLA findings (measured BF16
+representation boundaries at projection/scale outputs; HF norm cast
+semantics; the C++ 1e-5 vs HF 1e-6 LoRA-norm eps mismatch) — **beginning
+with a source audit to determine exactly which standard-path
+operations/layers share these mechanisms before proposing any code change;
+global il≥1 scope must NOT be assumed solely from the block-2
+measurements. NOT begun; no arithmetic until that plan is reviewed and
+approved.** The recorded predecessor-reset measurement designs (option (b))
+remain available if review requests more evidence first. Still forbidden:
+any arithmetic change (incl. MLP/MoE, any generalization of block-0 A+B or
+the trunk RMSNorm semantics), production FA, Gate-4/2050-token runs,
+widening any frozen criterion, production RoPE changes.
 
 The executed design (for the record):
 
