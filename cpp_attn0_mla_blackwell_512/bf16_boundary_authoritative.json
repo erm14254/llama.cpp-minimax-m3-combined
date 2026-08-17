@@ -1,0 +1,113 @@
+{
+  "first_real_divergence": "kv_a_layernorm",
+  "surfaces": {
+    "kv_a_layernorm": {
+      "bf16_rounded": {
+        "divergent_rows": 512,
+        "exact_pct": 45.224761962890625,
+        "max_abs": 0.0625,
+        "rel_rmse": 0.0009157148595806029,
+        "rmse": 0.00045833284207582133
+      },
+      "hf_on_bf16_lattice_pct": 100.0,
+      "raw": {
+        "divergent_rows": 512,
+        "exact_pct": 0.0,
+        "max_abs": 0.06900882720947266,
+        "rel_rmse": 0.0016200582082339554,
+        "rmse": 0.0008108701908017613
+      },
+      "verdict": "REAL"
+    },
+    "kv_a_proj_with_mqa": {
+      "bf16_rounded": {
+        "divergent_rows": 0,
+        "exact_pct": 100.0,
+        "max_abs": 0.0,
+        "rel_rmse": 0.0,
+        "rmse": 0.0
+      },
+      "hf_on_bf16_lattice_pct": 100.0,
+      "raw": {
+        "divergent_rows": 512,
+        "exact_pct": 0.0,
+        "max_abs": 0.02548980712890625,
+        "rel_rmse": 0.001221575718368803,
+        "rmse": 0.000926751264372185
+      },
+      "verdict": "BF16 boundary"
+    },
+    "o_proj": {
+      "bf16_rounded": {
+        "divergent_rows": 512,
+        "exact_pct": 12.580426534016928,
+        "max_abs": 0.02783203125,
+        "rel_rmse": 0.019480501206766913,
+        "rmse": 0.0005890012262493194
+      },
+      "hf_on_bf16_lattice_pct": 100.0,
+      "raw": {
+        "divergent_rows": 512,
+        "exact_pct": 0.00012715657552083332,
+        "max_abs": 0.027919337153434753,
+        "rel_rmse": 0.01941259475592605,
+        "rmse": 0.000586948045872132
+      },
+      "verdict": "REAL"
+    },
+    "q_a_layernorm": {
+      "bf16_rounded": {
+        "divergent_rows": 0,
+        "exact_pct": 100.0,
+        "max_abs": 0.0,
+        "rel_rmse": 0.0,
+        "rmse": 0.0
+      },
+      "hf_on_bf16_lattice_pct": 100.0,
+      "raw": {
+        "divergent_rows": 0,
+        "exact_pct": 100.0,
+        "max_abs": 0.0,
+        "rel_rmse": 0.0,
+        "rmse": 0.0
+      },
+      "verdict": "byte-exact"
+    },
+    "q_a_proj": {
+      "bf16_rounded": {
+        "divergent_rows": 0,
+        "exact_pct": 100.0,
+        "max_abs": 0.0,
+        "rel_rmse": 0.0,
+        "rmse": 0.0
+      },
+      "hf_on_bf16_lattice_pct": 100.0,
+      "raw": {
+        "divergent_rows": 0,
+        "exact_pct": 100.0,
+        "max_abs": 0.0,
+        "rel_rmse": 0.0,
+        "rmse": 0.0
+      },
+      "verdict": "byte-exact"
+    },
+    "q_b_proj": {
+      "bf16_rounded": {
+        "divergent_rows": 0,
+        "exact_pct": 100.0,
+        "max_abs": 0.0,
+        "rel_rmse": 0.0,
+        "rmse": 0.0
+      },
+      "hf_on_bf16_lattice_pct": 100.0,
+      "raw": {
+        "divergent_rows": 0,
+        "exact_pct": 100.0,
+        "max_abs": 0.0,
+        "rel_rmse": 0.0,
+        "rmse": 0.0
+      },
+      "verdict": "byte-exact"
+    }
+  }
+}
