@@ -1,0 +1,608 @@
+{
+  "description": "Zero-new-run downstream boundary walk, frozen-512 residual gap localization (measurement-only)",
+  "cpp_capture": "D:\\llama.cpp-longcat-claude\\cpp_attn0_mla_attnpath_512",
+  "cpp_capture_note": "production-angle A+B state; byte-identical to cpp_attn0_mla_expB_512 on all surfaces used here (committed Class-2 gate); representative of the frozen-512 measurement binaries at b009d6f68 because git diff 5b408206c..b009d6f68 touches only env-gated R0/R1 + callback plumbing in common/debug.cpp and src/models/longcat-flash-ngram.cpp, proven inert by the committed Class-2 18/18 and probe 39/39 gates. NOT the R1 clean-RoPE state: block-0 RoPE here is production ggml_rope_ext angles, matching the 40-violation run.",
+  "hf_oracles": {
+    "stages": "D:\\llama.cpp-longcat-pre-gate4\\hf_logical0_stages_512_v4",
+    "hidden": "D:\\llama.cpp-longcat-pre-gate4\\hf_hidden_512_v4"
+  },
+  "representation": "final prompt-token row only, F32 [3072], both sides",
+  "semantic_order_evidence": {
+    "hf_runtime": {
+      "file": "D:\\LongCat-Flash-Lite-Sparse-Uncensored-Heretic-Native-MTP-And-LSA-Preserved\\modeling_longcat_flash_sparse.py",
+      "sha256": "a3bc31616c1f0ddff9f195cbc78f4561a40187c50fe3bf29e2e98d9228947428",
+      "facts": [
+        "config.json: num_layers=14 logical layers, num_hidden_layers=2*14=28 (modeling line 1400)",
+        "trunk forward loops layers[:num_layers] appending hidden_states BEFORE each layer (lines 1472-1474): hidden_states[k] = input to logical layer k = output of layer k-1; index 0 = ngram_embeddings output (lines 1437-1440)",
+        "after the loop: hidden_states = self.norm(hidden_states); appended last (lines 1487-1489) -> index 14 = post-final-norm",
+        "MTP is a separate module (LongcatFlashSparseMTP, line 1226+), not executed in the trunk forward"
+      ]
+    },
+    "hf_capture_scripts": {
+      "stages": "D:\\llama.cpp-longcat-pre-gate4\\capture_longcat_sparse_hf_512_logical0_stages.py",
+      "stages_facts": [
+        "monkey-patched layer0 forward snaps final-row states in explicit order: input (line 207) -> attn0_resid after residual+self_attn[0] (lines 209-228) -> mlp0_resid after residual+mlps[0], ScMoE shortcut computed from the same post-attn norm but NOT added (lines 230-246) -> attn1_resid after residual+self_attn[1] with topk_indices reused from attn[0] (LSA; lines 248-268) -> logical0_out = residual+mlps[1]+shortcut_mlp_output (lines 270-286)",
+        "snap keeps tensor[0, -1] only: final prompt token (lines 189-194)"
+      ],
+      "hidden": "D:\\llama.cpp-longcat-pre-gate4\\capture_longcat_sparse_hf_512_hidden.py",
+      "hidden_facts": [
+        "asserts 15 hidden states; names indices 0..14 = inp_embd_ngram, logical_00..logical_12, result_norm (lines 136-140)",
+        "therefore logical_NN = output of logical layer N (N=0..12) and result_norm = norm(output of logical layer 13)",
+        "final row only, F32-widened (lines 160-169); runtime and token stream SHA-gated (lines 11-12, 57-60); TF32 disabled (line 88); bf16 weights on cuda:0; use_cache=False"
+      ]
+    },
+    "cpp_sources": {
+      "debug_cpp": "common/debug.cpp lines 240-286 (repo HEAD): final-row [3072] dump specs: inp_embd_ngram; ffn_inp-0 -> logical0_attn0_resid.bin; l_out-0 -> logical0_mlp0_resid.bin; ffn_inp-1 -> logical0_attn1_resid.bin; l_out-(2N+1) -> logical_NN.bin for N=0..12; result_norm",
+      "model_cpp": "src/models/longcat-flash-ngram.cpp: main loop il=0..n_layer-1 with is_even_block = il%2==0 (lines 594-597); ffn_inp = attn_out + residual (996-998); even block computes MoE shortcut but does NOT add it (1005-1066); odd block adds dense MLP[1] then the paired shortcut (1078-1092) then residual (1096-1100) -> l_out; result_norm = build_norm(output_norm) on the last main block output (1105-1117); the nextn/MTP block is a separate graph_mtp at layer index n_layer with n_layer_nextn==1 asserted (1128-1138), outside the trunk",
+      "mapping": "one logical layer = two physical blocks: logical N = physical {2N, 2N+1}; l_out-(2N+1) = logical layer N output, matching HF hidden_states[N+1]"
+    },
+    "gap_note": "Between logical_12 (output of logical layer 12 = l_out-25) and result_norm lies the entire UNDUMPED logical layer 13 (physical blocks 26-27: attn+denseMLP+attn+denseMLP+ScMoE) plus the final RMSNorm, on BOTH sides. The logical_12 -> result_norm step therefore spans one full logical layer and the norm; no dumped boundary exists inside it in any existing capture."
+  },
+  "verification": {
+    "identity_gates": {
+      "stages_input_eq_hidden_inp_embd_ngram": true,
+      "cpp_origin_byte_exact": true,
+      "hidden_logical_00_eq_stages_logical0_out": true,
+      "all_input_sha256_gated": true
+    },
+    "known_answer_attn0_rel_rmse": {
+      "computed": 0.0039010831940572257,
+      "committed": 0.00390108,
+      "pass": true
+    }
+  },
+  "pairs": {
+    "inp_embd_ngram": {
+      "elements": 3072,
+      "raw_equal": 3072,
+      "hf_on_bf16_lattice": 3072,
+      "bf16_cpp_equal_hf": 3072,
+      "rel_rmse": 0.0,
+      "abs_rmse": 0.0,
+      "err_l2": 0.0,
+      "hf_rms": 0.009047358133458642,
+      "max_abs": 0.0,
+      "argmax": 0,
+      "cosine_cpp_hf": 1.0000000000000002
+    },
+    "attn0_resid": {
+      "elements": 3072,
+      "raw_equal": 0,
+      "hf_on_bf16_lattice": 3072,
+      "bf16_cpp_equal_hf": 1178,
+      "rel_rmse": 0.0039010831940572257,
+      "abs_rmse": 0.0001214982118553075,
+      "err_l2": 0.006734114430789117,
+      "hf_rms": 0.03114473745148364,
+      "max_abs": 0.0010450184345245361,
+      "argmax": 162,
+      "cosine_cpp_hf": 0.9999923909676928
+    },
+    "mlp0_resid": {
+      "elements": 3072,
+      "raw_equal": 0,
+      "hf_on_bf16_lattice": 3072,
+      "bf16_cpp_equal_hf": 854,
+      "rel_rmse": 0.004718097610913913,
+      "abs_rmse": 0.0002707845995179686,
+      "err_l2": 0.015008405896714002,
+      "hf_rms": 0.057392750606004656,
+      "max_abs": 0.007166624069213867,
+      "argmax": 2646,
+      "cosine_cpp_hf": 0.9999912944968937
+    },
+    "attn1_resid": {
+      "elements": 3072,
+      "raw_equal": 0,
+      "hf_on_bf16_lattice": 3072,
+      "bf16_cpp_equal_hf": 746,
+      "rel_rmse": 0.0049279950848202725,
+      "abs_rmse": 0.0003180311477417274,
+      "err_l2": 0.017627075400899708,
+      "hf_rms": 0.06453560571140997,
+      "max_abs": 0.005115866661071777,
+      "argmax": 2646,
+      "cosine_cpp_hf": 0.9999892273255073
+    },
+    "logical_00": {
+      "elements": 3072,
+      "raw_equal": 1,
+      "hf_on_bf16_lattice": 3072,
+      "bf16_cpp_equal_hf": 757,
+      "rel_rmse": 0.005718510705831455,
+      "abs_rmse": 0.0006138757639047335,
+      "err_l2": 0.034024448403780966,
+      "hf_rms": 0.10734888775826427,
+      "max_abs": 0.009248733520507812,
+      "argmax": 1336,
+      "cosine_cpp_hf": 0.9999844244938149
+    },
+    "logical_01": {
+      "elements": 3072,
+      "raw_equal": 0,
+      "hf_on_bf16_lattice": 3072,
+      "bf16_cpp_equal_hf": 428,
+      "rel_rmse": 0.008928707064174835,
+      "abs_rmse": 0.0016177329624744547,
+      "err_l2": 0.08966386189070948,
+      "hf_rms": 0.18118333940704337,
+      "max_abs": 0.015920162200927734,
+      "argmax": 2646,
+      "cosine_cpp_hf": 0.9999601821585625
+    },
+    "logical_02": {
+      "elements": 3072,
+      "raw_equal": 0,
+      "hf_on_bf16_lattice": 3072,
+      "bf16_cpp_equal_hf": 288,
+      "rel_rmse": 0.009877926754604612,
+      "abs_rmse": 0.002871641962030862,
+      "err_l2": 0.15916255294029535,
+      "hf_rms": 0.29071302444029984,
+      "max_abs": 0.07541656494140625,
+      "argmax": 1336,
+      "cosine_cpp_hf": 0.9999588395991407
+    },
+    "logical_03": {
+      "elements": 3072,
+      "raw_equal": 0,
+      "hf_on_bf16_lattice": 3072,
+      "bf16_cpp_equal_hf": 196,
+      "rel_rmse": 0.016572776801551285,
+      "abs_rmse": 0.006188109310968734,
+      "err_l2": 0.3429798313404123,
+      "hf_rms": 0.373390010923788,
+      "max_abs": 0.06765270233154297,
+      "argmax": 1336,
+      "cosine_cpp_hf": 0.9998740889966923
+    },
+    "logical_04": {
+      "elements": 3072,
+      "raw_equal": 0,
+      "hf_on_bf16_lattice": 3072,
+      "bf16_cpp_equal_hf": 162,
+      "rel_rmse": 0.022866214083198513,
+      "abs_rmse": 0.010297438376387922,
+      "err_l2": 0.5707419665828304,
+      "hf_rms": 0.45033420656872997,
+      "max_abs": 0.09443950653076172,
+      "argmax": 1012,
+      "cosine_cpp_hf": 0.999752673123534
+    },
+    "logical_05": {
+      "elements": 3072,
+      "raw_equal": 0,
+      "hf_on_bf16_lattice": 3072,
+      "bf16_cpp_equal_hf": 156,
+      "rel_rmse": 0.024168480505715677,
+      "abs_rmse": 0.013623392899769673,
+      "err_l2": 0.7550850775639735,
+      "hf_rms": 0.5636842951938098,
+      "max_abs": 0.12208414077758789,
+      "argmax": 1891,
+      "cosine_cpp_hf": 0.9997279772959645
+    },
+    "logical_06": {
+      "elements": 3072,
+      "raw_equal": 0,
+      "hf_on_bf16_lattice": 3072,
+      "bf16_cpp_equal_hf": 131,
+      "rel_rmse": 0.025814782982395958,
+      "abs_rmse": 0.017024744774086487,
+      "err_l2": 0.9436071339075367,
+      "hf_rms": 0.6594959479495249,
+      "max_abs": 0.19568824768066406,
+      "argmax": 1012,
+      "cosine_cpp_hf": 0.9996828240794591
+    },
+    "logical_07": {
+      "elements": 3072,
+      "raw_equal": 0,
+      "hf_on_bf16_lattice": 3072,
+      "bf16_cpp_equal_hf": 159,
+      "rel_rmse": 0.026285652361550293,
+      "abs_rmse": 0.02175163181305739,
+      "err_l2": 1.2055978063279018,
+      "hf_rms": 0.8275096814745558,
+      "max_abs": 0.19045543670654297,
+      "argmax": 1012,
+      "cosine_cpp_hf": 0.9996599812715361
+    },
+    "logical_08": {
+      "elements": 3072,
+      "raw_equal": 0,
+      "hf_on_bf16_lattice": 3072,
+      "bf16_cpp_equal_hf": 111,
+      "rel_rmse": 0.03367727484457791,
+      "abs_rmse": 0.03220455782601622,
+      "err_l2": 1.7849577724784,
+      "hf_rms": 0.9562697093111501,
+      "max_abs": 0.2057971954345703,
+      "argmax": 1012,
+      "cosine_cpp_hf": 0.9994355319272396
+    },
+    "logical_09": {
+      "elements": 3072,
+      "raw_equal": 0,
+      "hf_on_bf16_lattice": 3072,
+      "bf16_cpp_equal_hf": 104,
+      "rel_rmse": 0.0352405716186954,
+      "abs_rmse": 0.04067645581997465,
+      "err_l2": 2.254518020864859,
+      "hf_rms": 1.154250738611614,
+      "max_abs": 0.2024555206298828,
+      "argmax": 1336,
+      "cosine_cpp_hf": 0.9993896478930012
+    },
+    "logical_10": {
+      "elements": 3072,
+      "raw_equal": 0,
+      "hf_on_bf16_lattice": 3072,
+      "bf16_cpp_equal_hf": 102,
+      "rel_rmse": 0.03401796372694367,
+      "abs_rmse": 0.04780845011833984,
+      "err_l2": 2.649813268354781,
+      "hf_rms": 1.4053883560488813,
+      "max_abs": 0.33046913146972656,
+      "argmax": 1336,
+      "cosine_cpp_hf": 0.9994359752512337
+    },
+    "logical_11": {
+      "elements": 3072,
+      "raw_equal": 0,
+      "hf_on_bf16_lattice": 3072,
+      "bf16_cpp_equal_hf": 118,
+      "rel_rmse": 0.035633513234176406,
+      "abs_rmse": 0.06442070803784523,
+      "err_l2": 3.570558060195478,
+      "hf_rms": 1.807868553810147,
+      "max_abs": 0.4094505310058594,
+      "argmax": 1336,
+      "cosine_cpp_hf": 0.9993900700752568
+    },
+    "logical_12": {
+      "elements": 3072,
+      "raw_equal": 0,
+      "hf_on_bf16_lattice": 3072,
+      "bf16_cpp_equal_hf": 80,
+      "rel_rmse": 0.034854765144671326,
+      "abs_rmse": 0.09017875390933619,
+      "err_l2": 4.998213873095065,
+      "hf_rms": 2.587271884777652,
+      "max_abs": 0.33681631088256836,
+      "argmax": 403,
+      "cosine_cpp_hf": 0.9993932131079791
+    },
+    "result_norm": {
+      "elements": 3072,
+      "raw_equal": 0,
+      "hf_on_bf16_lattice": 3072,
+      "bf16_cpp_equal_hf": 101,
+      "rel_rmse": 0.05072676309982883,
+      "abs_rmse": 0.1003021257217314,
+      "err_l2": 5.559308091430398,
+      "hf_rms": 1.9773019130816543,
+      "max_abs": 0.49810028076171875,
+      "argmax": 2719,
+      "cosine_cpp_hf": 0.9987399232225348
+    }
+  },
+  "error_decomposition_steps": {
+    "attn0_resid->mlp0_resid": {
+      "prev_l2": 0.006734114430789117,
+      "cur_l2": 0.015008405896714002,
+      "ratio": 2.228712631922901,
+      "cos_prev_cur": 0.4400996622785579,
+      "proj_coeff": 0.006605194366483351,
+      "orth_l2": 0.013476782069229146,
+      "orth_frac": 0.8979489335492855
+    },
+    "mlp0_resid->attn1_resid": {
+      "prev_l2": 0.015008405896714002,
+      "cur_l2": 0.017627075400899708,
+      "ratio": 1.1744801894489705,
+      "cos_prev_cur": 0.7728066178458747,
+      "proj_coeff": 0.013622320523083518,
+      "orth_l2": 0.011186874932499298,
+      "orth_frac": 0.6346415771233557
+    },
+    "attn1_resid->logical_00": {
+      "prev_l2": 0.017627075400899708,
+      "cur_l2": 0.034024448403780966,
+      "ratio": 1.9302378658937553,
+      "cos_prev_cur": 0.4842901938427198,
+      "proj_coeff": 0.016477706712858704,
+      "orth_l2": 0.029768242653313685,
+      "orth_frac": 0.8749074283304381
+    },
+    "logical_00->logical_01": {
+      "prev_l2": 0.034024448403780966,
+      "cur_l2": 0.08966386189070948,
+      "ratio": 2.6352774577455187,
+      "cos_prev_cur": 0.2193401074339048,
+      "proj_coeff": 0.01966688110004702,
+      "orth_l2": 0.08748040876077819,
+      "orth_frac": 0.9756484598823918
+    },
+    "logical_01->logical_02": {
+      "prev_l2": 0.08966386189070948,
+      "cur_l2": 0.15916255294029535,
+      "ratio": 1.7751025840744763,
+      "cos_prev_cur": 0.4655931724702011,
+      "proj_coeff": 0.07410499796192845,
+      "orth_l2": 0.14085867930495055,
+      "orth_frac": 0.8849988687840983
+    },
+    "logical_02->logical_03": {
+      "prev_l2": 0.15916255294029535,
+      "cur_l2": 0.3429798313404123,
+      "ratio": 2.154902802225534,
+      "cos_prev_cur": 0.3606516275747039,
+      "proj_coeff": 0.12369623439821714,
+      "orth_l2": 0.3198974934287529,
+      "orth_frac": 0.9327005969375795
+    },
+    "logical_03->logical_04": {
+      "prev_l2": 0.3429798313404123,
+      "cur_l2": 0.5707419665828304,
+      "ratio": 1.6640685965477688,
+      "cos_prev_cur": 0.6755733128731919,
+      "proj_coeff": 0.3855780411601233,
+      "orth_l2": 0.4208039526833831,
+      "orth_frac": 0.7372928176332253
+    },
+    "logical_04->logical_05": {
+      "prev_l2": 0.5707419665828304,
+      "cur_l2": 0.7550850775639735,
+      "ratio": 1.3229885338287803,
+      "cos_prev_cur": 0.8624901226874766,
+      "proj_coeff": 0.6512534211876342,
+      "orth_l2": 0.38212884705448985,
+      "orth_frac": 0.5060738960532756
+    },
+    "logical_05->logical_06": {
+      "prev_l2": 0.7550850775639735,
+      "cur_l2": 0.9436071339075367,
+      "ratio": 1.249669953684909,
+      "cos_prev_cur": 0.8748320224327432,
+      "proj_coeff": 0.8254977373382946,
+      "orth_l2": 0.4571082025194384,
+      "orth_frac": 0.4844263953649062
+    },
+    "logical_06->logical_07": {
+      "prev_l2": 0.9436071339075367,
+      "cur_l2": 1.2055978063279018,
+      "ratio": 1.2776480412303002,
+      "cos_prev_cur": 0.8656005952387418,
+      "proj_coeff": 1.0435661787759531,
+      "orth_l2": 0.6036851009736824,
+      "orth_frac": 0.5007350691956141
+    },
+    "logical_07->logical_08": {
+      "prev_l2": 1.2055978063279018,
+      "cur_l2": 1.7849577724784,
+      "ratio": 1.480558245137452,
+      "cos_prev_cur": 0.7664385024964879,
+      "proj_coeff": 1.3680603621578118,
+      "orth_l2": 1.1465099628977014,
+      "orth_frac": 0.6423176954521345
+    },
+    "logical_08->logical_09": {
+      "prev_l2": 1.7849577724784,
+      "cur_l2": 2.254518020864859,
+      "ratio": 1.2630651859816708,
+      "cos_prev_cur": 0.8375339075031059,
+      "proj_coeff": 1.8882352875511144,
+      "orth_l2": 1.2318356242823814,
+      "orth_frac": 0.5463853528258048
+    },
+    "logical_09->logical_10": {
+      "prev_l2": 2.254518020864859,
+      "cur_l2": 2.649813268354781,
+      "ratio": 1.1753347029527321,
+      "cos_prev_cur": 0.9107432691539907,
+      "proj_coeff": 2.413299598669054,
+      "orth_l2": 1.0943013315411947,
+      "orth_frac": 0.4129729987428985
+    },
+    "logical_10->logical_11": {
+      "prev_l2": 2.649813268354781,
+      "cur_l2": 3.570558060195478,
+      "ratio": 1.3474753496167562,
+      "cos_prev_cur": 0.7873086337456416,
+      "proj_coeff": 2.8111311880819905,
+      "orth_l2": 2.2014600392965646,
+      "orth_frac": 0.616559093055622
+    },
+    "logical_11->logical_12": {
+      "prev_l2": 3.570558060195478,
+      "cur_l2": 4.998213873095065,
+      "ratio": 1.399841086135826,
+      "cos_prev_cur": 0.7611398228471132,
+      "proj_coeff": 3.8043396219195618,
+      "orth_l2": 3.2417806776975064,
+      "orth_frac": 0.6485878275733097
+    }
+  },
+  "flags": [
+    {
+      "step": "attn0_resid->mlp0_resid",
+      "reasons": [
+        "orthogonal (new-direction) fraction 0.898 > 0.5"
+      ],
+      "reading": "divergence grows or changes character here (NOT proof of local origin; see caveats)"
+    },
+    {
+      "step": "mlp0_resid->attn1_resid",
+      "reasons": [
+        "orthogonal (new-direction) fraction 0.635 > 0.5"
+      ],
+      "reading": "divergence grows or changes character here (NOT proof of local origin; see caveats)"
+    },
+    {
+      "step": "attn1_resid->logical_00",
+      "reasons": [
+        "orthogonal (new-direction) fraction 0.875 > 0.5"
+      ],
+      "reading": "divergence grows or changes character here (NOT proof of local origin; see caveats)"
+    },
+    {
+      "step": "logical_00->logical_01",
+      "reasons": [
+        "orthogonal (new-direction) fraction 0.976 > 0.5"
+      ],
+      "reading": "divergence grows or changes character here (NOT proof of local origin; see caveats)"
+    },
+    {
+      "step": "logical_01->logical_02",
+      "reasons": [
+        "orthogonal (new-direction) fraction 0.885 > 0.5"
+      ],
+      "reading": "divergence grows or changes character here (NOT proof of local origin; see caveats)"
+    },
+    {
+      "step": "logical_02->logical_03",
+      "reasons": [
+        "orthogonal (new-direction) fraction 0.933 > 0.5"
+      ],
+      "reading": "divergence grows or changes character here (NOT proof of local origin; see caveats)"
+    },
+    {
+      "step": "logical_03->logical_04",
+      "reasons": [
+        "orthogonal (new-direction) fraction 0.737 > 0.5"
+      ],
+      "reading": "divergence grows or changes character here (NOT proof of local origin; see caveats)"
+    },
+    {
+      "step": "logical_04->logical_05",
+      "reasons": [
+        "orthogonal (new-direction) fraction 0.506 > 0.5"
+      ],
+      "reading": "divergence grows or changes character here (NOT proof of local origin; see caveats)"
+    },
+    {
+      "step": "logical_06->logical_07",
+      "reasons": [
+        "orthogonal (new-direction) fraction 0.501 > 0.5"
+      ],
+      "reading": "divergence grows or changes character here (NOT proof of local origin; see caveats)"
+    },
+    {
+      "step": "logical_07->logical_08",
+      "reasons": [
+        "orthogonal (new-direction) fraction 0.642 > 0.5"
+      ],
+      "reading": "divergence grows or changes character here (NOT proof of local origin; see caveats)"
+    },
+    {
+      "step": "logical_08->logical_09",
+      "reasons": [
+        "orthogonal (new-direction) fraction 0.546 > 0.5"
+      ],
+      "reading": "divergence grows or changes character here (NOT proof of local origin; see caveats)"
+    },
+    {
+      "step": "logical_10->logical_11",
+      "reasons": [
+        "orthogonal (new-direction) fraction 0.617 > 0.5"
+      ],
+      "reading": "divergence grows or changes character here (NOT proof of local origin; see caveats)"
+    },
+    {
+      "step": "logical_11->logical_12",
+      "reasons": [
+        "orthogonal (new-direction) fraction 0.649 > 0.5"
+      ],
+      "reading": "divergence grows or changes character here (NOT proof of local origin; see caveats)"
+    }
+  ],
+  "endpoint": {
+    "violations": 40,
+    "rmse": 0.1647439009124418,
+    "cosine": 0.999799075905696,
+    "max_abs": 0.8515434265136719,
+    "top1_cpp": 483,
+    "top1_hf": 483,
+    "hf_logits_rms": 8.134621113967286,
+    "logits_rel_rmse": 0.020252191049141013,
+    "result_norm_rel_rmse": 0.05072676309982883,
+    "logical_12_rel_rmse": 0.034854765144671326,
+    "note": "Descriptive only. The result_norm -> logits relationship does NOT isolate lm_head: no offline projection of the final head is performed here, so any difference between result_norm-level and logits-level divergence remains unattributed between the final norm inputs, lm_head execution, and metric geometry. lm_head attribution: UNRESOLVED.",
+    "known_answer_pass": true
+  },
+  "caveats": [
+    "Inherited-error caveat: a flagged boundary marks where divergence grows or changes character; it is NOT proof that the local operation generated the error. Inherited input error passing through nonlinear MLP/MoE (including router top-k flips) can create new error components.",
+    "The 40-violation frozen-512 result is attributed to the aggregate block-0 corrective stack, not to any single boundary; this walk does not assume the violations originate in block-0 attention.",
+    "Between logical_12 (output of logical layer 12 = l_out-25) and result_norm lies the entire UNDUMPED logical layer 13 (physical blocks 26-27: attn+denseMLP+attn+denseMLP+ScMoE) plus the final RMSNorm, on BOTH sides. The logical_12 -> result_norm step therefore spans one full logical layer and the norm; no dumped boundary exists inside it in any existing capture."
+  ],
+  "cross_projection_to_logical_12": {
+    "attn0_resid": {
+      "cos_e_i_vs_e_final": 0.011282485638934884,
+      "final_error_fraction_along_e_i": 0.011282485638934884
+    },
+    "mlp0_resid": {
+      "cos_e_i_vs_e_final": 0.022791703795242747,
+      "final_error_fraction_along_e_i": 0.022791703795242747
+    },
+    "attn1_resid": {
+      "cos_e_i_vs_e_final": 0.02448535918496812,
+      "final_error_fraction_along_e_i": 0.02448535918496812
+    },
+    "logical_00": {
+      "cos_e_i_vs_e_final": 0.04908989268693512,
+      "final_error_fraction_along_e_i": 0.04908989268693512
+    },
+    "logical_01": {
+      "cos_e_i_vs_e_final": 0.04603086725033983,
+      "final_error_fraction_along_e_i": 0.04603086725033983
+    },
+    "logical_02": {
+      "cos_e_i_vs_e_final": 0.0933087170077833,
+      "final_error_fraction_along_e_i": 0.0933087170077833
+    },
+    "logical_03": {
+      "cos_e_i_vs_e_final": 0.1374312733043503,
+      "final_error_fraction_along_e_i": 0.1374312733043503
+    },
+    "logical_04": {
+      "cos_e_i_vs_e_final": 0.2000503562812669,
+      "final_error_fraction_along_e_i": 0.2000503562812669
+    },
+    "logical_05": {
+      "cos_e_i_vs_e_final": 0.23163448789392513,
+      "final_error_fraction_along_e_i": 0.23163448789392513
+    },
+    "logical_06": {
+      "cos_e_i_vs_e_final": 0.27886320964855016,
+      "final_error_fraction_along_e_i": 0.27886320964855016
+    },
+    "logical_07": {
+      "cos_e_i_vs_e_final": 0.36632557295901635,
+      "final_error_fraction_along_e_i": 0.36632557295901635
+    },
+    "logical_08": {
+      "cos_e_i_vs_e_final": 0.47507621946141876,
+      "final_error_fraction_along_e_i": 0.47507621946141876
+    },
+    "logical_09": {
+      "cos_e_i_vs_e_final": 0.5758679354756434,
+      "final_error_fraction_along_e_i": 0.5758679354756434
+    },
+    "logical_10": {
+      "cos_e_i_vs_e_final": 0.6235674005053133,
+      "final_error_fraction_along_e_i": 0.6235674005053133
+    },
+    "logical_11": {
+      "cos_e_i_vs_e_final": 0.7611398228471132,
+      "final_error_fraction_along_e_i": 0.7611398228471132
+    }
+  },
+  "flag_heuristic": {
+    "median_l2_growth_ratio": 1.399841086135826,
+    "rules": [
+      "ratio > 3x median",
+      "orth_frac > 0.5"
+    ]
+  }
+}

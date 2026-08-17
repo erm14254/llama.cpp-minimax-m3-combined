@@ -70,18 +70,53 @@ block-0 corrective stack, not A+B alone. See
 `WIN11_HANDOFF_2026-08-17_FROZEN512.md` (authoritative handoff) and the final
 addenda of `STATUS_2026-08-17.md`.
 
-**Immediate next action (measurement-only, NOT begun):** localize the first
-remaining unexplained downstream divergence responsible for the residual
-frozen-512 full-model gap, **without assuming the 40 violations originate in
-block-0 attention**. Start with the zero-new-run downstream boundary walk in
-the handoff's "Next scientific objective" section: production-angle A+B
-captures (`cpp_attn0_mla_expB_512/`, `cpp_attn0_mla_attnpath_512/`) preferred
-over R1 (clean-RoPE diagnostic only, different block-0 angle state), against
-`pre-gate4` HF oracles (`mlp0_resid` `cf48a0ad…`, `attn1_resid` `b4c1e5f6…`,
-`logical0_out` `5292e88a…`, `hf_hidden_512_v4` logical_01…12/result_norm),
-with mandatory per-pair verification (existence, SHA, shape/dtype, row/token
-representation, logical-vs-physical mapping, semantic equivalence — never
-filename inference). Measurement-only MLP/MoE boundary work is authorized;
-**MLP/MoE arithmetic remains forbidden** pending a reviewed plan. Still
-forbidden: production FA patch, 2050-token run, widening any frozen
-criterion, production RoPE changes, any other new arithmetic.
+**Update 2026-08-17 (downstream boundary walk complete):** the zero-new-run
+walk described below was executed per the approved plan
+(`analyze_longcat_downstream_boundary_walk.py` = `3273102d…`,
+`downstream_walk_512/downstream_boundary_walk.json` = `e1546981…`; full
+addendum in `STATUS_2026-08-17.md`). Harness validity: all 38 inputs
+SHA-gated, both known-answer anchors reproduced digit-for-digit
+(attn0_resid rel-RMSE 0.00390108; endpoint 40 violations / RMSE 0.164743901
+/ cosine 0.999799076 / top-1 483). Semantic order proven from source on both
+sides (recorded in the JSON), including that `logical_12 → result_norm`
+spans the undumped logical layer 13 + final norm, and MTP is outside the
+trunk on both sides. **Result: the residual gap is distributed, not
+localized** — error L2 grows ×743 across 15 boundaries at ratios 1.17-2.64
+(no step > 3× median), the new-direction fraction exceeds 0.5 at 13/15
+steps, and the final trunk error is essentially orthogonal to the block-0
+attention seed (cos = +0.011). No single downstream defect boundary exists
+at logical-block granularity.
+
+**Immediate next action (user decision between two designed options — NOT
+begun):**
+
+- **(A) Causal upstream/downstream split via full-sequence oracle injection**
+  (measurement-only in effect; new runs + callback-only plumbing): capture
+  HF **full-sequence** `[512, 3072]` hidden state at one boundary (e.g.
+  `logical_00` = `l_out-1`; existing HF dumps are final-row only and later
+  layers attend over all positions, so causal cleanliness needs all 512
+  rows), then an env-gated C++ callback overwrite at that node (proven R0
+  pattern) followed by the frozen-criterion endpoint measurement. Splits
+  the 40 violations causally into upstream-vs-downstream of the boundary.
+  All existing byte-exact gates remain as regressions; cuBLAS v13.2 pin
+  mandatory for the C++ run.
+- **(B) Reviewed arithmetic plan** extending the proven block-0 precision
+  patterns (BF16 output boundaries, RMSNorm cast semantics, post-scale
+  rounds) to later blocks and/or MLP/MoE boundary semantics, gated on the
+  frozen criterion. **Arithmetic remains forbidden until that plan is
+  reviewed and approved.**
+
+Measurement-only MLP/MoE boundary work stays authorized; still forbidden:
+MLP/MoE arithmetic (pending reviewed plan), production FA patch, 2050-token
+run, widening any frozen criterion, production RoPE changes, any other new
+arithmetic.
+
+The superseded walk directive (for the record): production-angle A+B
+captures (`cpp_attn0_mla_expB_512/`, `cpp_attn0_mla_attnpath_512/`)
+preferred over R1 (clean-RoPE diagnostic only, different block-0 angle
+state), against `pre-gate4` HF oracles (`mlp0_resid` `cf48a0ad…`,
+`attn1_resid` `b4c1e5f6…`, `logical0_out` `5292e88a…`, `hf_hidden_512_v4`
+logical_01…12/result_norm), with mandatory per-pair verification
+(existence, SHA, shape/dtype, row/token representation,
+logical-vs-physical mapping, semantic equivalence — never filename
+inference).
