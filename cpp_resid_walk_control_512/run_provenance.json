@@ -1,0 +1,15 @@
+{
+    "exit_code":  0,
+    "invocation":  "llama-debug.exe -m \"D:\\LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-GGUF-BF16\\LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-BF16-00001-of-00008.gguf\" -f \"D:\\llama.cpp-longcat-claude\\prompt_512_a.txt\" -c 4608 -b 4608 -ub 512 -fa off -ctk f32 -ctv f32 --no-warmup -fitt 4096 -v --tensor-filter \"^(q_a_proj|q_a_norm|q_b_proj|q_pe_rope|kv_cmpr_pe|k_pe_rope|kv_a_norm|kv_cmpr_scaled|kqv_out|attn_out|ffn_inp)-0$\"",
+    "binaries":  {
+                     "llama-common.dll":  "aa646eb5221e2f60553507915beb05a6f8daa9a14e390b00b81b5254f7b23dca",
+                     "ggml-cuda.dll":  "502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48",
+                     "llama.dll":  "93466c40380729857eb43f7d4ccfa4cf7f336d634cec0b44bb359d2411465dc3",
+                     "llama-debug.exe":  "df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0"
+                 },
+    "mode":  "control",
+    "oracle_sha256":  null,
+    "instrumentation_head":  "2f827a91e2853ce15fb52dab0cb3321e7b888000",
+    "cublas_version":  "6.14.11.1330",
+    "cublas_module":  "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\bin\\x64\\cublas64_13.dll"
+}

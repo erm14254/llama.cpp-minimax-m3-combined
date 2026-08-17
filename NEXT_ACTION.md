@@ -92,9 +92,32 @@ nonlinear propagation/rotation of inherited block-0 error from new local
 per-block discrepancies** — that discrimination requires the causal reset
 experiment below.
 
-**Decision 2026-08-17: follow-up A approved (with review corrections); B
-declined.** The approved design (execution in progress; full plan reviewed
-in-session):
+**Update 2026-08-17 (causal reset COMPLETE — see the final addendum of
+`STATUS_2026-08-17.md`):** follow-up A was executed end-to-end with every
+gate passing (causal-cut proof; instrumentation `2f827a91e`; only
+`llama-common.dll` changed — other three binaries byte-identical to the
+checkpoint; HF full-seq capture with 14/14 row-511 + same-pass norm gates;
+control run 29/29 final-row regression; injection landing byte-exact with
+15/15 upstream inertness; known-answer row-511 slice ≤ 1e-12).
+**Causal result: the downstream trunk locally regenerates the dominant share
+of the residual divergence** — with a byte-exact `logical_00` input, logical
+block 1 alone regenerates rel 9.05e-3 (68% of the observed error L2 at that
+boundary), and zeroing everything upstream of `logical_00` removes only
+~23% of the endpoint error L2 (`result_norm` ratio 0.773). First-raw and
+the 0.01/0.10/0.50 crossings all coincide at `logical_01`.
+
+**Immediate next action (per the pre-registered stop rule; design proposed,
+NOT begun — awaiting review):** sub-boundary instrumentation **inside
+logical block 1 only** — full-sequence `ffn_inp-2` / `l_out-2` / `ffn_inp-3`
+dumps (callback-only extension of the walk spec set), an HF layer-1 stages
+capture (monkey-patch pattern of the logical0 stages script, same frozen
+gates), and one injection re-run comparison to localize where inside one
+clean-input logical layer the 9.05e-3 is born (attn[0] vs dense MLP[0] vs
+attn[1] vs dense MLP[1]+ScMoE join). Measurement-only; still forbidden:
+any arithmetic change (incl. MLP/MoE), production FA, 2050-token runs,
+widening any frozen criterion, production RoPE changes.
+
+The executed design (for the record):
 
 - **Causal reset at `logical_00`:** full-sequence `[512, 3072]` HF oracle
   reset at the proven `l_out-1` boundary via env-gated callback overwrite

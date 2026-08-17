@@ -1,0 +1,11 @@
+{
+  "tensor": "q_a_proj-0",
+  "shape": [512, 1536],
+  "order": "token-major",
+  "dtype": "float32-le",
+  "bytes": 3145728,
+  "source_type": "bf16",
+  "source_contiguous": true,
+  "source_ne": [1536, 512, 1, 1],
+  "source_nb": [2, 3072, 1572864, 1572864]
+}
