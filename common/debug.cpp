@@ -316,6 +316,31 @@ static bool common_debug_longcat_resid_walk_spec_for(
         return true;
     }
 
+    // Block-2 MLA-internal walk surfaces (physical block 2 attention, under
+    // the dual reset). Per-surface widths; all full-sequence.
+    static const struct {
+        const char * name;
+        const char * file;
+        int64_t      ne0;
+    } block2_mla[] = {
+        { "q_a_proj-2",       "block2_q_a_proj_full.bin",       1536 },
+        { "q_a_norm-2",       "block2_q_a_norm_full.bin",       1536 },
+        { "q_b_proj-2",       "block2_q_b_proj_full.bin",       6144 },
+        { "kv_cmpr_pe-2",     "block2_kv_a_proj_full.bin",       576 },
+        { "kv_a_norm-2",      "block2_kv_a_norm_full.bin",       512 },
+        { "kv_cmpr_scaled-2", "block2_kv_cmpr_scaled_full.bin",  512 },
+        { "q_pe_rope-2",      "block2_q_pe_rope_full.bin",      2048 },
+        { "k_pe_rope-2",      "block2_k_pe_rope_full.bin",        64 },
+        { "kqv_out-2",        "block2_kqv_out_full.bin",        4096 },
+    };
+    for (const auto & surface : block2_mla) {
+        if (tensor_name == surface.name) {
+            spec.filename   = surface.file;
+            spec.expect_ne0 = surface.ne0;
+            return true;
+        }
+    }
+
     // Logical-block-1 sub-boundaries (physical blocks 2-3) for the
     // sub-boundary localization under the logical_00 reset. attn_norm-2's
     // input is the injected oracle in the reset run, so that surface is an

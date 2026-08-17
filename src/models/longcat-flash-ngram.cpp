@@ -705,7 +705,11 @@ llama_model_longcat_flash_ngram::graph::graph(
                         ctx0,
                         model.layers[il].wq_a,
                         cur);
-                    cb(q, "q", il);
+                    // LONGCAT_BLOCK2_MLA_STAGE_SURFACE: distinct names at
+                    // il == 2 only, so the block-2 MLA walk can dump the
+                    // three Q boundaries separately (name plumbing only; the
+                    // generic "q" label is reused three times otherwise).
+                    cb(q, il == 2 ? "q_a_proj" : "q", il);
 
                     q = build_norm(
                         q,
@@ -713,13 +717,13 @@ llama_model_longcat_flash_ngram::graph::graph(
                         nullptr,
                         LLM_NORM_RMS,
                         il);
-                    cb(q, "q", il);
+                    cb(q, il == 2 ? "q_a_norm" : "q", il);
 
                     q = ggml_mul_mat(
                         ctx0,
                         model.layers[il].wq_b,
                         q);
-                    cb(q, "q", il);
+                    cb(q, il == 2 ? "q_b_proj" : "q", il);
 
                     // MLA LoRA scaling: q *= sqrt(hidden_size / q_lora_rank)
                     q = ggml_scale(ctx0, q, mla_scale_q);
@@ -863,7 +867,7 @@ llama_model_longcat_flash_ngram::graph::graph(
                 cb(k_pe, "k_pe", il);
             }
 
-            if (il == 0) {
+            if (il == 0 || il == 2) {
                 // LONGCAT_ATTN_PATH_STAGE_SURFACE (localization, dump-only):
                 //
                 // Post-RoPE Q/K under distinct names -- the existing "q_pe" /
@@ -872,7 +876,8 @@ llama_model_longcat_flash_ngram::graph::graph(
                 // contiguous copies are made purely for the dump. The copies
                 // feed nothing downstream; ggml_build_forward_expand forces
                 // their evaluation. Values are byte-identical to the graph
-                // tensors -- no arithmetic is altered.
+                // tensors -- no arithmetic is altered. il == 2 is included
+                // for the block-2 MLA walk (same dump-only pattern).
                 ggml_tensor * q_pe_dump = ggml_cont_2d(
                     ctx0, q_pe, n_embd_head_qk_rope * n_head, n_tokens);
                 cb(q_pe_dump, "q_pe_rope", il);
