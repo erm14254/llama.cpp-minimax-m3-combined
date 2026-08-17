@@ -290,6 +290,14 @@ def main() -> int:
             "changes character; it is NOT proof that the local operation generated the "
             "error. Inherited input error passing through nonlinear MLP/MoE (including "
             "router top-k flips) can create new error components.",
+            "Indistinguishability caveat: this walk is observational. Smooth "
+            "multiplicative growth plus large direction change at nearly every boundary "
+            "is consistent BOTH with distributed new local per-block discrepancies AND "
+            "with nonlinear propagation/rotation of the inherited block-0 error; the "
+            "walk cannot distinguish these hypotheses. Low cross-projection onto the "
+            "final error bounds direction persistence only, not causal contribution. "
+            "Discrimination requires a causal reset experiment (oracle injection at a "
+            "residual boundary), not further observational metrics.",
             "The 40-violation frozen-512 result is attributed to the aggregate block-0 "
             "corrective stack, not to any single boundary; this walk does not assume the "
             "violations originate in block-0 attention.",
@@ -360,9 +368,12 @@ def main() -> int:
     # Cross-projection onto the final trunk error (descriptive): how much of
     # e(logical_12) lies along each earlier boundary's error direction. All
     # residual-stream boundaries share the same 3072-dim residual basis, so
-    # the comparison is well-defined. Quantifies seed persistence -- in
-    # particular how much of the final trunk error is explainable as the
-    # block-0 attention seed direction surviving downstream.
+    # the comparison is well-defined. This quantifies DIRECTION PERSISTENCE
+    # only: a low cosine means the final error retains little of the earlier
+    # error's direction, NOT that the earlier error contributes little
+    # causally -- inherited error propagated through nonlinear blocks can be
+    # rotated into new directions and would not be captured by this
+    # projection. It is not a causal bound.
     e_final = errors["logical_12"]
     nf = float(np.sqrt((e_final ** 2).sum()))
     report["cross_projection_to_logical_12"] = {}

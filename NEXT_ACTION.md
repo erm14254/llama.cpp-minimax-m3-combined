@@ -72,39 +72,48 @@ addenda of `STATUS_2026-08-17.md`.
 
 **Update 2026-08-17 (downstream boundary walk complete):** the zero-new-run
 walk described below was executed per the approved plan
-(`analyze_longcat_downstream_boundary_walk.py` = `3273102d…`,
-`downstream_walk_512/downstream_boundary_walk.json` = `e1546981…`; full
+(`analyze_longcat_downstream_boundary_walk.py` = `6c600599…`,
+`downstream_walk_512/downstream_boundary_walk.json` = `2e4854c7…`, both
+post-review-wording-correction with numeric output verified identical; full
 addendum in `STATUS_2026-08-17.md`). Harness validity: all 38 inputs
 SHA-gated, both known-answer anchors reproduced digit-for-digit
 (attn0_resid rel-RMSE 0.00390108; endpoint 40 violations / RMSE 0.164743901
 / cosine 0.999799076 / top-1 483). Semantic order proven from source on both
 sides (recorded in the JSON), including that `logical_12 → result_norm`
 spans the undumped logical layer 13 + final norm, and MTP is outside the
-trunk on both sides. **Result: the residual gap is distributed, not
-localized** — error L2 grows ×743 across 15 boundaries at ratios 1.17-2.64
-(no step > 3× median), the new-direction fraction exceeds 0.5 at 13/15
-steps, and the final trunk error is essentially orthogonal to the block-0
-attention seed (cos = +0.011). No single downstream defect boundary exists
-at logical-block granularity.
+trunk on both sides. **Result: no single downstream defect boundary at
+logical-block granularity; growth is smooth and the error direction changes
+at nearly every block** — error L2 grows ×743 across 15 boundaries at
+ratios 1.17-2.64 (no step > 3× median), the new-direction fraction exceeds
+0.5 at 13/15 steps, and the final trunk error retains almost none of the
+block-0 seed direction (cos = +0.011; a direction-persistence bound only,
+NOT a causal bound). **The walk is observational and cannot distinguish
+nonlinear propagation/rotation of inherited block-0 error from new local
+per-block discrepancies** — that discrimination requires the causal reset
+experiment below.
 
-**Immediate next action (user decision between two designed options — NOT
-begun):**
+**Decision 2026-08-17: follow-up A approved (with review corrections); B
+declined.** The approved design (execution in progress; full plan reviewed
+in-session):
 
-- **(A) Causal upstream/downstream split via full-sequence oracle injection**
-  (measurement-only in effect; new runs + callback-only plumbing): capture
-  HF **full-sequence** `[512, 3072]` hidden state at one boundary (e.g.
-  `logical_00` = `l_out-1`; existing HF dumps are final-row only and later
-  layers attend over all positions, so causal cleanliness needs all 512
-  rows), then an env-gated C++ callback overwrite at that node (proven R0
-  pattern) followed by the frozen-criterion endpoint measurement. Splits
-  the 40 violations causally into upstream-vs-downstream of the boundary.
-  All existing byte-exact gates remain as regressions; cuBLAS v13.2 pin
-  mandatory for the C++ run.
-- **(B) Reviewed arithmetic plan** extending the proven block-0 precision
-  patterns (BF16 output boundaries, RMSNorm cast semantics, post-scale
-  rounds) to later blocks and/or MLP/MoE boundary semantics, gated on the
-  frozen criterion. **Arithmetic remains forbidden until that plan is
-  reviewed and approved.**
+- **Causal reset at `logical_00`:** full-sequence `[512, 3072]` HF oracle
+  reset at the proven `l_out-1` boundary via env-gated callback overwrite
+  (`LONGCAT_RESID_INJECT_DIR`, R0 pattern, `common/debug.cpp` only), after
+  a source-referenced **causal-cut proof** that no mutable upstream state
+  bypasses `logical_00` (ScMoE shortcut, LSA indexer state, caches,
+  skip/embedding, MTP, aux tensors).
+- **Whole-sequence downstream comparison** of `logical_01…logical_13` (new
+  `logical_13` = `l_out-27` boundary added) plus the full pre-filter
+  result-norm surface (`h_nextn`), against a new same-pass-gated HF
+  full-sequence capture; control run then injection run, identical
+  recorded binary set (rebuild provenance incl. `llama-common.dll`),
+  production RoPE, cuBLAS 6.14.11.1330 live-verified, graphs-reused = 0.
+- **Dual stop rule:** first-raw whole-tensor divergence reported
+  separately from the `||e_reset||/||e_observed||` materiality trajectory
+  (0.01/0.10/0.50 first crossings; 0.10 is a conventional marker only).
+  If raw onset and consequential growth are separated → stop for review,
+  no automatic block selection; otherwise propose sub-boundary
+  instrumentation only inside the indicated block. Stop for review.
 
 Measurement-only MLP/MoE boundary work stays authorized; still forbidden:
 MLP/MoE arithmetic (pending reviewed plan), production FA patch, 2050-token
