@@ -165,16 +165,19 @@ multi-input rule.
 `STATUS_2026-08-17.md`):** the exact projection-output resets were executed
 on top of the dual reset with every gate passing (landings 1–4 byte-exact;
 runtime HF eps gate 1e-6/1e-6 from the instantiated modules; norm weights
-exact widenings; 41-name sweep). **Result: under byte-exact activation
-inputs and verified weights, both block-2 LoRA norms remain
-bf16-irreducible (rel ≈ 2.33e-3 / 2.36e-3, ~73.7% bf16-match) —
-attribution PERMITTED to the norm operator composite, and the
-pre-registered non-additive 2×2 decomposes it: the cast-ordering
-difference dominates (~2.3e-3 under either eps) while the eps mismatch
-contributes ~1e-4 (F32 regime) to ~8.7e-4 (BF16-cast regime).** HF
-mechanism CLOSED byte-exact for `q_a_norm` (D6 786,432/786,432); for
-`kv_a_norm` D6 reaches 262,137/262,144 with a 7-element single-bf16-ulp
-residue (model noise scale; no closure claimed). C++ side matches the
+exact widenings; 41-name sweep). **Result (scoped: under the exact-predecessor block-2 norm intervention in
+this frozen 512-token capture): both block-2 LoRA norms remain
+bf16-irreducible under byte-exact activation inputs and verified weights
+(rel ≈ 2.33e-3 / 2.36e-3, ~73.7% bf16-match) — attribution PERMITTED to
+the norm operator composite, and the pre-registered non-additive 2×2
+decomposes it: HF BF16 cast ordering is the DOMINANT MEASURED FACTOR
+(~2.3e-3 under either eps) while the 1e-5-vs-1e-6 eps mismatch and the
+missing projection BF16 boundary are smaller but independently real
+(eps ~1e-4 F32-regime to ~8.7e-4 BF16-cast-regime; projection boundary
+65.0→73.8% / 60.0→73.5% bf16-match).** HF mechanism byte-CLOSED for
+`q_a_norm` (D6 786,432/786,432); for `kv_a_norm` D6 reaches
+262,137/262,144 with a 7-element single-bf16-ulp residue —
+**near-closure/model residue, not exact closure**. C++ side matches the
 F32/eps-1e-5 model to ≤4-ulp reduction noise on both. The exact-predecessor
 intervention improved the norm surfaces (65.0→73.8% and 60.0→73.5%
 bf16-match) — a real but minority share; the cast+eps composite dominates.
