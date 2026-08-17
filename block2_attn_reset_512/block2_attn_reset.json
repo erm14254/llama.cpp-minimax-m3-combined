@@ -1,0 +1,157 @@
+{
+  "description": "Block-2 attention judgment under the dual reset (logical_00 + attn_norm-2)",
+  "oracle_sha256": "d810f93c50ea42c5909ab289ebf62a0c5629f40530d2e5fc706dde67f0eaf763",
+  "oracle2_sha256": "afa16c6c3324387e9261c708cae044b8fcb08acda8c8f6315d2ba8d39a8f0fd7",
+  "hf_dir": "D:\\lc_block1_stages_512",
+  "dual_dir": "D:\\llama.cpp-longcat-claude\\cpp_resid_walk_inject2_b1_512",
+  "semantic_equivalence": {
+    "attn_out_pair": "C++ attn_out-2: post-wo/o_proj, pre-residual-add (cb at longcat-flash-ngram.cpp:984, before the ffn_inp add at :996-997), F32 [3072,512]. HF attn0_out: the self_attn[0] return value snapped BEFORE the residual add (modeling :994-1004; at 512 tokens the dense fast-path o_proj output), BF16-on-lattice widened to f32. Same semantic boundary; dtype carrier differs by design.",
+    "ffn_inp_pair": "C++ ffn_inp-2 = attn_out-2 + inpSA (F32 add of the injected residual oracle). HF attn0_resid = residual + attn0_out computed in BF16 (output on-lattice). Same semantic boundary; the add's operand/rounding semantics differ by design and are separated by the S1/S2/S3 candidates.",
+    "f32_carrier_note": "The C++ tensors are F32 carrying HF BF16-on-lattice input values, so any surviving difference localizes to the block-2 attention implementation including its dtype/kernel semantics - the F32-vs-BF16 carrier is itself part of the implementation under test."
+  },
+  "provenance": {
+    "inject2_b1": {
+      "mode": "inject2",
+      "invocation": "llama-debug.exe -m \"D:\\LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-GGUF-BF16\\LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-BF16-00001-of-00008.gguf\" -f \"D:\\llama.cpp-longcat-claude\\prompt_512_a.txt\" -c 4608 -b 4608 -ub 512 -fa off -ctk f32 -ctv f32 --no-warmup -fitt 4096 -v --tensor-filter \"^(q_a_proj|q_a_norm|q_b_proj|q_pe_rope|kv_cmpr_pe|k_pe_rope|kv_a_norm|kv_cmpr_scaled|kqv_out|attn_out|ffn_inp)-0$\"",
+      "cublas_module": "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\bin\\x64\\cublas64_13.dll",
+      "binaries": {
+        "llama-common.dll": "8f485ee231660270fb2e266ec7e6d52b1054227c33535afba60098d022e52905",
+        "ggml-cuda.dll": "502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48",
+        "llama.dll": "93466c40380729857eb43f7d4ccfa4cf7f336d634cec0b44bb359d2411465dc3",
+        "llama-debug.exe": "df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0"
+      },
+      "oracle2_sha256": "afa16c6c3324387e9261c708cae044b8fcb08acda8c8f6315d2ba8d39a8f0fd7",
+      "oracle_sha256": "d810f93c50ea42c5909ab289ebf62a0c5629f40530d2e5fc706dde67f0eaf763",
+      "suffix": "b1",
+      "cublas_version": "6.14.11.1330",
+      "exit_code": 0,
+      "instrumentation_head": "bcbc3846dbc287792bcbd52031e889f16b57d5b2",
+      "env_sweep_names": [
+        "LONGCAT_HIDDEN_DUMP_DIR",
+        "LONGCAT_ROPE_INJECT_DIR",
+        "LONGCAT_ROPE_ORACLE_DIR",
+        "LONGCAT_RESID_WALK_DUMP_DIR",
+        "LONGCAT_RESID_INJECT_DIR",
+        "LONGCAT_ATTN_NORM2_INJECT_DIR",
+        "GGML_CUDA_ALLREDUCE",
+        "GGML_CUDA_CUBLAS_COMPUTE_TYPE",
+        "GGML_CUDA_DEVICES",
+        "GGML_CUDA_DISABLE_FUSION",
+        "GGML_CUDA_DISABLE_GRAPHS",
+        "GGML_CUDA_ENABLE_UNIFIED_MEMORY",
+        "GGML_CUDA_GRAPH_OPT",
+        "GGML_CUDA_NO_PINNED",
+        "GGML_CUDA_P2P",
+        "GGML_CUDA_PDL",
+        "GGML_CUDA_REGISTER_HOST",
+        "GGML_CUDA_VALIDATE_MUL_MAT_ID",
+        "GGML_CUDA_AR_BF16_THRESHOLD",
+        "GGML_CUDA_AR_COPY_CHUNK_BYTES",
+        "GGML_CUDA_AR_COPY_THRESHOLD",
+        "GGML_OP_OFFLOAD_MIN_BATCH",
+        "GGML_CPU_DISABLE_FUSION",
+        "GGML_BACKEND_PATH",
+        "GGML_TOTAL_THREADS",
+        "GGML_SCHED_DEBUG",
+        "GGML_SCHED_DEBUG_REALLOC",
+        "LLAMA_ATTN_ROT_DISABLE",
+        "LLAMA_GRAPH_REUSE_DISABLE",
+        "LLAMA_BATCH_DEBUG",
+        "LLAMA_GRAPH_INPUT_DEBUG",
+        "LLAMA_GRAPH_RESULT_DEBUG",
+        "LLAMA_KV_CACHE_DEBUG",
+        "LLAMA_DSV4_COMPRESS_DEBUG",
+        "LLAMA_TRACE",
+        "CUBLAS_LOGINFO_DBG",
+        "CUBLAS_LOGDEST_DBG",
+        "CUBLASLT_LOG_LEVEL",
+        "CUBLASLT_LOG_FILE",
+        "TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"
+      ]
+    }
+  },
+  "surfaces": {
+    "attn_out_2": {
+      "elements": 1572864,
+      "raw_equal": 9,
+      "hf_on_bf16_lattice": 1572864,
+      "bf16_cpp_equal_hf": 419261,
+      "classification": "bf16-irreducible",
+      "rel_rmse": 0.00613245600791222,
+      "abs_rmse": 0.00023189350291814422,
+      "err_l2": 0.2908266274898203,
+      "max_abs": 0.004692882299423218,
+      "first_divergent_token": 0,
+      "divergent_token_rows": 512,
+      "row_l2_max": 0.02116144883162485,
+      "row_l2_final": 0.010804051697308827
+    },
+    "ffn_inp_2": {
+      "elements": 1572864,
+      "raw_equal": 16,
+      "hf_on_bf16_lattice": 1572864,
+      "bf16_cpp_equal_hf": 679738,
+      "classification": "bf16-irreducible",
+      "rel_rmse": 0.0028121863819630826,
+      "abs_rmse": 0.00029588052956160176,
+      "err_l2": 0.37107523699220396,
+      "max_abs": 0.03726768493652344,
+      "first_divergent_token": 0,
+      "divergent_token_rows": 512,
+      "row_l2_max": 0.0687583691515827,
+      "row_l2_final": 0.01548866926787376
+    }
+  },
+  "add_semantics_candidates": {
+    "S1_bf16_of_f32cppout_plus_f32resid": {
+      "exact_vs_hf_attn0_resid": 679738,
+      "elements": 1572864,
+      "byte_exact": false
+    },
+    "S2_bf16_of_bf16cppout_plus_bf16resid": {
+      "exact_vs_hf_attn0_resid": 800660,
+      "elements": 1572864,
+      "byte_exact": false
+    },
+    "S3_bf16_of_f32hfout_plus_f32resid": {
+      "exact_vs_hf_attn0_resid": 1572864,
+      "elements": 1572864,
+      "byte_exact": true
+    },
+    "closure": "CLOSED by S3_bf16_of_f32hfout_plus_f32resid"
+  },
+  "downstream_descriptive": {
+    "mlp0_resid": {
+      "dual_reset_err_l2": 0.8143427412738089,
+      "single_reset_err_l2": 0.8210237053199266,
+      "ratio_dual_over_single": 0.9918626417205404,
+      "note": "descriptive only; no attribution (predecessors differ)"
+    },
+    "attn1_norm": {
+      "dual_reset_err_l2": 0.4555666833493682,
+      "single_reset_err_l2": 0.46107018064623617,
+      "ratio_dual_over_single": 0.9880636451284829,
+      "note": "descriptive only; no attribution (predecessors differ)"
+    },
+    "attn1_resid": {
+      "dual_reset_err_l2": 1.1405302561939619,
+      "single_reset_err_l2": 1.1429126697617518,
+      "ratio_dual_over_single": 0.9979154894063021,
+      "note": "descriptive only; no attribution (predecessors differ)"
+    },
+    "logical_01": {
+      "dual_reset_err_l2": 3.3570050909367004,
+      "single_reset_err_l2": 3.2132837681716158,
+      "ratio_dual_over_single": 1.0447272426384127,
+      "note": "descriptive only; no attribution (predecessors differ)"
+    }
+  },
+  "verdict": {
+    "attn_out_2_classification": "bf16-irreducible",
+    "ffn_inp_2_classification": "bf16-irreducible",
+    "f32_carrier_note": "The C++ tensors are F32 carrying HF BF16-on-lattice input values, so any surviving difference localizes to the block-2 attention implementation including its dtype/kernel semantics - the F32-vs-BF16 carrier is itself part of the implementation under test.",
+    "grid_case": 3,
+    "reading": "block-2 attention is causally implicated under value-exact inputs (including dtype/kernel semantics per the F32-carrier note); design the deeper block-2 MLA-internal capture",
+    "next_branch": "design (only) the narrowest block-2 MLA-internal capture mirroring the proven block-0 methodology: full-seq il=2 stage dumps (q_a_proj-2, q_a_norm-2, q_b_proj-2, kv_cmpr_pe-2, kv_a_norm-2, kv_cmpr_scaled-2, q_pe_rope-2, k_pe_rope-2, kqv_out-2) + an HF layer-1 self_attn[0] internals capture"
+  }
+}

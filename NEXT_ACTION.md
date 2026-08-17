@@ -126,15 +126,32 @@ operator-isolated at the trunk input norm. Reset-family divergence
 compounds 2.36e-3 → 9.05e-3 across the block; per the
 predecessor-exactness rule no attribution is made beyond `attn0_norm`.
 
+**Update 2026-08-17 (dual reset COMPLETE — see the final addendum of
+`STATUS_2026-08-17.md`):** the `attn_norm-2` predecessor reset was executed
+on top of the `logical_00` reset with every gate passing (both landings
+byte-exact; upstream inertness incl. 18/18 single-reset-manifest subset;
+HF re-capture determinism 7/7; 40-name sweep). **Result — grid case 3: with
+both block-2 attention operands exact in value, the pre-add `attn_out-2` is
+BF16-IRREDUCIBLE (26.7% bf16-match, rel 6.13e-3, dense from token 0) →
+block-2 attention is causally implicated, including its dtype/kernel
+semantics (the C++ F32 carrier of BF16-on-lattice values is part of the
+implementation under test).** Bonus closures: HF's residual add is exactly
+`bf16(f32-sum)` (candidate S3 byte-exact 1,572,864/1,572,864), and the C++
+add introduces nothing beyond its operands (S1 count == `ffn_inp-2`
+bf16-match count).
+
 **Immediate next action (designed, NOT begun — awaiting review):** the
-narrowest **exact predecessor reset at `attn_norm-2`** — inject the
-already-captured HF `attn0_norm` oracle (`afa16c6c…`) at the `attn_norm-2`
-node via the proven injector pattern (one added env-gated target), keeping
-the `logical_00` reset, and re-measure `attn0_resid` to judge **block-2
-attention under a byte-exact input**. Measurement-only; still forbidden:
-any arithmetic change (incl. MLP/MoE and any generalization of block-0 A+B
-semantics), production FA, 2050-token runs, widening any frozen criterion,
-production RoPE changes.
+narrowest **block-2 MLA-internal capture under the dual reset**, mirroring
+the proven block-0 methodology: full-sequence il=2 stage dumps
+(`q_a_proj-2`, `q_a_norm-2`, `q_b_proj-2`, `kv_cmpr_pe-2`, `kv_a_norm-2`,
+`kv_cmpr_scaled-2`, `q_pe_rope-2`, `k_pe_rope-2`, `kqv_out-2`) plus an HF
+layer-1 `self_attn[0]` internals capture extending the block-0 MLA stages
+script — locating the first divergent attention-internal surface with
+byte-exact upstream state. No block-0 mechanism transferred by assumption.
+Measurement-only; still forbidden: any arithmetic change (incl. MLP/MoE,
+any generalization of block-0 A+B or the trunk RMSNorm semantics),
+production FA, 2050-token runs, widening any frozen criterion, production
+RoPE changes.
 
 The executed design (for the record):
 
