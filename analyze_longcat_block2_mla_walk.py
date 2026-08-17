@@ -217,6 +217,16 @@ def main() -> int:
             "weigh reduction-order-scale effects.",
             "The C++ surfaces are F32 carriers (uncorrected il>=1 path); HF "
             "boundaries are BF16-on-lattice.",
+            "Representation-boundary distinction: BF16-reducible root GEMMs are "
+            "HF-equivalent AT THE BF16 OUTPUT BOUNDARY, but the raw C++ F32 "
+            "outputs are NOT pipeline-equivalent - later C++ norms consume the "
+            "off-lattice values. This is a missing/different representation "
+            "boundary, not a GEMM arithmetic failure.",
+            "Eps distinction: the il>=1 LoRA-norm eps difference (C++ 1e-5 vs "
+            "HF 1e-6) is a direct semantic parameter mismatch proven from "
+            "source/config; its quantitative contribution relative to "
+            "predecessor representation and cast-ordering differences is "
+            "unmeasured in this walk.",
         ],
     }
     p = RUN_DIR / "run_provenance.json"

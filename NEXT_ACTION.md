@@ -147,13 +147,17 @@ every gate passing (root-GEMM weights raw-BF16 bit-identical; block-0
 known-answer target-generation gates byte-exact; 81/81 dual-manifest
 reproduction incl. the `attn_out-2` endpoint). **Causal frontier verdict:
 both root projection GEMMs are BF16-REDUCIBLE from all-exact inputs
-(786,432/786,432 and 294,912/294,912 after output rounding) — pure
-F32-output boundaries, not irreducible — so no operator in the walk is both
-attribution-eligible and irreducible.** The per-branch first-irreducible
-surfaces (`q_a_norm-2`, `kv_a_norm-2`) sit behind differing F32
-predecessors AND a **source-cited parameter divergence: C++ il ≥ 1 LoRA
-norms run eps = 1e-5 (`f_norm_rms_eps`) while HF uses eps = 1e-6** —
-recorded for review, not attributed (inputs also differ). RoPE surfaces
+(786,432/786,432 and 294,912/294,912 after output rounding) — they are
+HF-equivalent at the BF16 output boundary, but the raw C++ F32 outputs are
+NOT pipeline-equivalent (later C++ norms consume the off-lattice values):
+a missing/different representation boundary, not a GEMM arithmetic
+failure — so no operator in the walk is both attribution-eligible and
+irreducible.** The per-branch first-irreducible surfaces (`q_a_norm-2`,
+`kv_a_norm-2`) sit behind those off-lattice predecessors AND a **direct
+semantic parameter mismatch: C++ il ≥ 1 LoRA norms run eps = 1e-5
+(`f_norm_rms_eps`) while HF uses eps = 1e-6** — recorded for review, not
+attributed; its quantitative contribution relative to predecessor
+representation and cast ordering is the unmeasured decomposition. RoPE surfaces
 remain under the production-composite rule; the attention core under the
 multi-input rule.
 
