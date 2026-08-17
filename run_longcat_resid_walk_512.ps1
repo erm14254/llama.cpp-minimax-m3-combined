@@ -13,7 +13,8 @@
 # regression hashes vs the committed attnpath manifest, landing gate (inject),
 # SHA256SUMS.txt over all dumps.
 param(
-    [Parameter(Mandatory=$true)][ValidateSet('control','inject')] [string]$Mode
+    [Parameter(Mandatory=$true)][ValidateSet('control','inject')] [string]$Mode,
+    [string]$Suffix = ''
 )
 $ErrorActionPreference = 'Stop'
 
@@ -23,11 +24,18 @@ $gguf      = 'D:\LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-GGUF-BF
 $prompt    = Join-Path $repo 'prompt_512_a.txt'
 $oracleDir = 'D:\lc_resid_walk_512'
 $cuda132   = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\bin\x64'
-$runDir    = Join-Path $repo ("cpp_resid_walk_" + $Mode + "_512")
+$tag       = $Mode
+if ($Suffix -ne '') { $tag = $Mode + '_' + $Suffix }
+$runDir    = Join-Path $repo ("cpp_resid_walk_" + $tag + "_512")
+# Prior-generation run dir (no suffix): every hash it recorded must reproduce
+# byte-exactly in this run (except run_provenance.json), proving the extended
+# instrumentation inert on all previously captured surfaces.
+$priorDir  = Join-Path $repo ("cpp_resid_walk_" + $Mode + "_512")
 
+# Instrumentation HEAD d95939f49 (block-1 sub-boundary dump specs).
 $expectedBins = @{
     'llama-debug.exe'  = 'df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0'
-    'llama-common.dll' = 'aa646eb5221e2f60553507915beb05a6f8daa9a14e390b00b81b5254f7b23dca'
+    'llama-common.dll' = '49dc79fd1847211fdf60a578f67feeb14b317cd91e5087561c0374eac449d2e3'
     'llama.dll'        = '93466c40380729857eb43f7d4ccfa4cf7f336d634cec0b44bb359d2411465dc3'
     'ggml-cuda.dll'    = '502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48'
 }
@@ -77,7 +85,7 @@ function Get-Sha256([string]$path) {
     (Get-FileHash -Algorithm SHA256 $path).Hash.ToLower()
 }
 
-Write-Host "== preflight ($Mode) =="
+Write-Host "== preflight ($tag) =="
 
 # 1. Binary set (identical recorded set for both runs).
 foreach ($name in $expectedBins.Keys) {
@@ -85,23 +93,41 @@ foreach ($name in $expectedBins.Keys) {
     $h = Get-Sha256 $p
     if ($h -ne $expectedBins[$name]) { throw "binary SHA FAIL: $name $h != $($expectedBins[$name])" }
 }
-Write-Host "binary set: 4/4 match instrumentation build (HEAD 2f827a91e)"
+Write-Host "binary set: 4/4 match instrumentation build (HEAD d95939f49)"
 
 # 2. Environment-cleanliness sweep (parent session must be clean).
+# Source-audited fail-closed name list (wrapper-aware derivation 2026-08-17:
+# bare getenv + ggml_cuda_ar_env_u64 wrapper reads across common/, src/,
+# ggml/src core+CPU+CUDA; backends not compiled on this CUDA/Windows build
+# excluded; cuBLAS/cuBLASLt logging vars are the library's own contract;
+# TORCH override is python-side, swept defensively). Count is descriptive.
 $sweep = @(
+    # LONGCAT diagnostics (5)
     'LONGCAT_HIDDEN_DUMP_DIR','LONGCAT_ROPE_INJECT_DIR','LONGCAT_ROPE_ORACLE_DIR',
     'LONGCAT_RESID_WALK_DUMP_DIR','LONGCAT_RESID_INJECT_DIR',
-    'GGML_CUDA_ALLREDUCE','GGML_CUDA_AR_COPY_CHUNK_BYTES','GGML_CUDA_AR_COPY_THRESHOLD',
-    'GGML_CUDA_CUBLAS_COMPUTE_TYPE','GGML_CUDA_DEVICES','GGML_CUDA_DISABLE_FUSION',
-    'GGML_CUDA_DISABLE_GRAPHS','GGML_CUDA_ENABLE_UNIFIED_MEMORY','GGML_CUDA_GRAPH_OPT',
-    'GGML_CUDA_NO_PINNED','GGML_CUDA_PDL','GGML_CUDA_REGISTER_HOST','GGML_CUDA_VALIDATE_MUL_MAT_ID',
+    # GGML_CUDA bare getenv (12; incl. P2P, missed by earlier subdir-limited greps)
+    'GGML_CUDA_ALLREDUCE','GGML_CUDA_CUBLAS_COMPUTE_TYPE','GGML_CUDA_DEVICES',
+    'GGML_CUDA_DISABLE_FUSION','GGML_CUDA_DISABLE_GRAPHS','GGML_CUDA_ENABLE_UNIFIED_MEMORY',
+    'GGML_CUDA_GRAPH_OPT','GGML_CUDA_NO_PINNED','GGML_CUDA_P2P','GGML_CUDA_PDL',
+    'GGML_CUDA_REGISTER_HOST','GGML_CUDA_VALIDATE_MUL_MAT_ID',
+    # GGML_CUDA wrapper reads via ggml_cuda_ar_env_u64 (3)
+    'GGML_CUDA_AR_BF16_THRESHOLD','GGML_CUDA_AR_COPY_CHUNK_BYTES','GGML_CUDA_AR_COPY_THRESHOLD',
+    # ggml core / CPU / dispatch (6)
+    'GGML_OP_OFFLOAD_MIN_BATCH','GGML_CPU_DISABLE_FUSION','GGML_BACKEND_PATH',
+    'GGML_TOTAL_THREADS','GGML_SCHED_DEBUG','GGML_SCHED_DEBUG_REALLOC',
+    # llama core toggles/debug (8)
+    'LLAMA_ATTN_ROT_DISABLE','LLAMA_GRAPH_REUSE_DISABLE','LLAMA_BATCH_DEBUG',
+    'LLAMA_GRAPH_INPUT_DEBUG','LLAMA_GRAPH_RESULT_DEBUG','LLAMA_KV_CACHE_DEBUG',
+    'LLAMA_DSV4_COMPRESS_DEBUG','LLAMA_TRACE',
+    # cuBLAS / cuBLASLt library logging (4)
     'CUBLAS_LOGINFO_DBG','CUBLAS_LOGDEST_DBG','CUBLASLT_LOG_LEVEL','CUBLASLT_LOG_FILE',
+    # python-side (1)
     'TORCH_ALLOW_TF32_CUBLAS_OVERRIDE'
 )
 foreach ($v in $sweep) {
     if (Test-Path "Env:$v") { throw "env sweep FAIL: $v is set in the session" }
 }
-Write-Host "env sweep: $($sweep.Count)/$($sweep.Count) clean"
+Write-Host "env sweep: $($sweep.Count)/$($sweep.Count) clean (source-audited list)"
 
 # 3. Inputs.
 if (-not (Test-Path $gguf))   { throw "GGUF missing: $gguf" }
@@ -190,8 +216,8 @@ if ($cublasVer -ne $expectedCublasVer) {
 }
 
 $proc.WaitForExit()
-$outLog = Join-Path $repo ("cpp_resid_walk_" + $Mode + "_512.out.log")
-$errLog = Join-Path $repo ("cpp_resid_walk_" + $Mode + "_512.err.log")
+$outLog = Join-Path $repo ("cpp_resid_walk_" + $tag + "_512.out.log")
+$errLog = Join-Path $repo ("cpp_resid_walk_" + $tag + "_512.err.log")
 [IO.File]::WriteAllText($outLog, $stdoutTask.Result)
 [IO.File]::WriteAllText($errLog, $stderrTask.Result)
 Write-Host ("exit code: " + $proc.ExitCode)
@@ -246,12 +272,39 @@ if ($Mode -eq 'inject') {
 
 # Full-seq dump inventory.
 $expectedFull = @('result_norm_full.bin') + (0..13 | ForEach-Object { 'logical_{0:d2}_full.bin' -f $_ })
+if ($Suffix -ne '') {
+    $expectedFull += @(
+        'block1_attn0_norm_full.bin','block1_attn0_resid_full.bin',
+        'block1_mlp0_resid_full.bin','block1_attn1_norm_full.bin',
+        'block1_attn1_resid_full.bin'
+    )
+}
 foreach ($name in $expectedFull) {
     $p = Join-Path $runDir $name
     if (-not (Test-Path $p)) { throw "full-seq dump missing: $name" }
     if ((Get-Item $p).Length -ne 6291456) { throw "full-seq dump size FAIL: $name" }
 }
 Write-Host "full-seq inventory: $($expectedFull.Count) dumps present, sizes OK"
+
+# Prior-generation manifest reproduction: every file the previous run of this
+# mode recorded (except run_provenance.json) must hash identically here,
+# proving the extended instrumentation inert on all previous surfaces.
+if ($Suffix -ne '' -and (Test-Path (Join-Path $priorDir 'SHA256SUMS.txt'))) {
+    $priorFailed = 0
+    $priorCount = 0
+    foreach ($line in (Get-Content (Join-Path $priorDir 'SHA256SUMS.txt'))) {
+        if ($line.Trim() -eq '') { continue }
+        $parts = $line.Trim() -split '\s+', 2
+        $sha = $parts[0].ToLower(); $name = $parts[1].Trim()
+        if ($name -eq 'run_provenance.json') { continue }
+        $priorCount++
+        $p = Join-Path $runDir $name
+        if (-not (Test-Path $p)) { Write-Host "PRIOR MISSING $name"; $priorFailed++; continue }
+        if ((Get-Sha256 $p) -ne $sha) { Write-Host "PRIOR MISMATCH $name"; $priorFailed++ }
+    }
+    if ($priorFailed -gt 0) { throw "prior-manifest reproduction FAIL: $priorFailed/$priorCount" }
+    Write-Host "prior-manifest reproduction: $priorCount/$priorCount byte-identical"
+}
 
 # Manifest over everything in the run dir.
 $manifest = Join-Path $runDir 'SHA256SUMS.txt'
@@ -263,12 +316,14 @@ Write-Host "manifest written: $manifest"
 # Provenance sidecar.
 $prov = @{
     mode = $Mode
-    instrumentation_head = '2f827a91e2853ce15fb52dab0cb3321e7b888000'
+    suffix = $Suffix
+    instrumentation_head = 'd95939f49c5ab523e8e90e4ff0ccf5eb47eb16fd'
     binaries = $expectedBins
     cublas_module = $cublasPath
     cublas_version = $cublasVer
     oracle_sha256 = $oracleSha
     exit_code = $proc.ExitCode
+    env_sweep_names = $sweep
     invocation = ("llama-debug.exe " + $args)
 }
 $prov | ConvertTo-Json | Out-File -Encoding ascii (Join-Path $runDir 'run_provenance.json')

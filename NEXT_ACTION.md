@@ -109,16 +109,32 @@ counterfactual and are NOT additive downstream/upstream partitions — the
 nonlinear downstream means contributions do not superpose.** First-raw and
 the 0.01/0.10/0.50 crossings all coincide at `logical_01`.
 
-**Immediate next action (per the pre-registered stop rule; design proposed,
-NOT begun — awaiting review):** sub-boundary instrumentation **inside
-logical block 1 only** — full-sequence `ffn_inp-2` / `l_out-2` / `ffn_inp-3`
-dumps (callback-only extension of the walk spec set), an HF layer-1 stages
-capture (monkey-patch pattern of the logical0 stages script, same frozen
-gates), and one injection re-run comparison to localize where inside one
-clean-input logical layer the 9.05e-3 is born (attn[0] vs dense MLP[0] vs
-attn[1] vs dense MLP[1]+ScMoE join). Measurement-only; still forbidden:
-any arithmetic change (incl. MLP/MoE), production FA, 2050-token runs,
-widening any frozen criterion, production RoPE changes.
+**Update 2026-08-17 (block-1 sub-boundary localization COMPLETE — see the
+final addendum of `STATUS_2026-08-17.md`):** executed with every gate
+passing (semantic-equivalence proofs; instrumentation `d95939f49` with only
+`llama-common.dll` changed; wrapper-aware 39-name env audit with recorded
+19→21→23→39 reconciliation; HF layer-1 stages with input ≡ the reset oracle
+byte-exactly; both re-runs reproducing their prior manifests 69/69).
+**Result: first-raw = first-bf16-irreducible = `attn0_norm`
+(`input_layernorm[0]` of logical layer 1), operator input byte-exact →
+attribution PERMITTED, and the mechanism is closed**: HF =
+`bf16(bf16(x·rsqrt(var+1e-5))·w)` reproduced 1,572,864/1,572,864 byte-exact
+(eps byte-identified as 1e-5; 1e-6 excluded), C++ = plain F32-kept norm (to
+≤4-ulp reduction noise), and BF16-rounding the C++ output recovers HF for
+only 74.3% — the block-0 `kv_a_layernorm` cast-ordering class, now
+operator-isolated at the trunk input norm. Reset-family divergence
+compounds 2.36e-3 → 9.05e-3 across the block; per the
+predecessor-exactness rule no attribution is made beyond `attn0_norm`.
+
+**Immediate next action (designed, NOT begun — awaiting review):** the
+narrowest **exact predecessor reset at `attn_norm-2`** — inject the
+already-captured HF `attn0_norm` oracle (`afa16c6c…`) at the `attn_norm-2`
+node via the proven injector pattern (one added env-gated target), keeping
+the `logical_00` reset, and re-measure `attn0_resid` to judge **block-2
+attention under a byte-exact input**. Measurement-only; still forbidden:
+any arithmetic change (incl. MLP/MoE and any generalization of block-0 A+B
+semantics), production FA, 2050-token runs, widening any frozen criterion,
+production RoPE changes.
 
 The executed design (for the record):
 
