@@ -1,0 +1,73 @@
+{
+  "description": "HF block-2 MLA internals (layers[1].self_attn[0], full-sequence, dual-reset comparanda)",
+  "runtime_sha256": "a3bc31616c1f0ddff9f195cbc78f4561a40187c50fe3bf29e2e98d9228947428",
+  "tokens_bin_sha256": "4893d78751e8577f817da21a7e00718c7c14e0d80732e1b7e4da36da6677821c",
+  "oracle2_sha256": "afa16c6c3324387e9261c708cae044b8fcb08acda8c8f6315d2ba8d39a8f0fd7",
+  "sequence_length": 512,
+  "layout": "token-major [512, width] float32-le",
+  "torch": "2.13.0+cu132",
+  "transformers": "5.15.0",
+  "tf32_disabled": true,
+  "surfaces": {
+    "q_a_proj_input": {
+      "sha256": "afa16c6c3324387e9261c708cae044b8fcb08acda8c8f6315d2ba8d39a8f0fd7",
+      "min": -4.65625,
+      "max": 10.9375,
+      "rms": 0.11282485138053502
+    },
+    "q_a_proj": {
+      "sha256": "32173b18459358494f943288b974ef7df70eb540ff9e366c720c14f250407a96",
+      "min": -1.890625,
+      "max": 1.8203125,
+      "rms": 0.22155573438580078
+    },
+    "q_a_layernorm": {
+      "sha256": "4c9792430fee2716b573ccf365617e537adf8305571e2a5a0b1a881c0c4de340",
+      "min": -18.625,
+      "max": 18.625,
+      "rms": 2.0967707896708454
+    },
+    "q_b_proj": {
+      "sha256": "ecb70ef6c9bd4d6f28a67467f3b5ec3fc575d4f37cd2e81bce7cc7554323f308",
+      "min": -60.25,
+      "max": 32.75,
+      "rms": 5.08429747907656
+    },
+    "kv_a_proj_with_mqa": {
+      "sha256": "28ea5b52221a94ddf780f04507f11aee7b6fc8617974f53d558424d41c470f3f",
+      "min": -4.34375,
+      "max": 27.25,
+      "rms": 0.3771916541613675
+    },
+    "kv_a_layernorm": {
+      "sha256": "c91991eb459352ec407aebcee5ee2b12e7b25db0bafd3e0462955a8f8144df6b",
+      "min": -0.171875,
+      "max": 0.158203125,
+      "rms": 0.017919149977409614
+    },
+    "attn_o_input": {
+      "sha256": "51d18929082c982731872accebaf86ac66dd12ded9cb69d15f49c8f319ac4039",
+      "min": -0.1962890625,
+      "max": 0.21484375,
+      "rms": 0.01975534670321581
+    },
+    "o_proj_out": {
+      "sha256": "c90c8e0669b9261f3bfa21abc1cc7f4f7fae48ee4393755ad99ed9e7c1a5e2e9",
+      "min": -0.44140625,
+      "max": 0.6953125,
+      "rms": 0.03781413231810395
+    },
+    "rope_cos": {
+      "sha256": "8771da1ea77d102e07bbc08064e6da6226ab4c2cb2a195c25d197c35487d9bb2",
+      "min": -1.0,
+      "max": 1.0,
+      "rms": 0.886629466911052
+    },
+    "rope_sin": {
+      "sha256": "5c5dede92d05f23dfab1a27285685f61e5596df888dd429fae6d8b6591b7ff0a",
+      "min": -1.0,
+      "max": 1.0,
+      "rms": 0.4625590105489058
+    }
+  }
+}
