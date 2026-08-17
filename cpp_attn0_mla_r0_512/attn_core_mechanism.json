@@ -1,0 +1,59 @@
+{
+  "collapse": {
+    "collapses": true,
+    "ratio": 0.9764900495064907,
+    "reference_discrepancy_rel": 0.0002400163490327024,
+    "v7pp_vs_meas_rel": 0.00023437357654931072
+  },
+  "meas_kqv_bf16_lattice": {
+    "elements": 2097152,
+    "equal": 108
+  },
+  "meas_vs_oracle": {
+    "cosine": 0.9999882670687754,
+    "elements": 2097152,
+    "equal": 41,
+    "max_abs": 0.0014432203024625778,
+    "rel_rmse": 0.0038456791006660812,
+    "rmse": 7.711653559920106e-05
+  },
+  "no_tf32_control_vs_meas": {
+    "cosine": 1.0000059371358248,
+    "elements": 2097152,
+    "equal": 22936,
+    "max_abs": 0.001149868592619896,
+    "rel_rmse": 0.0007151292247073751,
+    "rmse": 1.4337519709637669e-05
+  },
+  "precision_state": {
+    "TORCH_ALLOW_TF32_CUBLAS_OVERRIDE": null,
+    "cuda_matmul_fp32_precision": "ieee",
+    "float32_matmul_precision": "highest",
+    "gpu": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+    "torch": "2.13.0+cu132"
+  },
+  "reference_reduction_discrepancy": {
+    "cosine": 1.0000062942188548,
+    "elements": 2097152,
+    "equal": 232057,
+    "max_abs": 0.0007324274629354477,
+    "rel_rmse": 0.0002400163490327024,
+    "rmse": 4.812056076421356e-06
+  },
+  "v7pp_vs_meas": {
+    "cosine": 1.0000062070336826,
+    "elements": 2097152,
+    "equal": 84157,
+    "max_abs": 0.0007323883473873138,
+    "rel_rmse": 0.00023437357654931072,
+    "rmse": 4.698921058035402e-06
+  },
+  "v7pp_vs_oracle": {
+    "cosine": 0.9999883820912498,
+    "elements": 2097152,
+    "equal": 21,
+    "max_abs": 0.0014175176620483398,
+    "rel_rmse": 0.00384616130366795,
+    "rmse": 7.712620510723494e-05
+  }
+}
