@@ -325,6 +325,10 @@ static bool common_debug_longcat_resid_walk_spec_for(
         const char * file;
     } block1_surfaces[] = {
         { "attn_norm-2", "block1_attn0_norm_full.bin"  },
+        // Pre-residual-add attention output (post-wo/o_proj): the
+        // discriminator that separates block-2 attention from the residual
+        // add under the dual reset.
+        { "attn_out-2",  "block1_attn0_out_full.bin"   },
         { "ffn_inp-2",   "block1_attn0_resid_full.bin" },
         { "l_out-2",     "block1_mlp0_resid_full.bin"  },
         { "attn_norm-3", "block1_attn1_norm_full.bin"  },
@@ -470,6 +474,79 @@ static void common_debug_maybe_inject_longcat_resid(ggml_tensor * t) {
 
     ggml_backend_tensor_set(t, cache.data(), 0, expect_nbytes);
     LOG_INF("LONGCAT_RESID_INJECT: %s <- logical_00_oracle.bin (%zu bytes)\n",
+            t->name, expect_nbytes);
+}
+
+// LONGCAT_ATTN_NORM2_INJECT (dual-reset experiment -- second oracle reset):
+//
+// When LONGCAT_ATTN_NORM2_INJECT_DIR is set, the block-2 pre-attention norm
+// output attn_norm-2 is OVERWRITTEN with the HF layer-1 attn0_norm oracle
+// (<dir>/attn0_norm.bin) immediately after the node computes. Combined with
+// the l_out-1 reset, both block-2 attention operands (the normalized QKV
+// input and the residual-stream operand) are exact in value, licensing a
+// causal judgment of the block-2 attention implementation. The C++ tensor
+// remains F32 carrying HF BF16-on-lattice values; the F32-vs-BF16 carrier is
+// part of the implementation under test. Same fail-closed contract as the
+// other injectors; the walk dump of attn_norm-2 records the injected bytes
+// (second landing gate).
+static bool common_debug_longcat_wants_attn_norm2_inject(const ggml_tensor * t) {
+    const char * dir = std::getenv("LONGCAT_ATTN_NORM2_INJECT_DIR");
+    if (dir == nullptr || dir[0] == '\0') {
+        return false;
+    }
+    return strcmp(t->name, "attn_norm-2") == 0;
+}
+
+static void common_debug_maybe_inject_longcat_attn_norm2(ggml_tensor * t) {
+    const char * dir = std::getenv("LONGCAT_ATTN_NORM2_INJECT_DIR");
+    if (dir == nullptr || dir[0] == '\0') {
+        return;
+    }
+    if (strcmp(t->name, "attn_norm-2") != 0) {
+        return;
+    }
+
+    constexpr size_t expect_nbytes = (size_t) 512 * 3072 * 4;
+
+    if (t->type != GGML_TYPE_F32 || !ggml_is_contiguous(t) ||
+        ggml_nbytes(t) != expect_nbytes ||
+        t->ne[0] != 3072 || t->ne[1] != 512) {
+        LOG_ERR(
+            "LONGCAT_ATTN_NORM2_INJECT ABORT: %s type=%s contig=%d nbytes=%zu "
+            "ne={%lld,%lld,%lld,%lld} (expected F32 contiguous %zu, ne 3072x512)\n",
+            t->name, ggml_type_name(t->type),
+            ggml_is_contiguous(t) ? 1 : 0,
+            ggml_nbytes(t),
+            (long long) t->ne[0], (long long) t->ne[1],
+            (long long) t->ne[2], (long long) t->ne[3],
+            expect_nbytes);
+        common_log_flush(common_log_main());
+        std::exit(87);
+    }
+
+    static std::vector<uint8_t> cache;
+
+    if (cache.empty()) {
+        const std::string path = std::string(dir) + "/attn0_norm.bin";
+        std::ifstream f(path, std::ios::binary);
+        if (!f) {
+            LOG_ERR("LONGCAT_ATTN_NORM2_INJECT ABORT: cannot open %s\n", path.c_str());
+            common_log_flush(common_log_main());
+            std::exit(87);
+        }
+        cache.assign(std::istreambuf_iterator<char>(f),
+                     std::istreambuf_iterator<char>());
+        if (cache.size() != expect_nbytes) {
+            LOG_ERR(
+                "LONGCAT_ATTN_NORM2_INJECT ABORT: %s is %zu bytes, expected %zu\n",
+                path.c_str(), cache.size(), expect_nbytes);
+            common_log_flush(common_log_main());
+            std::exit(87);
+        }
+    }
+
+    ggml_backend_tensor_set(t, cache.data(), 0, expect_nbytes);
+    LOG_INF("LONGCAT_ATTN_NORM2_INJECT: %s <- attn0_norm.bin (%zu bytes)\n",
             t->name, expect_nbytes);
 }
 
@@ -784,7 +861,8 @@ bool common_debug_cb_eval(struct ggml_tensor * t, bool ask, void * user_data) {
         return matches_filter || common_debug_longcat_wants_dump(t) ||
                common_debug_longcat_wants_resid_walk_dump(t) ||
                common_debug_longcat_wants_rope_inject(t) ||
-               common_debug_longcat_wants_resid_inject(t);
+               common_debug_longcat_wants_resid_inject(t) ||
+               common_debug_longcat_wants_attn_norm2_inject(t);
     }
 
     // LONGCAT_ROPE_INJECT (R0): overwrite the post-RoPE block-0 tensors with
@@ -797,6 +875,10 @@ bool common_debug_cb_eval(struct ggml_tensor * t, bool ask, void * user_data) {
     // host copy, so the walk dump below records the injected bytes (landing
     // gate) and every dependent consumes the reset state.
     common_debug_maybe_inject_longcat_resid(t);
+
+    // LONGCAT_ATTN_NORM2_INJECT (dual reset): overwrite attn_norm-2 with the
+    // HF layer-1 attn0_norm oracle, same ordering requirement.
+    common_debug_maybe_inject_longcat_attn_norm2(t);
 
     char src1_str[128] = { 0 };
     if (src1) {
