@@ -135,10 +135,11 @@ both block-2 attention operands exact in value, the pre-add `attn_out-2` is
 BF16-IRREDUCIBLE (26.7% bf16-match, rel 6.13e-3, dense from token 0) →
 block-2 attention is causally implicated, including its dtype/kernel
 semantics (the C++ F32 carrier of BF16-on-lattice values is part of the
-implementation under test).** Bonus closures: HF's residual add is exactly
-`bf16(f32-sum)` (candidate S3 byte-exact 1,572,864/1,572,864), and the C++
-add introduces nothing beyond its operands (S1 count == `ffn_inp-2`
-bf16-match count).
+implementation under test).** Bonus closure: the HF residual-add mechanism is closed **for this frozen
+full-sequence capture** by the exact-input S3 reconstruction
+(`bf16(f32(HF_attn_out)+f32(resid))` byte-exact 1,572,864/1,572,864);
+supporting evidence, not closure basis: S1 count == `ffn_inp-2` bf16-match
+count, showing the C++ add introduces nothing beyond its operands.
 
 **Immediate next action (designed, NOT begun — awaiting review):** the
 narrowest **block-2 MLA-internal capture under the dual reset**, mirroring

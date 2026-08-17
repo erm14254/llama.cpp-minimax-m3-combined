@@ -118,7 +118,7 @@
       "elements": 1572864,
       "byte_exact": true
     },
-    "closure": "CLOSED by S3_bf16_of_f32hfout_plus_f32resid"
+    "closure": "CLOSED for this frozen full-sequence capture by S3_bf16_of_f32hfout_plus_f32resid (exact-input reconstruction, byte-exact); S1 count-equality is supporting evidence about the C++ add, not the closure basis; the closure is scoped to this capture, not claimed universally"
   },
   "downstream_descriptive": {
     "mlp0_resid": {

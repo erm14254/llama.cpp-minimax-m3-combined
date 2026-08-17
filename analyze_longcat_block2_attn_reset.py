@@ -260,7 +260,13 @@ def main() -> int:
             closed = name
         print("candidate %s: %d/%d%s" % (name, eq, cand.size, "  BYTE-EXACT" if eq == cand.size else ""))
     report["add_semantics_candidates"]["closure"] = (
-        ("CLOSED by %s" % closed) if closed else
+        (
+            "CLOSED for this frozen full-sequence capture by %s (exact-input "
+            "reconstruction, byte-exact); S1 count-equality is supporting "
+            "evidence about the C++ add, not the closure basis; the closure "
+            "is scoped to this capture, not claimed universally" % closed
+        )
+        if closed else
         "NOT closed - no candidate reproduces the HF boundary byte-exactly; results are non-closing evidence"
     )
 
