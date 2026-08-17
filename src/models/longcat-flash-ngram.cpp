@@ -4,6 +4,76 @@
 #include "../llama-model.h"
 
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <memory>
+#include <vector>
+
+// LONGCAT_ROPE_ORACLE (Experiment R1): diagnostic graph input carrying the
+// captured HF BF16 rope cos/sin oracles for physical block 0.
+//
+// Active only when LONGCAT_ROPE_ORACLE_DIR is set. The files are the
+// authoritative Blackwell captures rope_cos.bin / rope_sin.bin
+// ([512, 64] token-major F32 on the BF16 lattice; the first 32 columns hold
+// the per-pair angles, modeling_longcat_flash.py:322-324). SHA256 of the
+// files is verified by the run-harness preflight; here the exact byte size
+// and the diagnostic preconditions are enforced: 512-token single ubatch
+// with pos[i] == i, exactly the frozen capture invocation.
+namespace {
+
+class llm_graph_input_longcat_rope_oracle : public llm_graph_input_i {
+public:
+    explicit llm_graph_input_longcat_rope_oracle(std::string dir_) : dir(std::move(dir_)) {}
+
+    void set_input(const llama_ubatch * ubatch) override {
+        const int64_t n_tokens = ubatch->n_tokens;
+
+        GGML_ASSERT(n_tokens == 512 &&
+                    "LONGCAT_ROPE_ORACLE: diagnostic is 512-token single-ubatch only");
+        GGML_ASSERT(ubatch->pos != nullptr);
+
+        for (int64_t i = 0; i < n_tokens; ++i) {
+            GGML_ASSERT(ubatch->pos[i] == i &&
+                        "LONGCAT_ROPE_ORACLE: row index must equal position");
+        }
+
+        struct { const char * file; ggml_tensor * dst; } feeds[2] = {
+            { "rope_cos.bin", cos_half },
+            { "rope_sin.bin", sin_half },
+        };
+
+        for (const auto & feed : feeds) {
+            const std::string path = dir + "/" + feed.file;
+            std::ifstream f(path, std::ios::binary);
+            if (!f) {
+                GGML_ABORT("LONGCAT_ROPE_ORACLE: cannot open %s", path.c_str());
+            }
+            std::vector<float> full((size_t) n_tokens * 64);
+            f.read((char *) full.data(), full.size() * sizeof(float));
+            if ((size_t) f.gcount() != full.size() * sizeof(float)) {
+                GGML_ABORT("LONGCAT_ROPE_ORACLE: %s short read", path.c_str());
+            }
+            // first-half columns, laid out [32, 1, n_tokens] (j fastest)
+            std::vector<float> staged((size_t) n_tokens * 32);
+            for (int64_t t = 0; t < n_tokens; ++t) {
+                for (int64_t j = 0; j < 32; ++j) {
+                    staged[(size_t) t * 32 + j] = full[(size_t) t * 64 + j];
+                }
+            }
+            ggml_backend_tensor_set(feed.dst, staged.data(), 0,
+                                    staged.size() * sizeof(float));
+        }
+    }
+
+    ggml_tensor * cos_half = nullptr; // [32, 1, n_tokens] F32, BF16-lattice values
+    ggml_tensor * sin_half = nullptr;
+
+private:
+    std::string dir;
+};
+
+} // namespace
 
 void llama_model_longcat_flash_ngram::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
@@ -709,13 +779,89 @@ llama_model_longcat_flash_ngram::graph::graph(
             cb(k_pe, "k_pe", il);
 
             // apply RoPE
-            q_pe = ggml_rope_ext(ctx0, q_pe, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig,
-                                 freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
-            cb(q_pe, "q_pe", il);
+            const char * rope_oracle_dir = std::getenv("LONGCAT_ROPE_ORACLE_DIR");
+            if (il == 0 && rope_oracle_dir != nullptr && rope_oracle_dir[0] != '\0') {
+                // LONGCAT_ROPE_ORACLE (Experiment R1): real in-graph BF16
+                // rotation with the captured HF cos/sin as graph inputs.
+                //
+                // Source-proven C2 semantics (modeling_longcat_flash.py:57-62
+                // analog for rope, :322-331): BF16 inputs, BF16 cos/sin, and a
+                // BF16 store-round after EVERY binary op -- the unique cast
+                // ordering that reproduces the HF function with 0 mismatches
+                // offline (single-final-round misses by 162146, no-final-round
+                // by 872330). ggml's own F32 trig cannot be used: its values
+                // provably round to different BF16 in 3377/16384 sin elements.
+                //
+                // ggml_rope_ext, shared RoPE kernels, and production behavior
+                // are untouched; il > 0 takes the standard path below.
+                auto inp_ro = std::make_unique<llm_graph_input_longcat_rope_oracle>(rope_oracle_dir);
 
-            k_pe = ggml_rope_ext(ctx0, k_pe, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig,
-                                 freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
-            cb(k_pe, "k_pe", il);
+                inp_ro->cos_half = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, 32, 1, n_tokens);
+                ggml_set_input(inp_ro->cos_half);
+                ggml_set_name(inp_ro->cos_half, "longcat_rope_cos_half");
+
+                inp_ro->sin_half = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, 32, 1, n_tokens);
+                ggml_set_input(inp_ro->sin_half);
+                ggml_set_name(inp_ro->sin_half, "longcat_rope_sin_half");
+
+                // lossless: oracle values are on the BF16 lattice
+                ggml_tensor * cos_b = ggml_cast(ctx0, inp_ro->cos_half, GGML_TYPE_BF16);
+                ggml_tensor * sin_b = ggml_cast(ctx0, inp_ro->sin_half, GGML_TYPE_BF16);
+
+                res->add_input(std::move(inp_ro));
+
+                const size_t es = ggml_type_size(GGML_TYPE_BF16);
+
+                auto build_hf_bf16_rope = [&](ggml_tensor * x) -> ggml_tensor * {
+                    const int64_t H = x->ne[1];
+                    const int64_t T = x->ne[2];
+
+                    // widen-lossless BF16 input (x is F32 on the BF16 lattice)
+                    ggml_tensor * xb = ggml_cast(ctx0, ggml_cont(ctx0, x), GGML_TYPE_BF16);
+
+                    // rows [64] -> [2, 32]: ne0 = 2 fastest, so columns are
+                    // the interleaved pairs (x_{2j}, x_{2j+1})
+                    xb = ggml_reshape_4d(ctx0, xb, 2, 32, H, T);
+
+                    ggml_tensor * x1 = ggml_cont(ctx0,
+                        ggml_view_4d(ctx0, xb, 1, 32, H, T, xb->nb[1], xb->nb[2], xb->nb[3], 0));
+                    ggml_tensor * x2 = ggml_cont(ctx0,
+                        ggml_view_4d(ctx0, xb, 1, 32, H, T, xb->nb[1], xb->nb[2], xb->nb[3], es));
+
+                    x1 = ggml_reshape_3d(ctx0, x1, 32, H, T);
+                    x2 = ggml_reshape_3d(ctx0, x2, 32, H, T);
+
+                    // C2: every binary op stores BF16 (f32 internal per element)
+                    ggml_tensor * ev = ggml_sub(ctx0,
+                        ggml_mul(ctx0, x1, cos_b), ggml_mul(ctx0, x2, sin_b));
+                    ggml_tensor * od = ggml_add(ctx0,
+                        ggml_mul(ctx0, x2, cos_b), ggml_mul(ctx0, x1, sin_b));
+
+                    // re-interleave: pair-concat on dim 0 (ne0 fastest)
+                    ev = ggml_reshape_4d(ctx0, ev, 1, 32, H, T);
+                    od = ggml_reshape_4d(ctx0, od, 1, 32, H, T);
+
+                    ggml_tensor * out = ggml_concat(ctx0, ev, od, 0);
+                    out = ggml_reshape_3d(ctx0, out, 64, H, T);
+
+                    // widen for the downstream F32 graph (lossless)
+                    return ggml_cast(ctx0, out, GGML_TYPE_F32);
+                };
+
+                q_pe = build_hf_bf16_rope(q_pe);
+                cb(q_pe, "q_pe", il);
+
+                k_pe = build_hf_bf16_rope(k_pe);
+                cb(k_pe, "k_pe", il);
+            } else {
+                q_pe = ggml_rope_ext(ctx0, q_pe, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig,
+                                     freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
+                cb(q_pe, "q_pe", il);
+
+                k_pe = ggml_rope_ext(ctx0, k_pe, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig,
+                                     freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
+                cb(k_pe, "k_pe", il);
+            }
 
             if (il == 0) {
                 // LONGCAT_ATTN_PATH_STAGE_SURFACE (localization, dump-only):
