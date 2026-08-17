@@ -288,6 +288,47 @@ static bool common_debug_longcat_dump_spec_for(
     return false;
 }
 
+// LONGCAT_RESID_WALK_DUMP (causal-reset experiment):
+//
+// When LONGCAT_RESID_WALK_DUMP_DIR is set, the whole-sequence [512 x 3072]
+// residual-stream boundaries are dumped in addition to (and independently of)
+// the LONGCAT_HIDDEN_DUMP_DIR final-row set:
+//
+//   l_out-(2N+1) -> logical_NN_full.bin  for N = 0..13
+//                   (N = 13 adds the previously-undumped logical layer 13,
+//                    physical block 27)
+//   h_nextn      -> result_norm_full.bin (the post-final-norm tensor BEFORE
+//                   the inp_out_ids row filter at longcat-flash-ngram.cpp;
+//                   the row-filtered node named result_norm is not
+//                   whole-sequence, h_nextn is the same values pre-filter)
+//
+// Everything is dump-only; production arithmetic is untouched.
+static bool common_debug_longcat_resid_walk_spec_for(
+        const ggml_tensor * t,
+        common_debug_longcat_dump_spec & spec) {
+    const std::string tensor_name = t->name;
+
+    spec.full_sequence = true;
+    spec.expect_ne0    = 3072;
+
+    if (tensor_name == "h_nextn") {
+        spec.filename = "result_norm_full.bin";
+        return true;
+    }
+
+    for (int logical = 0; logical < 14; ++logical) {
+        const int physical = 2 * logical + 1;
+        if (tensor_name == "l_out-" + std::to_string(physical)) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "logical_%02d_full.bin", logical);
+            spec.filename = buf;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 // NOTE: an early-abort hook (LONGCAT_ABORT_AFTER_TENSOR) was attempted here
 // and deliberately removed.
 //
@@ -318,6 +359,97 @@ static bool common_debug_longcat_wants_dump(const ggml_tensor * t) {
     common_debug_longcat_dump_spec spec;
 
     return common_debug_longcat_dump_spec_for(t, spec);
+}
+
+static bool common_debug_longcat_wants_resid_walk_dump(const ggml_tensor * t) {
+    const char * dump_dir = std::getenv("LONGCAT_RESID_WALK_DUMP_DIR");
+
+    if (dump_dir == nullptr || dump_dir[0] == '\0') {
+        return false;
+    }
+
+    common_debug_longcat_dump_spec spec;
+
+    return common_debug_longcat_resid_walk_spec_for(t, spec);
+}
+
+// LONGCAT_RESID_INJECT (causal-reset experiment -- oracle reset ONLY):
+//
+// When LONGCAT_RESID_INJECT_DIR is set, the logical-layer-0 output l_out-1
+// (the [512 x 3072] F32 residual-stream boundary proven to be a complete
+// causal cut: the residual stream is the only mutable inter-layer carrier on
+// both the HF and C++ sides) is OVERWRITTEN with the HF full-sequence oracle
+// logical_00_oracle.bin immediately after the node computes and before any
+// dependent executes. This is NOT an arithmetic change and NOT evidence about
+// C++ block quality; it answers one causal question: with the exact HF
+// logical-layer-0 output supplied to the downstream C++ trunk, how much
+// divergence does the downstream trunk itself regenerate?
+//
+// The oracle file's SHA256 is verified by the run-harness preflight; here the
+// exact byte size, type, and contiguity are enforced, and any failure aborts
+// the process (exit 87) so a partial injection can never produce a
+// plausible-looking capture. The dump path runs AFTER injection in the eval
+// callback, so the walk dump logical_00_full.bin records the injected bytes
+// and serves as the byte-exact landing gate.
+static bool common_debug_longcat_wants_resid_inject(const ggml_tensor * t) {
+    const char * dir = std::getenv("LONGCAT_RESID_INJECT_DIR");
+    if (dir == nullptr || dir[0] == '\0') {
+        return false;
+    }
+    return strcmp(t->name, "l_out-1") == 0;
+}
+
+static void common_debug_maybe_inject_longcat_resid(ggml_tensor * t) {
+    const char * dir = std::getenv("LONGCAT_RESID_INJECT_DIR");
+    if (dir == nullptr || dir[0] == '\0') {
+        return;
+    }
+    if (strcmp(t->name, "l_out-1") != 0) {
+        return;
+    }
+
+    constexpr size_t expect_nbytes = (size_t) 512 * 3072 * 4;
+
+    if (t->type != GGML_TYPE_F32 || !ggml_is_contiguous(t) ||
+        ggml_nbytes(t) != expect_nbytes ||
+        t->ne[0] != 3072 || t->ne[1] != 512) {
+        LOG_ERR(
+            "LONGCAT_RESID_INJECT ABORT: %s type=%s contig=%d nbytes=%zu "
+            "ne={%lld,%lld,%lld,%lld} (expected F32 contiguous %zu, ne 3072x512)\n",
+            t->name, ggml_type_name(t->type),
+            ggml_is_contiguous(t) ? 1 : 0,
+            ggml_nbytes(t),
+            (long long) t->ne[0], (long long) t->ne[1],
+            (long long) t->ne[2], (long long) t->ne[3],
+            expect_nbytes);
+        common_log_flush(common_log_main());
+        std::exit(87);
+    }
+
+    static std::vector<uint8_t> cache;
+
+    if (cache.empty()) {
+        const std::string path = std::string(dir) + "/logical_00_oracle.bin";
+        std::ifstream f(path, std::ios::binary);
+        if (!f) {
+            LOG_ERR("LONGCAT_RESID_INJECT ABORT: cannot open %s\n", path.c_str());
+            common_log_flush(common_log_main());
+            std::exit(87);
+        }
+        cache.assign(std::istreambuf_iterator<char>(f),
+                     std::istreambuf_iterator<char>());
+        if (cache.size() != expect_nbytes) {
+            LOG_ERR(
+                "LONGCAT_RESID_INJECT ABORT: %s is %zu bytes, expected %zu\n",
+                path.c_str(), cache.size(), expect_nbytes);
+            common_log_flush(common_log_main());
+            std::exit(87);
+        }
+    }
+
+    ggml_backend_tensor_set(t, cache.data(), 0, expect_nbytes);
+    LOG_INF("LONGCAT_RESID_INJECT: %s <- logical_00_oracle.bin (%zu bytes)\n",
+            t->name, expect_nbytes);
 }
 
 // LONGCAT_ROPE_INJECT (Experiment R0 -- oracle-injection control ONLY):
@@ -413,19 +545,14 @@ static void common_debug_maybe_inject_longcat_rope(ggml_tensor * t) {
     }
 }
 
-static void common_debug_maybe_dump_longcat_hidden(
+// Shared writer for both dump families. `dump_dir` and `spec` are resolved by
+// the thin callers below; the body is the frozen final-row/full-sequence
+// writer, unchanged.
+static void common_debug_write_longcat_dump(
         uint8_t * data,
-        const ggml_tensor * t) {
-    const char * dump_dir = std::getenv("LONGCAT_HIDDEN_DUMP_DIR");
-    if (dump_dir == nullptr || dump_dir[0] == '\0') {
-        return;
-    }
-
-    common_debug_longcat_dump_spec spec;
-    if (!common_debug_longcat_dump_spec_for(t, spec)) {
-        return;
-    }
-
+        const ggml_tensor * t,
+        const char * dump_dir,
+        const common_debug_longcat_dump_spec & spec) {
     if (t->ne[0] != spec.expect_ne0 || t->ne[1] < 1 ||
         t->ne[2] != 1 || t->ne[3] != 1) {
         LOG_ERR(
@@ -567,6 +694,38 @@ static void common_debug_maybe_dump_longcat_hidden(
         ggml_is_contiguous(t) ? 1 : 0);
 }
 
+static void common_debug_maybe_dump_longcat_hidden(
+        uint8_t * data,
+        const ggml_tensor * t) {
+    const char * dump_dir = std::getenv("LONGCAT_HIDDEN_DUMP_DIR");
+    if (dump_dir == nullptr || dump_dir[0] == '\0') {
+        return;
+    }
+
+    common_debug_longcat_dump_spec spec;
+    if (!common_debug_longcat_dump_spec_for(t, spec)) {
+        return;
+    }
+
+    common_debug_write_longcat_dump(data, t, dump_dir, spec);
+}
+
+static void common_debug_maybe_dump_longcat_resid_walk(
+        uint8_t * data,
+        const ggml_tensor * t) {
+    const char * dump_dir = std::getenv("LONGCAT_RESID_WALK_DUMP_DIR");
+    if (dump_dir == nullptr || dump_dir[0] == '\0') {
+        return;
+    }
+
+    common_debug_longcat_dump_spec spec;
+    if (!common_debug_longcat_resid_walk_spec_for(t, spec)) {
+        return;
+    }
+
+    common_debug_write_longcat_dump(data, t, dump_dir, spec);
+}
+
 /**
  * GGML operations callback during the graph execution.
  *
@@ -602,13 +761,21 @@ bool common_debug_cb_eval(struct ggml_tensor * t, bool ask, void * user_data) {
     // not the tensor is covered by --tensor-filter.
     if (ask) {
         return matches_filter || common_debug_longcat_wants_dump(t) ||
-               common_debug_longcat_wants_rope_inject(t);
+               common_debug_longcat_wants_resid_walk_dump(t) ||
+               common_debug_longcat_wants_rope_inject(t) ||
+               common_debug_longcat_wants_resid_inject(t);
     }
 
     // LONGCAT_ROPE_INJECT (R0): overwrite the post-RoPE block-0 tensors with
     // the canonical HF targets before any dependent node executes. Must run
     // before the host copy below, which would otherwise snapshot stale data.
     common_debug_maybe_inject_longcat_rope(t);
+
+    // LONGCAT_RESID_INJECT (causal reset): overwrite l_out-1 with the HF
+    // full-sequence logical_00 oracle. Same ordering requirement: before the
+    // host copy, so the walk dump below records the injected bytes (landing
+    // gate) and every dependent consumes the reset state.
+    common_debug_maybe_inject_longcat_resid(t);
 
     char src1_str[128] = { 0 };
     if (src1) {
@@ -636,6 +803,7 @@ bool common_debug_cb_eval(struct ggml_tensor * t, bool ask, void * user_data) {
         // abort target that was requested only for its side effect still gets
         // written before evaluation stops.
         common_debug_maybe_dump_longcat_hidden(data, t);
+        common_debug_maybe_dump_longcat_resid_walk(data, t);
 
         if (matches_filter) {
             const bool saw_nan = common_debug_print_tensor(data, t->type, t->ne, t->nb, 3);
