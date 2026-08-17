@@ -1,0 +1,15 @@
+{
+  "bytes": 8388608,
+  "dtype": "float32-le",
+  "final_row_sha256": "4bc4afeceae7c0ee1e9eb3df84ed6c48ad64ce67be6eff019c66eec513a26e8b",
+  "max": 0.162109375,
+  "min": -0.1806640625,
+  "name": "attn_o_input",
+  "order": "token-major",
+  "sha256": "965760c8d6eca03f1a385bbe76bc23987a414dd7d1f7077b0ee4cf1ae306d24a",
+  "shape": [
+    512,
+    4096
+  ],
+  "source_dtype": "torch.bfloat16"
+}

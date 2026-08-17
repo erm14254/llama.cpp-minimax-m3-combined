@@ -1,0 +1,15 @@
+{
+  "bytes": 131072,
+  "dtype": "float32-le",
+  "final_row_sha256": "e6f3db32474d56d527051edd4e70861a3c17964397237fcbcdf12f9efc7a7e51",
+  "max": 1.0,
+  "min": -1.0,
+  "name": "rope_cos",
+  "order": "token-major",
+  "sha256": "8771da1ea77d102e07bbc08064e6da6226ab4c2cb2a195c25d197c35487d9bb2",
+  "shape": [
+    512,
+    64
+  ],
+  "source_dtype": "torch.bfloat16"
+}

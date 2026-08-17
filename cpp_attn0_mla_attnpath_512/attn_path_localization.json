@@ -1,0 +1,92 @@
+{
+  "first_real_segment": "S1_q_pe_rope",
+  "layout_proofs": {
+    "context_flatten": "C++ permute(0,2,1,3)+cont_2d, llama-graph.cpp:2845-2848, flattens [v=128, head=32, tok] with v fastest -> token row index head*128+v. HF transpose(1,2).contiguous().reshape (modeling:274) gives the same head*128+v. Identical; no permutation applied in S3.",
+    "rope_permutation_P": "HF apply_rotary_pos_emb_interleave (modeling:322-329) returns cat([q1*cos-q2*sin, q2*cos+q1*sin]) over even/odd slices; ggml NORM RoPE rotates pairs in place. CPP[2j]==HF[j], CPP[2j+1]==HF[32+j]; applied to S1/S2."
+  },
+  "s3_byte_exact_after_rounding": false,
+  "scales": {
+    "attn_scaling": 0.15781141572701202,
+    "mla_scale_kv_lora": 2.449489742783178,
+    "mla_scale_q_lora": 1.4142135623730951
+  },
+  "segments": {
+    "S1_q_pe_rope": {
+      "bf16_equal": 849362,
+      "bf16_mismatch": 199214,
+      "elements": 1048576,
+      "max_abs": 3.69073486328125,
+      "raw_equal": 6703,
+      "ref_on_bf16_lattice": 1048576,
+      "rel_rmse": 0.0006248242631259541,
+      "verdict": "REAL"
+    },
+    "S2_k_pe_rope": {
+      "bf16_equal": 26553,
+      "bf16_mismatch": 6215,
+      "elements": 32768,
+      "max_abs": 0.01693439483642578,
+      "raw_equal": 138,
+      "ref_on_bf16_lattice": 32768,
+      "rel_rmse": 0.0008583527701207692,
+      "verdict": "REAL"
+    },
+    "S2b_kv_cmpr_scaled": {
+      "bf16_equal": 262144,
+      "bf16_mismatch": 0,
+      "elements": 262144,
+      "max_abs": 0.0,
+      "raw_equal": 262144,
+      "ref_on_bf16_lattice": 262144,
+      "rel_rmse": 0.0,
+      "torch_numpy_reference_equal": 262144,
+      "verdict": "boundary-only (bf16(cpp) == ref exactly)"
+    },
+    "S3_context": {
+      "bf16_equal": 1061027,
+      "bf16_mismatch": 1036125,
+      "elements": 2097152,
+      "first_divergent_token": 0,
+      "max_abs": 0.0016407100483775139,
+      "per_head_rmse_max": 0.00012644627616704656,
+      "per_head_rmse_min": 2.1965517905218708e-05,
+      "raw_equal": 42,
+      "ref_on_bf16_lattice": 2097152,
+      "rel_rmse": 0.0038686567080917027,
+      "verdict": "REAL"
+    },
+    "S4a_analytic_wo_semantics": {
+      "bf16_equal": 1572864,
+      "bf16_mismatch": 0,
+      "elements": 1572864,
+      "max_abs": 0.0,
+      "note": "analytic only: torch bf16 matmul, not the actual C++/ggml/cuBLAS wo execution",
+      "raw_equal": 1572864,
+      "ref_on_bf16_lattice": 1572864,
+      "rel_rmse": 0.0,
+      "verdict": "boundary-only (bf16(cpp) == ref exactly)"
+    },
+    "S4b_wo_input_error": {
+      "bf16_equal": 1061027,
+      "bf16_mismatch": 1036125,
+      "elements": 2097152,
+      "max_abs": 0.00164794921875,
+      "note": "quantifies the wo INPUT error inherited from S3",
+      "raw_equal": 1061027,
+      "ref_on_bf16_lattice": 2097152,
+      "rel_rmse": 0.003964354907770855,
+      "verdict": "REAL"
+    },
+    "S4c_real_wo_on_cpp_context": {
+      "bf16_equal": 522966,
+      "bf16_mismatch": 1049898,
+      "elements": 1572864,
+      "max_abs": 0.004406079649925232,
+      "note": "real ggml wo execution on the DIVERGENT C++ context; isolates the wo boundary only if S3 were byte-exact (it is NOT)",
+      "raw_equal": 12,
+      "ref_on_bf16_lattice": 1572864,
+      "rel_rmse": 0.004759003129881009,
+      "verdict": "REAL"
+    }
+  }
+}

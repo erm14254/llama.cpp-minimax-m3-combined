@@ -51,8 +51,17 @@ isolates the scale-boundary contribution.
   pass/fail gate once KV arithmetic changes — the residual is causally
   downstream of K/V and must move.
 
-After Experiment B: read the surviving `o_proj` remainder (candidates in HF
-source order: bf16 cos/sin RoPE, KV-cache dtype semantics, softmax
-`.to(query.dtype)`, absorption order, `wo` GEMM). Still forbidden until then:
-MLP/MoE work, production FA patch, repaired 2050 run, widening any frozen
-criterion.
+**Update 2026-08-17 (localization complete):** Experiments A and B passed all
+gates, and the measurement-only S1→S4 localization identified the surviving
+`o_proj` remainder's first genuine divergence as **RoPE (H1)** — HF computes
+rotary with BF16 cos/sin and BF16 elementwise arithmetic while ggml uses F32
+throughout. The 512-wide compressed-KV cache input is byte-exact (S2b); the
+`wo` boundary is analytically byte-exact plain bf16-linear (S4a); H3/H4
+(softmax/ordering) remain bracketed inside S3, unreachable until RoPE parity
+exists. See the final addendum of `STATUS_2026-08-17.md`.
+
+**Immediate next action:** design the block-0 RoPE precision experiment
+(HF BF16 cos/sin + BF16 elementwise semantics for `q_pe`/`k_pe` at `il == 0`),
+hard-gated byte-exact on the recorded S1/S2 references, then re-measure S3
+with clean inputs. Still forbidden: MLP/MoE work, production FA patch,
+repaired 2050 run, widening any frozen criterion.

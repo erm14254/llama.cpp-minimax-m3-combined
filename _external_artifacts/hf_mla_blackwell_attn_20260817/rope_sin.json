@@ -1,0 +1,15 @@
+{
+  "bytes": 131072,
+  "dtype": "float32-le",
+  "final_row_sha256": "75aa936fca8ccaf1f894bec0685710adb4c677fac97f47e11c6758f5dad15c0a",
+  "max": 1.0,
+  "min": -1.0,
+  "name": "rope_sin",
+  "order": "token-major",
+  "sha256": "5c5dede92d05f23dfab1a27285685f61e5596df888dd429fae6d8b6591b7ff0a",
+  "shape": [
+    512,
+    64
+  ],
+  "source_dtype": "torch.bfloat16"
+}

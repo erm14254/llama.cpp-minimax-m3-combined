@@ -1,0 +1,15 @@
+{
+  "bytes": 6291456,
+  "dtype": "float32-le",
+  "final_row_sha256": "fd51e17671302bf649c06408a732690d9b1c5a9d776af0377318b7bc89a6a6f9",
+  "max": 0.1796875,
+  "min": -0.2373046875,
+  "name": "o_proj",
+  "order": "token-major",
+  "sha256": "3e0f7ee2564a3fdef8878549db48b873ecb22aa18e452785c8e3d5284abadd84",
+  "shape": [
+    512,
+    3072
+  ],
+  "source_dtype": "torch.bfloat16"
+}

@@ -1,0 +1,15 @@
+{
+  "bytes": 1179648,
+  "dtype": "float32-le",
+  "final_row_sha256": "f726babbeb051f5f73b11ca70c966ac4d03b4232fa2d56f55b48b022f45488f5",
+  "max": 10.625,
+  "min": -10.75,
+  "name": "kv_a_proj_with_mqa",
+  "order": "token-major",
+  "sha256": "513390418c9877fa46286d397db7c9c9fb6408852836fb7827106acd183ceecc",
+  "shape": [
+    512,
+    576
+  ],
+  "source_dtype": "torch.bfloat16"
+}
