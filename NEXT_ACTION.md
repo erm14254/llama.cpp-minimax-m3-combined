@@ -1,63 +1,58 @@
-# Next Action — Locate First MLA Divergence
+# Next Action — Staged KV Precision Experiments
 
-## Goal
+Updated 2026-08-17. The previous next action here — capture the HF block-0 MLA
+intermediates and locate the first true MLA divergence — is **complete and
+authoritative**. Full result: `STATUS_2026-08-17.md`. In short: the Q path is
+byte-exact to the HF Blackwell oracles; `kv_a_proj_with_mqa` is a pure BF16
+output boundary (294,912/294,912 elements after RNE rounding); the first
+genuine divergence is `kv_a_layernorm`, explained byte-exactly by HF RMSNorm
+cast semantics (`bf16( bf16(x*rsqrt(var+eps)) * w )`, eps=1e-6 **from source**
+— the sweep excludes 1e-5 but cannot distinguish 1e-6 from 1e-8).
 
-Two upstream boundaries are already exact to HF:
+## cuBLAS runtime contract — read before any run
 
-1. `inp_embd_ngram`
-2. physical block-0 `attn_norm-0`
+Authoritative C++ parity runs must resolve `cublas64_13.dll` to CUDA **v13.2**
+(cuBLAS **6.14.11.1330**). `ggml-cuda.dll` imports it by bare name and this
+machine's PATH lists `CUDA\v13.0\bin\x64` first. Pin session-locally by
+prepending `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\bin\x64`
+to the **child process** PATH (never the machine-wide PATH) and verify the
+loaded module path + version from the live process. Wrong-runtime signature:
+anchors `d0e9edc8…` / `a1c4c20c…` pass while the residual is `49d729e1…`.
 
-The next error is inside MLA. Stop guessing precision patches and measure the real intermediate tensors.
+## The staged experiments
 
-## HF full-sequence 512-token surfaces
+**Experiment A** — one arithmetic commit, `il == 0` KV branch of
+`src/models/longcat-flash-ngram.cpp` only, mirroring the accepted Q-side
+pattern:
 
-Capture final-token outputs from `model.model.layers[0].self_attn[0]` for:
+1. Full-576 BF16 roundtrip on `kv_cmpr_pe` after the GEMM, before the
+   split views (HF Linear output is BF16; split happens after).
+2. KV RMSNorm cast semantics: `rms_norm(1e-6)` → BF16 → F32 → `ggml_mul(w)` →
+   BF16, callbacks on the post-round tensors.
 
-- `q_a_proj`
-- `q_a_layernorm`
-- `q_b_proj`
-- `kv_a_proj_with_mqa`
-- `kv_a_layernorm`
-- `o_proj`
+Hard byte-exact gates: anchors `d0e9edc8…` / `a1c4c20c…` and the Q trio
+`ddf69fe4…` / `956bd3e8…` / `4f3b647b…` unchanged, and the two KV surfaces
+must equal the HF oracles:
 
-Requirements:
+- `kv_a_proj_with_mqa.bin` = `513390418c9877fa46286d397db7c9c9fb6408852836fb7827106acd183ceecc`
+- `kv_a_layernorm.bin` = `b44cc101b03b11d96c0d9c52613f7469141dd7786b8128f93e3b7e912c550373`
 
-- model: `D:\LongCat-Flash-Lite-Sparse-Uncensored-Heretic-Native-MTP-And-LSA-Preserved`
-- frozen runtime SHA: `a3bc31616c1f0ddff9f195cbc78f4561a40187c50fe3bf29e2e98d9228947428`
-- sequence: 512 copies of raw token ID 483
-- token-stream SHA: `4893d78751e8577f817da21a7e00718c7c14e0d80732e1b7e4da36da6677821c`
-- model dtype BF16 on CUDA
-- TF32 disabled
-- `use_cache=False`
-- capture full-sequence module outputs, then save only final position as little-endian F32
+**Experiment B** — only if A passes: post-scale BF16 round after
+`mla_scale_kv` (HF scales in bf16; source-supported, ungated by any capture
+surface). All A gates must still pass; the `o_proj`/residual delta(A→B)
+isolates the scale-boundary contribution.
 
-A draft `capture_longcat_hf_attn0_mla_stages.py` may exist locally. It had not been executed at handoff. Inspect/hash/`py_compile` it before use; do not assume a SHA.
+## Baselines
 
-## After HF capture
+- HF attn0 residual (the target): `2e9b65ebbdf015899af9f18add5587dbc78735c121ac009fccbd0a0fb4cbd177`
+- `2c804a35a0397e380d77f08d2a7ffd11fc6e4672722c31a98f7f96620c2a4a4e` is the
+  **immutable old-arithmetic baseline** (provenance: `pre-gate4` frozen dir,
+  committed `SHA256SUMS.txt`, `STATUS_2026-08-17.md`). It is retired as a
+  pass/fail gate once KV arithmetic changes — the residual is causally
+  downstream of K/V and must move.
 
-Add callback-only C++ surfaces for corresponding Q/KV stages. Do not alter arithmetic in the same step.
-
-Interpret first divergence:
-
-- `q_a_proj` diverges: Q-A weight/input/GEMM rounding.
-- q_a projection matches, Q-A norm diverges: epsilon/precision boundary.
-- Q path matches through q_b: compressed KV path next.
-- Q/KV pre-attention stages match: RoPE/scaling/absorption/attention/o_proj.
-
-## Frozen residual baselines
-
-HF attn0 residual:
-
-`2e9b65ebbdf015899af9f18add5587dbc78735c121ac009fccbd0a0fb4cbd177`
-
-Best exact-main-norm C++:
-
-`8ea9b911d4810982af4186e66562cb5f316e7a0a9c2439101f6654eb10887dfd`
-
-HF-epsilon-only C++:
-
-`c2b8473b9d044ba50a978e7249a694b81f111cd5bc434b585ecd776a922c2199`
-
-Current Q-BF16 diagnostic C++:
-
-`2c804a35a0397e380d77f08d2a7ffd11fc6e4672722c31a98f7f96620c2a4a4e`
+After Experiment B: read the surviving `o_proj` remainder (candidates in HF
+source order: bf16 cos/sin RoPE, KV-cache dtype semantics, softmax
+`.to(query.dtype)`, absorption order, `wo` GEMM). Still forbidden until then:
+MLP/MoE work, production FA patch, repaired 2050 run, widening any frozen
+criterion.

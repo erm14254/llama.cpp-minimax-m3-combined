@@ -46,7 +46,19 @@ HF-epsilon-only residual: `c2b8473b9d044ba50a978e7249a694b81f111cd5bc434b585ecd7
 
 Current Q-BF16 residual: `2c804a35a0397e380d77f08d2a7ffd11fc6e4672722c31a98f7f96620c2a4a4e`
 
+> **Status 2026-08-17:** `2c804a35…` is preserved permanently as the immutable
+> old-arithmetic baseline (provenance: `pre-gate4` frozen dir, committed
+> `SHA256SUMS.txt`, `STATUS_2026-08-17.md`) but is **retired as a pass/fail
+> gate** once KV arithmetic changes. Successor byte-exact gates are defined in
+> `STATUS_2026-08-17.md`: upstream anchors and the Q trio unchanged, and the
+> two KV surfaces must equal the HF oracle hashes `513390…` / `b44cc101…`.
+
 ## Immediate next action
+
+> **Superseded 2026-08-17:** the HF and C++ block-0 MLA captures below are
+> complete and authoritative on the Win11 RTX PRO 6000 workstation. See
+> `NEXT_ACTION.md` and `STATUS_2026-08-17.md` for the current next action
+> (staged KV precision experiments A/B).
 
 Do **not** guess another BF16 patch.
 
@@ -65,6 +77,16 @@ Then add **callback-only** C++ dumps for matching boundaries and locate the firs
 
 ## Guardrails
 
+- **cuBLAS runtime contract (Win11 RTX PRO 6000):** authoritative C++ parity
+  runs must resolve `cublas64_13.dll` to CUDA **v13.2** (cuBLAS
+  **6.14.11.1330**). `ggml-cuda.dll` imports it by bare name and this machine's
+  PATH lists `CUDA\v13.0\bin\x64` first, so unpinned runs silently load cuBLAS
+  6.14.11.1300. Pin session-locally by prepending
+  `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\bin\x64` to the
+  **child process** PATH; never change the machine-wide PATH. Verify the
+  actually loaded module (path **and** file version) from the live process, not
+  just PATH order. Known wrong-runtime signature: upstream anchors
+  (`d0e9edc8…`, `a1c4c20c…`) pass while the residual comes out `49d729e1…`.
 - Never widen frozen logit criterion: every logit must satisfy `abs(cpp-hf) <= 0.5 + 0.05*abs(hf)` and top1 must agree.
 - No repaired 2050 run until 512 numerical parity is resolved.
 - No production FA patch yet.
