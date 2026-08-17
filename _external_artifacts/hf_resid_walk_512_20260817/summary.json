@@ -1,0 +1,134 @@
+{
+  "description": "HF full-sequence residual-walk capture (causal-reset experiment)",
+  "runtime_sha256": "a3bc31616c1f0ddff9f195cbc78f4561a40187c50fe3bf29e2e98d9228947428",
+  "tokens_bin_sha256": "4893d78751e8577f817da21a7e00718c7c14e0d80732e1b7e4da36da6677821c",
+  "sequence_length": 512,
+  "hidden_size": 3072,
+  "layout": "token-major [512, 3072] float32-le",
+  "torch": "2.13.0+cu132",
+  "transformers": "5.15.0",
+  "tf32_disabled": true,
+  "same_pass_norm_gates": "norm_in == layers[13].out and norm_out == hidden_states[14], bytewise",
+  "surfaces": {
+    "logical_00_oracle": {
+      "sha256": "d810f93c50ea42c5909ab289ebf62a0c5629f40530d2e5fc706dde67f0eaf763",
+      "row511_sha256": "5292e88a34a9c6625668309f6b06a352efe6b6254c383fdc32eea5a2018fa2ff",
+      "row511_gate": "PASS",
+      "min": -15.25,
+      "max": 17.875,
+      "rms": 0.10572163639877703
+    },
+    "logical_01": {
+      "sha256": "85097c18565f04c0e0676146ae7ee3f5ffc674789db6f17c028606595d6d16e2",
+      "row511_sha256": "48d23a758c0a7e806c2521560bf0b6245f3e6031039f53c7b0a4169c5fc426a2",
+      "row511_gate": "PASS",
+      "min": -88.0,
+      "max": 89.0,
+      "rms": 0.2830075659405142
+    },
+    "logical_02": {
+      "sha256": "f9067fe5c8d07662d68eceae344d9c59006c32f94858363f1e0a9da5a53b83d1",
+      "row511_sha256": "e8bf6f3a9019fff470fe57bb0e0fde1377d366a14e9a6855b46f3ef2534ae895",
+      "row511_gate": "PASS",
+      "min": -222.0,
+      "max": 216.0,
+      "rms": 0.6028616862656506
+    },
+    "logical_03": {
+      "sha256": "259d1d9a5073ae84317e5ae792f5701e0725559a4b64754c335d70dcd8eab277",
+      "row511_sha256": "fd40a04bb0b2f8cd17193cb04f75737459435915203962b1f8d764906d05a785",
+      "row511_gate": "PASS",
+      "min": -300.0,
+      "max": 288.0,
+      "rms": 0.7906768289288387
+    },
+    "logical_04": {
+      "sha256": "8f37188c4aa803fffd8a96705da21935b9199a2686a6395ac3118fcf705029f1",
+      "row511_sha256": "f61901209f3884d5db7dda5204b41d17de7760148ab6318a4f3af282085a70b9",
+      "row511_gate": "PASS",
+      "min": -380.0,
+      "max": 364.0,
+      "rms": 0.9698397754967057
+    },
+    "logical_05": {
+      "sha256": "cc274e00bc6e461d0ea39f3b9bdfb36779a123dc6fa78bf11389a721d1ea9b72",
+      "row511_sha256": "5fec605d82963e8f7859a92c377036b7e9ff8747927e0f1080c3dada0cec0400",
+      "row511_gate": "PASS",
+      "min": -448.0,
+      "max": 428.0,
+      "rms": 1.1593016913603753
+    },
+    "logical_06": {
+      "sha256": "73b43455931345b05ee32c07c7b816cdfbfaf944789f28a2089a8f4a41a58ec5",
+      "row511_sha256": "2bdde1a5e89c25ec87d926d8ef96e2b5e5ba13b3e5a8bcfccef497479e18924a",
+      "row511_gate": "PASS",
+      "min": -506.0,
+      "max": 484.0,
+      "rms": 1.3427826310143596
+    },
+    "logical_07": {
+      "sha256": "93ec665b6220b2e03a97bd87026db1fdd7ca8adea9f82d5889bc5046ce2f5f68",
+      "row511_sha256": "3c7c09108205b28a55aeded4cae721f0448803d4c2be5033af026998e9ce4e43",
+      "row511_gate": "PASS",
+      "min": -556.0,
+      "max": 536.0,
+      "rms": 1.5476455975884174
+    },
+    "logical_08": {
+      "sha256": "064fd85c8194f9c1a8fc8b4b3e26a91a7c86cbbb7f683d018054ff206e6c221b",
+      "row511_sha256": "b1f934886eb95ffd342064f5f10008e878d7abce918b9a0b62f2c31ff7d37350",
+      "row511_gate": "PASS",
+      "min": -608.0,
+      "max": 584.0,
+      "rms": 1.7379765099595716
+    },
+    "logical_09": {
+      "sha256": "857e56fb1b11aaf91075a59a8b3e14c981d88d59741d69c400d538848637deef",
+      "row511_sha256": "8a4d375eae758d9fd786f122c7d90371f0836d052a37ed1e4bdc05a95a2577cb",
+      "row511_gate": "PASS",
+      "min": -608.0,
+      "max": 588.0,
+      "rms": 1.8840720290881465
+    },
+    "logical_10": {
+      "sha256": "f04cf93cfcc79f1446874994e70a8f0c60752782d03c899fe8f84d56fdb79eb2",
+      "row511_sha256": "b2f160a859371974a694fd6ead8971ce605fe2ae753868e798bb279bffa3ec39",
+      "row511_gate": "PASS",
+      "min": -652.0,
+      "max": 628.0,
+      "rms": 2.142731886047395
+    },
+    "logical_11": {
+      "sha256": "5a85d38090915e033570b6c52cc7325475ae5a50df95ec0890dace195f63c920",
+      "row511_sha256": "17bd4cbc8ecba464fe06822d0f71986b25373f4cfae5f76c93f69e0619b96ed4",
+      "row511_gate": "PASS",
+      "min": -652.0,
+      "max": 632.0,
+      "rms": 2.490994205974861
+    },
+    "logical_12": {
+      "sha256": "b0b186713be9a502e8805e99d89e4b9053ff536386782e7de5d71dafdaf87774",
+      "row511_sha256": "45a7656f15350f2f85b611f4768828db1d77ecbaf7aa42ff839600ab99e843cc",
+      "row511_gate": "PASS",
+      "min": -77.0,
+      "max": 60.0,
+      "rms": 2.863325844210577
+    },
+    "logical_13": {
+      "sha256": "d6d79464b3dc28c1c8b018a841157f37ef79a2291ac5d4abed6c660201119437",
+      "row511_sha256": "0739efe6fe9bab4a3ebf467e248ef286fc1b549497837beeb22d573c6277b1be",
+      "row511_gate": "recorded-fresh",
+      "min": -56.75,
+      "max": 55.5,
+      "rms": 2.810535637258021
+    },
+    "result_norm_full": {
+      "sha256": "0792f2810926784df14a529042568fc5b3a9cb20e8a08f698d806544c149b245",
+      "row511_sha256": "caac1af10e7d445729e84379a39bd7ee47e10a69525575712ab78050fa9a533a",
+      "row511_gate": "PASS",
+      "min": -23.0,
+      "max": 18.75,
+      "rms": 1.9940625046528229
+    }
+  }
+}
