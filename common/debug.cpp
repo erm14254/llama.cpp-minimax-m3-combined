@@ -316,6 +316,27 @@ static bool common_debug_longcat_resid_walk_spec_for(
         return true;
     }
 
+    // Logical-block-1 sub-boundaries (physical blocks 2-3) for the
+    // sub-boundary localization under the logical_00 reset. attn_norm-2's
+    // input is the injected oracle in the reset run, so that surface is an
+    // operator-isolated RMSNorm measurement.
+    static const struct {
+        const char * name;
+        const char * file;
+    } block1_surfaces[] = {
+        { "attn_norm-2", "block1_attn0_norm_full.bin"  },
+        { "ffn_inp-2",   "block1_attn0_resid_full.bin" },
+        { "l_out-2",     "block1_mlp0_resid_full.bin"  },
+        { "attn_norm-3", "block1_attn1_norm_full.bin"  },
+        { "ffn_inp-3",   "block1_attn1_resid_full.bin" },
+    };
+    for (const auto & surface : block1_surfaces) {
+        if (tensor_name == surface.name) {
+            spec.filename = surface.file;
+            return true;
+        }
+    }
+
     for (int logical = 0; logical < 14; ++logical) {
         const int physical = 2 * logical + 1;
         if (tensor_name == "l_out-" + std::to_string(physical)) {
