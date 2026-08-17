@@ -1,0 +1,11 @@
+{
+  "tensor": "kv_a_norm-0",
+  "shape": [512, 512],
+  "order": "token-major",
+  "dtype": "float32-le",
+  "bytes": 1048576,
+  "source_type": "bf16",
+  "source_contiguous": true,
+  "source_ne": [512, 512, 1, 1],
+  "source_nb": [2, 1024, 524288, 524288]
+}
