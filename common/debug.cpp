@@ -575,6 +575,94 @@ static void common_debug_maybe_inject_longcat_attn_norm2(ggml_tensor * t) {
             t->name, expect_nbytes);
 }
 
+// LONGCAT_PROJ_INJECT (quad-reset experiment -- exact projection-output
+// resets): when LONGCAT_PROJ_INJECT_DIR is set, the block-2 root projection
+// outputs q_a_proj-2 and kv_cmpr_pe-2 are OVERWRITTEN with the captured HF
+// full-sequence values immediately after the nodes compute. Combined with
+// the l_out-1 and attn_norm-2 resets, the LoRA norms become the next
+// operators with byte-exact activation inputs. q_a_proj-2 feeds build_norm
+// directly; kv_cmpr_pe-2's buffer is read by the kv_cmpr / k_pe views, so
+// the overwrite propagates to all view consumers (R0 pattern). Same
+// fail-closed contract; the walk dumps of both nodes are the landing gates.
+static const struct {
+    const char * name;
+    const char * file;
+    size_t       nbytes;
+    int64_t      ne0;
+} longcat_proj_inject_targets[] = {
+    { "q_a_proj-2",   "q_a_proj.bin",           (size_t) 512 * 1536 * 4, 1536 },
+    { "kv_cmpr_pe-2", "kv_a_proj_with_mqa.bin", (size_t) 512 *  576 * 4,  576 },
+};
+
+static bool common_debug_longcat_wants_proj_inject(const ggml_tensor * t) {
+    const char * dir = std::getenv("LONGCAT_PROJ_INJECT_DIR");
+    if (dir == nullptr || dir[0] == '\0') {
+        return false;
+    }
+    for (const auto & target : longcat_proj_inject_targets) {
+        if (strcmp(t->name, target.name) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void common_debug_maybe_inject_longcat_proj(ggml_tensor * t) {
+    const char * dir = std::getenv("LONGCAT_PROJ_INJECT_DIR");
+    if (dir == nullptr || dir[0] == '\0') {
+        return;
+    }
+
+    static std::vector<uint8_t> cache[2];
+
+    for (int i = 0; i < 2; ++i) {
+        const auto & target = longcat_proj_inject_targets[i];
+        if (strcmp(t->name, target.name) != 0) {
+            continue;
+        }
+
+        if (t->type != GGML_TYPE_F32 || !ggml_is_contiguous(t) ||
+            ggml_nbytes(t) != target.nbytes ||
+            t->ne[0] != target.ne0 || t->ne[1] != 512) {
+            LOG_ERR(
+                "LONGCAT_PROJ_INJECT ABORT: %s type=%s contig=%d nbytes=%zu "
+                "ne={%lld,%lld,%lld,%lld} (expected F32 contiguous %zu, ne %lldx512)\n",
+                t->name, ggml_type_name(t->type),
+                ggml_is_contiguous(t) ? 1 : 0,
+                ggml_nbytes(t),
+                (long long) t->ne[0], (long long) t->ne[1],
+                (long long) t->ne[2], (long long) t->ne[3],
+                target.nbytes, (long long) target.ne0);
+            common_log_flush(common_log_main());
+            std::exit(87);
+        }
+
+        if (cache[i].empty()) {
+            const std::string path = std::string(dir) + "/" + target.file;
+            std::ifstream f(path, std::ios::binary);
+            if (!f) {
+                LOG_ERR("LONGCAT_PROJ_INJECT ABORT: cannot open %s\n", path.c_str());
+                common_log_flush(common_log_main());
+                std::exit(87);
+            }
+            cache[i].assign(std::istreambuf_iterator<char>(f),
+                            std::istreambuf_iterator<char>());
+            if (cache[i].size() != target.nbytes) {
+                LOG_ERR(
+                    "LONGCAT_PROJ_INJECT ABORT: %s is %zu bytes, expected %zu\n",
+                    path.c_str(), cache[i].size(), target.nbytes);
+                common_log_flush(common_log_main());
+                std::exit(87);
+            }
+        }
+
+        ggml_backend_tensor_set(t, cache[i].data(), 0, target.nbytes);
+        LOG_INF("LONGCAT_PROJ_INJECT: %s <- %s (%zu bytes)\n",
+                t->name, target.file, target.nbytes);
+        return;
+    }
+}
+
 // LONGCAT_ROPE_INJECT (Experiment R0 -- oracle-injection control ONLY):
 //
 // When LONGCAT_ROPE_INJECT_DIR is set, the post-RoPE physical block-0 tensors
@@ -887,7 +975,8 @@ bool common_debug_cb_eval(struct ggml_tensor * t, bool ask, void * user_data) {
                common_debug_longcat_wants_resid_walk_dump(t) ||
                common_debug_longcat_wants_rope_inject(t) ||
                common_debug_longcat_wants_resid_inject(t) ||
-               common_debug_longcat_wants_attn_norm2_inject(t);
+               common_debug_longcat_wants_attn_norm2_inject(t) ||
+               common_debug_longcat_wants_proj_inject(t);
     }
 
     // LONGCAT_ROPE_INJECT (R0): overwrite the post-RoPE block-0 tensors with
@@ -904,6 +993,10 @@ bool common_debug_cb_eval(struct ggml_tensor * t, bool ask, void * user_data) {
     // LONGCAT_ATTN_NORM2_INJECT (dual reset): overwrite attn_norm-2 with the
     // HF layer-1 attn0_norm oracle, same ordering requirement.
     common_debug_maybe_inject_longcat_attn_norm2(t);
+
+    // LONGCAT_PROJ_INJECT (quad reset): overwrite the block-2 root
+    // projection outputs with the captured HF values, same ordering.
+    common_debug_maybe_inject_longcat_proj(t);
 
     char src1_str[128] = { 0 };
     if (src1) {
