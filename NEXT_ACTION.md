@@ -182,16 +182,39 @@ F32/eps-1e-5 model to ≤4-ulp reduction noise on both. The exact-predecessor
 intervention improved the norm surfaces (65.0→73.8% and 60.0→73.5%
 bf16-match) — a real but minority share; the cast+eps composite dominates.
 
-**Awaiting review — natural next decisions (nothing begun):** (a) whether
-to draft the reviewed arithmetic plan for the trunk-norm/LoRA-norm
-semantics class (cast ordering + eps), now causally grounded at blocks 1–2
-with per-factor magnitudes; (b) whether to continue the measurement chain
-past the norms (next exact-input frontier: the post-norm/scale boundaries
-or the RoPE-composite/attention-core, each requiring its own narrowest
-reset design). Measurement-only until reviewed; still forbidden: any
-arithmetic change (incl. MLP/MoE, any generalization of block-0 A+B or the
-trunk RMSNorm semantics), production FA, 2050-token runs, widening any
-frozen criterion, production RoPE changes.
+**Update 2026-08-17 (hex reset COMPLETE — see the final addendum of
+`STATUS_2026-08-17.md`):** the exact norm-output resets were executed on
+top of the quad reset with every gate passing (landings 1–6 byte-exact;
+q_b weight raw-BF16 bit-identical 9,437,184/9,437,184 with bias absent
+both sides; `mla_scale_kv` f32-bit-identical `0x401cc471`; 42-name sweep).
+**Result: both frontier operators are BF16-EQUIVALENT from all-exact
+inputs and verified parameters — `q_b_proj-2` 3,145,728/3,145,728 and
+`kv_cmpr_scaled-2` 262,144/262,144 after output rounding — HF-equivalent
+at the BF16 output boundary / representation-boundary differences, not
+operator arithmetic failures. Being raw-different, NEITHER causally
+advances the frontier**; future advancement requires the narrowest
+exact-output predecessor resets first (designs recorded, not executed):
+exact HF `q_b_proj-2` reset before judging downstream Q/RoPE/absorption,
+exact target `kv_cmpr_scaled-2` reset before judging downstream
+KV/value/core. RoPE surfaces remain under the composite rule
+(observational: q 2.875e-3, k 1.279e-3); `kqv_out-2` remains behind the
+all-input rule (observational rel 4.540e-3, improved from 5.625e-3 under
+cleaner upstream). Emerging picture (descriptive): every operator made
+all-exact so far is HF-equivalent at the BF16 output boundary; the
+causally established block-2 divergence machinery is missing BF16
+representation boundaries + the norm composite (cast dominant, eps
+secondary) — mirroring block-0 A+B without assumption transfer.
+
+**Awaiting review — natural next decisions (nothing begun):** (a) draft
+the reviewed arithmetic plan for the representation-boundary +
+norm-composite class (now causally grounded at blocks 0–2 with per-factor
+magnitudes); (b) continue the measurement chain via the recorded
+predecessor-reset designs (exact `q_b_proj-2` / `kv_cmpr_scaled-2` output
+resets → judging RoPE-composite/absorption and the attention core under
+progressively exact inputs). Measurement-only until reviewed; still
+forbidden: any arithmetic change (incl. MLP/MoE, any generalization of
+block-0 A+B or the trunk RMSNorm semantics), production FA, 2050-token
+runs, widening any frozen criterion, production RoPE changes.
 
 The executed design (for the record):
 

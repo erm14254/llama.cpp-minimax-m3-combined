@@ -1,0 +1,157 @@
+{
+  "description": "Block-2 frontier under the hex reset: q_b_proj-2 and kv_cmpr_scaled-2",
+  "run_dir": "D:\\llama.cpp-longcat-claude\\cpp_resid_walk_inject4_b2_512",
+  "landings": {
+    "logical_00_full.bin": "d810f93c50ea42c5909ab289ebf62a0c5629f40530d2e5fc706dde67f0eaf763",
+    "block1_attn0_norm_full.bin": "afa16c6c3324387e9261c708cae044b8fcb08acda8c8f6315d2ba8d39a8f0fd7",
+    "block2_q_a_proj_full.bin": "32173b18459358494f943288b974ef7df70eb540ff9e366c720c14f250407a96",
+    "block2_kv_a_proj_full.bin": "28ea5b52221a94ddf780f04507f11aee7b6fc8617974f53d558424d41c470f3f",
+    "block2_q_a_norm_full.bin": "4c9792430fee2716b573ccf365617e537adf8305571e2a5a0b1a881c0c4de340",
+    "block2_kv_a_norm_full.bin": "c91991eb459352ec407aebcee5ee2b12e7b25db0bafd3e0462955a8f8144df6b"
+  },
+  "parameter_provenance": {
+    "q_b_weight": "raw-BF16 bit-identical 9437184/9437184 (GGUF ne [1536,6144] == HF [6144,1536])",
+    "bias": "absent on both sides (no HF bias keys under layers.1.self_attn.0; no GGUF blk.2.attn* bias)",
+    "mla_scale_kv": "identical f32 bits 0x401cc471 (cpp sqrtf(3072/512) == f32(float64 sqrt 6)); multiplication semantics known-answer-validated (block-0 S2b 909b7ee7)"
+  },
+  "frontier": {
+    "q_b_proj": {
+      "elements": 3145728,
+      "raw_equal": 82,
+      "bf16_cpp_equal_ref": 3145728,
+      "ref_on_bf16_lattice": 3145728,
+      "classification": "BF16-equivalent",
+      "rel_rmse": 0.0016566009033774363,
+      "max_abs": 0.124969482421875,
+      "first_divergent_token": 0,
+      "divergent_token_rows": 512,
+      "eligibility": "ELIGIBLE: activation = injected HF q_a_layernorm (landing 5); weight bit-identical; no bias"
+    },
+    "kv_cmpr_scaled": {
+      "elements": 262144,
+      "raw_equal": 0,
+      "bf16_cpp_equal_ref": 262144,
+      "ref_on_bf16_lattice": 262144,
+      "classification": "BF16-equivalent",
+      "rel_rmse": 0.0016305732036722212,
+      "max_abs": 0.0009710788726806641,
+      "first_divergent_token": 0,
+      "divergent_token_rows": 512,
+      "eligibility": "ELIGIBLE: input = injected HF kv_a_layernorm (landing 6); scale constant f32-identical"
+    }
+  },
+  "observational_context": {
+    "q_pe_rope": {
+      "elements": 1048576,
+      "raw_equal": 6,
+      "bf16_cpp_equal_ref": 637666,
+      "ref_on_bf16_lattice": 1048576,
+      "classification": "BF16-irreducible",
+      "rel_rmse": 0.002874852843806691,
+      "max_abs": 0.800628662109375,
+      "first_divergent_token": 0,
+      "divergent_token_rows": 512,
+      "non_attribution_note": "production-RoPE composite rule; no rotation attribution"
+    },
+    "k_pe_rope": {
+      "elements": 32768,
+      "raw_equal": 144,
+      "bf16_cpp_equal_ref": 26917,
+      "ref_on_bf16_lattice": 32768,
+      "classification": "BF16-irreducible",
+      "rel_rmse": 0.0012793354613400796,
+      "max_abs": 0.004767417907714844,
+      "first_divergent_token": 1,
+      "divergent_token_rows": 511,
+      "non_attribution_note": "production-RoPE composite rule; no rotation attribution"
+    },
+    "kqv_out": {
+      "elements": 2097152,
+      "raw_equal": 20,
+      "bf16_cpp_equal_ref": 750407,
+      "ref_on_bf16_lattice": 2097152,
+      "classification": "BF16-irreducible",
+      "rel_rmse": 0.004539558940107645,
+      "max_abs": 0.0025279298424720764,
+      "first_divergent_token": 0,
+      "divergent_token_rows": 512,
+      "non_attribution_note": "all-input rule NOT met (Q/K/V inputs not all exact); observational only"
+    }
+  },
+  "verdict": {
+    "Q_branch": "q_b_proj-2 is HF-equivalent at the BF16 output boundary / representation-boundary difference (raw-different). This does NOT causally advance the frontier; future advancement requires the narrowest exact-output predecessor reset first: exact HF q_b_proj-2 output reset before judging downstream Q/RoPE/absorption (design recorded, not executed)",
+    "KV_branch": "kv_cmpr_scaled-2 is HF-equivalent at the BF16 output boundary / representation-boundary difference (raw-different). This does NOT causally advance the frontier; future advancement requires the narrowest exact-output predecessor reset first: exact target kv_cmpr_scaled-2 reset before judging downstream KV/value/core behavior (design recorded, not executed)",
+    "kqv_gate": "kqv_out-2 not judged: all-input condition not met"
+  },
+  "caveats": [
+    "F32-carrier note: the C++ frontier inputs are F32 carriers of HF BF16-on-lattice values; any surviving difference includes dtype/kernel semantics.",
+    "BF16-equivalent but raw-different does NOT causally advance the frontier: the real C++ downstream graph consumes the off-lattice F32 output (representation-boundary difference, not operator arithmetic failure). Future advancement requires the narrowest exact-output predecessor reset first.",
+    "RoPE composite rule: production ggml angles differ from the captured HF cos/sin (known non-byte-exact), so rope surfaces localize at most to the production-RoPE composite / angle-generation state; rotation arithmetic is NOT attributed (R1 stands).",
+    "kqv_out-2: the all-input rule is NOT met (its Q/K/V inputs are not all exact) - observational only, no attribution either way."
+  ],
+  "provenance": {
+    "suffix": "b2",
+    "oracle2_sha256": "afa16c6c3324387e9261c708cae044b8fcb08acda8c8f6315d2ba8d39a8f0fd7",
+    "env_sweep_names": [
+      "LONGCAT_HIDDEN_DUMP_DIR",
+      "LONGCAT_ROPE_INJECT_DIR",
+      "LONGCAT_ROPE_ORACLE_DIR",
+      "LONGCAT_RESID_WALK_DUMP_DIR",
+      "LONGCAT_RESID_INJECT_DIR",
+      "LONGCAT_ATTN_NORM2_INJECT_DIR",
+      "LONGCAT_PROJ_INJECT_DIR",
+      "LONGCAT_NORM_INJECT_DIR",
+      "GGML_CUDA_ALLREDUCE",
+      "GGML_CUDA_CUBLAS_COMPUTE_TYPE",
+      "GGML_CUDA_DEVICES",
+      "GGML_CUDA_DISABLE_FUSION",
+      "GGML_CUDA_DISABLE_GRAPHS",
+      "GGML_CUDA_ENABLE_UNIFIED_MEMORY",
+      "GGML_CUDA_GRAPH_OPT",
+      "GGML_CUDA_NO_PINNED",
+      "GGML_CUDA_P2P",
+      "GGML_CUDA_PDL",
+      "GGML_CUDA_REGISTER_HOST",
+      "GGML_CUDA_VALIDATE_MUL_MAT_ID",
+      "GGML_CUDA_AR_BF16_THRESHOLD",
+      "GGML_CUDA_AR_COPY_CHUNK_BYTES",
+      "GGML_CUDA_AR_COPY_THRESHOLD",
+      "GGML_OP_OFFLOAD_MIN_BATCH",
+      "GGML_CPU_DISABLE_FUSION",
+      "GGML_BACKEND_PATH",
+      "GGML_TOTAL_THREADS",
+      "GGML_SCHED_DEBUG",
+      "GGML_SCHED_DEBUG_REALLOC",
+      "LLAMA_ATTN_ROT_DISABLE",
+      "LLAMA_GRAPH_REUSE_DISABLE",
+      "LLAMA_BATCH_DEBUG",
+      "LLAMA_GRAPH_INPUT_DEBUG",
+      "LLAMA_GRAPH_RESULT_DEBUG",
+      "LLAMA_KV_CACHE_DEBUG",
+      "LLAMA_DSV4_COMPRESS_DEBUG",
+      "LLAMA_TRACE",
+      "CUBLAS_LOGINFO_DBG",
+      "CUBLAS_LOGDEST_DBG",
+      "CUBLASLT_LOG_LEVEL",
+      "CUBLASLT_LOG_FILE",
+      "TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"
+    ],
+    "oracle3_sha256": "32173b18459358494f943288b974ef7df70eb540ff9e366c720c14f250407a96",
+    "exit_code": 0,
+    "oracle6_sha256": "c91991eb459352ec407aebcee5ee2b12e7b25db0bafd3e0462955a8f8144df6b",
+    "oracle4_sha256": "28ea5b52221a94ddf780f04507f11aee7b6fc8617974f53d558424d41c470f3f",
+    "binaries": {
+      "llama-common.dll": "9476e31f2ad7e820f2d824413a39272931bf39aeccfc71b588bbb16735f9ad8d",
+      "ggml-cuda.dll": "502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48",
+      "llama.dll": "97592bb7ad1338ef36fd608da19709ccd75a39bd04b5609324204e055c99a10c",
+      "llama-debug.exe": "df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0"
+    },
+    "oracle5_sha256": "4c9792430fee2716b573ccf365617e537adf8305571e2a5a0b1a881c0c4de340",
+    "invocation": "llama-debug.exe -m \"D:\\LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-GGUF-BF16\\LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-BF16-00001-of-00008.gguf\" -f \"D:\\llama.cpp-longcat-claude\\prompt_512_a.txt\" -c 4608 -b 4608 -ub 512 -fa off -ctk f32 -ctv f32 --no-warmup -fitt 4096 -v --tensor-filter \"^(q_a_proj|q_a_norm|q_b_proj|q_pe_rope|kv_cmpr_pe|k_pe_rope|kv_a_norm|kv_cmpr_scaled|kqv_out|attn_out|ffn_inp)-0$\"",
+    "mode": "inject4",
+    "oracle_sha256": "d810f93c50ea42c5909ab289ebf62a0c5629f40530d2e5fc706dde67f0eaf763",
+    "instrumentation_head": "b98070666a72ae44c7704d7a4b328eb1c7238cc0",
+    "cublas_version": "6.14.11.1330",
+    "cublas_module": "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\bin\\x64\\cublas64_13.dll"
+  }
+}
