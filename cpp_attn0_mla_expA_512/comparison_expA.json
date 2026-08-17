@@ -1,0 +1,115 @@
+{
+  "first_divergent_surface": "o_proj",
+  "surfaces": {
+    "kv_a_layernorm": {
+      "byte_equal": true,
+      "cosine": 0.9999999999999998,
+      "cpp_final_row_sha256": "24447e85dc70ff855071e47e3c341f232f3668e75b268d3fe0afdec966289ef6",
+      "cpp_sha256": "b44cc101b03b11d96c0d9c52613f7469141dd7786b8128f93e3b7e912c550373",
+      "divergent_rows": 0,
+      "exact_element_pct": 100.0,
+      "first_divergent_token": -1,
+      "hf_final_row_sha256": "24447e85dc70ff855071e47e3c341f232f3668e75b268d3fe0afdec966289ef6",
+      "hf_sha256": "b44cc101b03b11d96c0d9c52613f7469141dd7786b8128f93e3b7e912c550373",
+      "max_abs": 0.0,
+      "rel_rmse": 0.0,
+      "rmse": 0.0,
+      "shape": [
+        512,
+        512
+      ]
+    },
+    "kv_a_proj_with_mqa": {
+      "byte_equal": true,
+      "cosine": 0.9999999999999998,
+      "cpp_final_row_sha256": "f726babbeb051f5f73b11ca70c966ac4d03b4232fa2d56f55b48b022f45488f5",
+      "cpp_sha256": "513390418c9877fa46286d397db7c9c9fb6408852836fb7827106acd183ceecc",
+      "divergent_rows": 0,
+      "exact_element_pct": 100.0,
+      "first_divergent_token": -1,
+      "hf_final_row_sha256": "f726babbeb051f5f73b11ca70c966ac4d03b4232fa2d56f55b48b022f45488f5",
+      "hf_sha256": "513390418c9877fa46286d397db7c9c9fb6408852836fb7827106acd183ceecc",
+      "max_abs": 0.0,
+      "rel_rmse": 0.0,
+      "rmse": 0.0,
+      "shape": [
+        512,
+        576
+      ]
+    },
+    "o_proj": {
+      "byte_equal": false,
+      "cosine": 0.9999816271530927,
+      "cpp_final_row_sha256": "45e363bc310c5a537518d79cad286f41034df4a742dc85bb9e841445f0de160e",
+      "cpp_sha256": "55b4feb7b5d53e12ff857994944125bd05cf1ec82ee17b18ad8d9637b65fa1d6",
+      "divergent_rows": 512,
+      "exact_element_pct": 0.00019073486328125,
+      "first_divergent_row_max_abs": 0.002220168709754944,
+      "first_divergent_row_rmse": 0.00015013145840230607,
+      "first_divergent_token": 0,
+      "hf_final_row_sha256": "fd51e17671302bf649c06408a732690d9b1c5a9d776af0377318b7bc89a6a6f9",
+      "hf_sha256": "3e0f7ee2564a3fdef8878549db48b873ecb22aa18e452785c8e3d5284abadd84",
+      "max_abs": 0.0058602094650268555,
+      "rel_rmse": 0.006064031252062417,
+      "rmse": 0.00018334855995585245,
+      "shape": [
+        512,
+        3072
+      ]
+    },
+    "q_a_layernorm": {
+      "byte_equal": true,
+      "cosine": 0.9999999999999998,
+      "cpp_final_row_sha256": "3c7f84cd43bcf8dde07dc891d4b4b51d70878f3aa32e6a9ebc2eb835304895d4",
+      "cpp_sha256": "956bd3e87b02a89ad1e3dd71801decffd10103d37bade7c490836aedd384dd37",
+      "divergent_rows": 0,
+      "exact_element_pct": 100.0,
+      "first_divergent_token": -1,
+      "hf_final_row_sha256": "3c7f84cd43bcf8dde07dc891d4b4b51d70878f3aa32e6a9ebc2eb835304895d4",
+      "hf_sha256": "956bd3e87b02a89ad1e3dd71801decffd10103d37bade7c490836aedd384dd37",
+      "max_abs": 0.0,
+      "rel_rmse": 0.0,
+      "rmse": 0.0,
+      "shape": [
+        512,
+        1536
+      ]
+    },
+    "q_a_proj": {
+      "byte_equal": true,
+      "cosine": 0.9999999999999999,
+      "cpp_final_row_sha256": "1706d3a5084e3b337d671dd14ae6219e24f27fe42c242961cb4a0881eb841d42",
+      "cpp_sha256": "ddf69fe4d372184806d5941ca87c7a629149b15cdc1fa7f2ae1f81792dcf95ed",
+      "divergent_rows": 0,
+      "exact_element_pct": 100.0,
+      "first_divergent_token": -1,
+      "hf_final_row_sha256": "1706d3a5084e3b337d671dd14ae6219e24f27fe42c242961cb4a0881eb841d42",
+      "hf_sha256": "ddf69fe4d372184806d5941ca87c7a629149b15cdc1fa7f2ae1f81792dcf95ed",
+      "max_abs": 0.0,
+      "rel_rmse": 0.0,
+      "rmse": 0.0,
+      "shape": [
+        512,
+        1536
+      ]
+    },
+    "q_b_proj": {
+      "byte_equal": true,
+      "cosine": 1.0000000000000002,
+      "cpp_final_row_sha256": "7649483fdbaf6c1eb1a7b5d87fd2368961bd01999c9d3b081ad4144c32a2c28d",
+      "cpp_sha256": "4f3b647b62c60475fc03f023ce46a5c01951c45847ced2557b5692b2ed3e79b1",
+      "divergent_rows": 0,
+      "exact_element_pct": 100.0,
+      "first_divergent_token": -1,
+      "hf_final_row_sha256": "7649483fdbaf6c1eb1a7b5d87fd2368961bd01999c9d3b081ad4144c32a2c28d",
+      "hf_sha256": "4f3b647b62c60475fc03f023ce46a5c01951c45847ced2557b5692b2ed3e79b1",
+      "max_abs": 0.0,
+      "rel_rmse": 0.0,
+      "rmse": 0.0,
+      "shape": [
+        512,
+        6144
+      ]
+    }
+  }
+}
