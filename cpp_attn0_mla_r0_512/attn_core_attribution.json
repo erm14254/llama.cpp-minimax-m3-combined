@@ -1,0 +1,153 @@
+{
+  "meas_kqv_bf16_lattice": {
+    "elements": 2097152,
+    "equal": 108
+  },
+  "p0_weight_provenance": {
+    "attn_k_b": {
+      "best": "shape=(32, 512, 128) ^T",
+      "candidates": {
+        "shape=(32, 128, 512)": 2037,
+        "shape=(32, 512, 128) ^T": 2097152
+      },
+      "elements": 2097152,
+      "equal": 2097152
+    },
+    "attn_v_b": {
+      "best": "shape=(32, 128, 512)",
+      "candidates": {
+        "shape=(32, 128, 512)": 2097152,
+        "shape=(32, 512, 128) ^T": 1811
+      },
+      "elements": 2097152,
+      "equal": 2097152
+    },
+    "identical_under_reshape": true
+  },
+  "precision_state": {
+    "TORCH_ALLOW_TF32_CUBLAS_OVERRIDE": null,
+    "cuda_matmul_fp32_precision": "ieee",
+    "float32_matmul_precision": "highest",
+    "gpu": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+    "torch": "2.13.0+cu132"
+  },
+  "v7_meas_closure": {
+    "collapses_near_discrepancy": true,
+    "discrepancy_rel_rmse": 0.0002980762853808391,
+    "v7_vs_meas_rel_rmse": 0.001976867698881746
+  },
+  "v7_reference_reduction_discrepancy": {
+    "cosine": 0.9999840665250399,
+    "elements": 2097152,
+    "equal": 2074518,
+    "max_abs": 0.00048828125,
+    "rel_rmse": 0.0002980762853808391,
+    "rmse": 5.976860706402216e-06
+  },
+  "variants": {
+    "V1": {
+      "vs_oracle": {
+        "cosine": 0.9999852129173311,
+        "elements": 2097152,
+        "equal": 2097152,
+        "max_abs": 0.0,
+        "rel_rmse": 0.0,
+        "rmse": 0.0
+      }
+    },
+    "V2": {
+      "vs_oracle": {
+        "cosine": 0.9999706737934233,
+        "elements": 2097152,
+        "equal": 1577588,
+        "max_abs": 0.004150390625,
+        "rel_rmse": 0.005439897585284305,
+        "rmse": 0.0001090850392896603
+      }
+    },
+    "V3": {
+      "vs_oracle": {
+        "cosine": 0.9999933886536618,
+        "elements": 2097152,
+        "equal": 29,
+        "max_abs": 0.0009195283055305481,
+        "rel_rmse": 0.0024992349073413127,
+        "rmse": 5.011659388568603e-05
+      }
+    },
+    "V4": {
+      "vs_oracle": {
+        "cosine": 0.999993431075526,
+        "elements": 2097152,
+        "equal": 9233,
+        "max_abs": 0.000926777720451355,
+        "rel_rmse": 0.0024920726838613505,
+        "rmse": 4.9972971433707064e-05
+      }
+    },
+    "V5": {
+      "vs_meas": {
+        "cosine": 1.0000025225493838,
+        "elements": 2097152,
+        "equal": 3845,
+        "max_abs": 0.0014546886086463928,
+        "rel_rmse": 0.002956198685034167,
+        "rmse": 5.926838877214917e-05
+      },
+      "vs_oracle": {
+        "cosine": 0.9999933858794252,
+        "elements": 2097152,
+        "equal": 29,
+        "max_abs": 0.0009200572967529297,
+        "rel_rmse": 0.002499435673337506,
+        "rmse": 5.0120619800924215e-05
+      }
+    },
+    "V6": {
+      "vs_meas": {
+        "cosine": 0.9999930166678581,
+        "elements": 2097152,
+        "equal": 56,
+        "max_abs": 0.0016873609274625778,
+        "rel_rmse": 0.001995432450895878,
+        "rmse": 4.0006129109989934e-05
+      },
+      "vs_oracle": {
+        "cosine": 0.9999768102567602,
+        "elements": 2097152,
+        "equal": 1061304,
+        "max_abs": 0.00146484375,
+        "rel_rmse": 0.003954300618819067,
+        "rmse": 7.929469840275718e-05
+      }
+    },
+    "V7": {
+      "vs_meas": {
+        "cosine": 0.9999931805332768,
+        "elements": 2097152,
+        "equal": 65,
+        "max_abs": 0.0017789509147405624,
+        "rel_rmse": 0.001976867698881746,
+        "rmse": 3.963392715164308e-05
+      },
+      "vs_oracle": {
+        "cosine": 0.9999768760634727,
+        "elements": 2097152,
+        "equal": 1060758,
+        "max_abs": 0.00146484375,
+        "rel_rmse": 0.003951465019790761,
+        "rmse": 7.92378367750219e-05
+      }
+    },
+    "V8": {
+      "vs_oracle": {
+        "cosine": 0.9999701683650833,
+        "elements": 2097152,
+        "equal": 1531942,
+        "max_abs": 0.004150390625,
+        "rel_rmse": 0.005508436966976682,
+        "rmse": 0.00011045944405143877
+      }
+    }
+  }
+}
