@@ -1,0 +1,39 @@
+{
+  "known_answer_gates": {
+    "block0_rope_regeneration": "BYTE-EXACT (c8b9b6bfd8759f839c333e2b74f3775fe0b89bf82dc296497ee17990669dfc95 / 3ed6f4e731227d49952fc687aefb2ede9067eceec7eed39096d861634158bc1d)",
+    "block0_s2b_kv_cmpr_scaled": "BYTE-EXACT (909b7ee75366b0ee1d5a912c103762563236cd07c6fd8385ceb1e549f2a86ce8)"
+  },
+  "rope_interpretation_rule": "targets use captured HF cos/sin; production C++ uses ggml angles (known not byte-exact: sin 3,377/16,384) - divergence at q_pe_rope-2/k_pe_rope-2 localizes at most to the production-RoPE composite / angle-generation state, never rotation arithmetic (R1)",
+  "targets": {
+    "block2_k_pe_rope_target.bin": {
+      "dtype": "float32-le",
+      "name": "block2_k_pe_rope_target.bin",
+      "order": "token-major",
+      "sha256": "2d93a8e7c6ef7b8106f25b3fee791f08c1909f60d82e66cea4c3d91ce41d545d",
+      "shape": [
+        512,
+        64
+      ]
+    },
+    "block2_kv_cmpr_scaled_target.bin": {
+      "dtype": "float32-le",
+      "name": "block2_kv_cmpr_scaled_target.bin",
+      "order": "token-major",
+      "sha256": "22f1d6be4cee2b8704f973110876d62761e1891a95e0b71681f606f40a93d0c9",
+      "shape": [
+        512,
+        512
+      ]
+    },
+    "block2_q_pe_rope_target.bin": {
+      "dtype": "float32-le",
+      "name": "block2_q_pe_rope_target.bin",
+      "order": "token-major",
+      "sha256": "6f2542fecd74280cbad266af70284e4785c81df85a792052fa58c8072ccc80b5",
+      "shape": [
+        512,
+        2048
+      ]
+    }
+  }
+}

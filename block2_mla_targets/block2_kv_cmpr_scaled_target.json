@@ -1,0 +1,10 @@
+{
+  "dtype": "float32-le",
+  "name": "block2_kv_cmpr_scaled_target.bin",
+  "order": "token-major",
+  "sha256": "22f1d6be4cee2b8704f973110876d62761e1891a95e0b71681f606f40a93d0c9",
+  "shape": [
+    512,
+    512
+  ]
+}

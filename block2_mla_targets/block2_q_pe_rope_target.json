@@ -1,0 +1,10 @@
+{
+  "dtype": "float32-le",
+  "name": "block2_q_pe_rope_target.bin",
+  "order": "token-major",
+  "sha256": "6f2542fecd74280cbad266af70284e4785c81df85a792052fa58c8072ccc80b5",
+  "shape": [
+    512,
+    2048
+  ]
+}
