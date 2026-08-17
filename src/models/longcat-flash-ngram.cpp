@@ -717,6 +717,27 @@ llama_model_longcat_flash_ngram::graph::graph(
                                  freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
             cb(k_pe, "k_pe", il);
 
+            if (il == 0) {
+                // LONGCAT_ATTN_PATH_STAGE_SURFACE (localization, dump-only):
+                //
+                // Post-RoPE Q/K under distinct names -- the existing "q_pe" /
+                // "k_pe" labels collide between the pre- and post-RoPE
+                // tensors, and the dump helper rejects ne[2] != 1, so 2D
+                // contiguous copies are made purely for the dump. The copies
+                // feed nothing downstream; ggml_build_forward_expand forces
+                // their evaluation. Values are byte-identical to the graph
+                // tensors -- no arithmetic is altered.
+                ggml_tensor * q_pe_dump = ggml_cont_2d(
+                    ctx0, q_pe, n_embd_head_qk_rope * n_head, n_tokens);
+                cb(q_pe_dump, "q_pe_rope", il);
+                ggml_build_forward_expand(gf, q_pe_dump);
+
+                ggml_tensor * k_pe_dump = ggml_cont_2d(
+                    ctx0, k_pe, n_embd_head_qk_rope, n_tokens);
+                cb(k_pe_dump, "k_pe_rope", il);
+                ggml_build_forward_expand(gf, k_pe_dump);
+            }
+
             // normalize compressed KV
             if (il == 0) {
                 // LONGCAT_ATTN0_KVA_NORM_EPS_DIAGNOSTIC:

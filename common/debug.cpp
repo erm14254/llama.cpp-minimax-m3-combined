@@ -219,6 +219,13 @@ static bool common_debug_longcat_dump_spec_for(
         { "kv_cmpr_pe-0", "kv_a_proj_with_mqa.bin",  576 },
         { "kv_a_norm-0",  "kv_a_layernorm.bin",      512 },
         { "attn_out-0",   "o_proj.bin",             3072 },
+        // LONGCAT_ATTN_PATH_STAGE_SURFACE (localization, dump-only):
+        // post-RoPE Q/K (2D cont copies), the post-scale compressed-KV
+        // cache input, and the pre-wo attention context from build_attn.
+        { "q_pe_rope-0",      "q_pe_rope.bin",      2048 },
+        { "k_pe_rope-0",      "k_pe_rope.bin",        64 },
+        { "kv_cmpr_scaled-0", "kv_cmpr_scaled.bin",  512 },
+        { "kqv_out-0",        "kqv_out.bin",        4096 },
     };
 
     for (const auto & surface : mla_surfaces) {

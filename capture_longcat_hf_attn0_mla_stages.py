@@ -59,6 +59,18 @@ SURFACES = [
     ("o_proj", 3072),
 ]
 
+# Attention-path localization extras (2026-08-17): non-module-output surfaces.
+#   rope_cos / rope_sin -- the rotary embedding actually consumed by the MLA
+#       (BF16 per modeling_longcat_flash.py:124, yarn attention_scaling baked
+#       in); captured from the position_embeddings tuple itself.
+#   attn_o_input -- the o_proj INPUT (the 4096-wide attention context), taken
+#       from the o_proj forward hook's `args`, i.e. a module boundary.
+EXTRA_SURFACES = [
+    ("rope_cos", 64),
+    ("rope_sin", 64),
+    ("attn_o_input", 4096),
+]
+
 
 def stop(message: str) -> None:
     raise SystemExit("STOP: " + message)
@@ -500,6 +512,24 @@ def main() -> int:
 
         handles.append(module.register_forward_hook(make_hook(name, width)))
 
+    # attn_o_input: the o_proj forward hook's `args[0]` is the module INPUT --
+    # the 4096-wide attention context entering the output projection.
+    def o_input_hook(module, args, output):
+        if "attn_o_input" in captured:
+            stop("surface fired twice: attn_o_input")
+
+        tensor = args[0]
+
+        if tuple(tensor.shape) != (1, EXPECTED_TOKEN_COUNT, 4096):
+            stop(
+                "attn_o_input unexpected shape %s (expected [1, %d, 4096])"
+                % (tuple(tensor.shape), EXPECTED_TOKEN_COUNT)
+            )
+
+        captured["attn_o_input"] = tensor.detach().clone()
+
+    handles.append(mla.o_proj.register_forward_hook(o_input_hook))
+
     cache_position = torch.arange(EXPECTED_TOKEN_COUNT, device=device)
     position_ids = cache_position.unsqueeze(0)
 
@@ -513,6 +543,21 @@ def main() -> int:
 
     with torch.inference_mode():
         position_embeddings = rotary(hidden, position_ids)
+
+        # rope_cos / rope_sin: capture the exact tensors handed to the MLA.
+        rope_cos, rope_sin = position_embeddings
+
+        for rope_name, rope_tensor in (
+            ("rope_cos", rope_cos),
+            ("rope_sin", rope_sin),
+        ):
+            if tuple(rope_tensor.shape) != (1, EXPECTED_TOKEN_COUNT, 64):
+                stop(
+                    "%s unexpected shape %s (expected [1, %d, 64])"
+                    % (rope_name, tuple(rope_tensor.shape), EXPECTED_TOKEN_COUNT)
+                )
+
+            captured[rope_name] = rope_tensor.detach().clone()
 
         t_fwd = time.perf_counter()
 
@@ -541,7 +586,9 @@ def main() -> int:
     if topk_indices is not None:
         stop("full-owner path unexpectedly returned top-K indices")
 
-    missing_surfaces = [n for n, _ in SURFACES if n not in captured]
+    missing_surfaces = [
+        n for n, _ in SURFACES + EXTRA_SURFACES if n not in captured
+    ]
 
     if missing_surfaces:
         stop("surfaces never fired: %s" % missing_surfaces)
@@ -602,6 +649,11 @@ def main() -> int:
         "transformers": transformers.__version__,
         "attn_implementation": ns.attn_impl,
         "lsa_mode": mla.last_lsa_mode,
+        # sdpa softmax scaling actually used (qk_head_dim**-0.5 adjusted by
+        # yarn_apply_mscale, modeling_longcat_flash.py:380).
+        "attn_scaling": float(mla.scaling),
+        "mla_scale_q_lora": float(mla.mla_scale_q_lora),
+        "mla_scale_kv_lora": float(mla.mla_scale_kv_lora),
         "gates": {
             "input": input_sha,
             "attn_norm": norm_sha,
@@ -613,7 +665,7 @@ def main() -> int:
     print()
     print("===== HF BLOCK-0 MLA STAGES (full sequence) =====")
 
-    for name, width in SURFACES:
+    for name, width in SURFACES + EXTRA_SURFACES:
         tensor = captured[name]
 
         values = (
