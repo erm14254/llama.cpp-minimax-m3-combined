@@ -1,0 +1,36 @@
+# LongCat checkpoint manifest - 2026-08-17 frozen-512 handoff
+# Provenance separation:
+#   b009d6f68 = source HEAD of the binaries actually used for the frozen-512 measurement
+#   6bf5ee61f = measurement-result / pre-handoff checkpoint commit
+#   The handoff documentation commit SHA is reported after commit and is NOT associated with these binaries.
+
+## Measurement binaries (source HEAD b009d6f68)
+df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0  llama-debug.exe
+93466c40380729857eb43f7d4ccfa4cf7f336d634cec0b44bb359d2411465dc3  llama.dll
+502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48  ggml-cuda.dll
+
+## Frozen-512 criterion artifacts
+8825d92d7d9cdea42a4ea3aa2e3df5766bdf880323b1f48ea8c17ff63f3c5ecf  D:\llama.cpp-longcat-pre-gate4\hf_sparse_512_v4.bin (frozen HF oracle)
+6976fbc035c60692406a02cc1a6706b2702bbb16f579829e44c29dcdcc57bc93  D:\llama.cpp-longcat-mtp\compare_longcat_sparse_gate3_logits.py (frozen comparator)
+1a8e37e294890dd4c873b28f9c42f521c1b25226fd248175f6274cd6c7ed9a3e  D:\llama.cpp-longcat-pre-gate4\sparse_512_fa_off_f32\...-00008.bin (CORRECT F32-KV baseline, 2122 violations)
+f39f77b6bd01cfe608a44b2282f0f65972c6108b975823bc1b42b3720850f060  D:\llama.cpp-longcat-pre-gate4\sparse_512_fa_off\...-00008.bin (WRONG bf16-cache variant, 12609 violations - not the memo baseline)
+e14d95bfaaa0fea2977ed4ac852b7a631427e27f79eeb17c04a5a70c824660df  cpp_logits_512_postAB\...-00008.bin (current result: FAIL 40/131072)
+4893d78751e8577f817da21a7e00718c7c14e0d80732e1b7e4da36da6677821c  token stream (512 x int32 483)
+d3c44b156c85427176e7038c4b8f902101424097bb3ce51095333e59e52e5aca  prompt_512_a.txt
+
+## Committed analysis scripts (repo, py_compile-clean)
+67d6dae7dc78670441bf64d804d966b6cee6013513c8d29191018cd5bf59459e  analyze_longcat_attn0_mla_bf16_boundary.py
+cea411675fad949b9e948ccec1c3820ac1f9c05ba68865094db27ca96ad4a7ee  analyze_longcat_attn0_kv_a_norm_semantics.py
+8c4813494909983cc767a65946ea8bea05d39de134b4047581cb18b22bcdacdd  analyze_longcat_attn_path_localization.py
+0453107dd9dd5c5ca08127b526d84719bace556ddc3938a29253bcccbf9bdac5  analyze_longcat_attn_core_attribution.py
+fbb39b9ec4defc005583cab6083d421d5f0dbff88392c97d57baedd159b32f37  analyze_longcat_attn_core_mechanism.py
+4e737d8c32b22bf53f1233b86b8d769a74d2075c21bf268fdb0719b026086f12  make_longcat_rope_targets.py
+0b89a787f676a74ddc69d0f183d24e45a96da354464882bf83cd5dae32517df4  capture_longcat_hf_attn0_mla_stages.py
+2e9bec062154d3d4e0cbb7f3f2d5f4521b6d848aa7ed5149c92e0b4ffeba5f51  compare_longcat_attn0_mla_stages.py
+
+## Canonical RoPE targets (regenerable byte-exactly by make_longcat_rope_targets.py)
+c8b9b6bfd8759f839c333e2b74f3775fe0b89bf82dc296497ee17990669dfc95  rope_targets\q_pe_rope_target.bin
+3ed6f4e731227d49952fc687aefb2ede9067eceec7eed39096d861634158bc1d  rope_targets\k_pe_rope_target.bin
+
+## Per-run manifests (committed): cpp_attn0_mla_blackwell_512, _expA_512, _expB_512, _attnpath_512, _r0_512, _r1_512, _probe_512, cpp_logits_512_postAB -> each SHA256SUMS.txt
+## HF oracle dirs (read-only, own SHA256SUMS): D:\lc_mla_blackwell, D:\lc_mla_blackwell_attn

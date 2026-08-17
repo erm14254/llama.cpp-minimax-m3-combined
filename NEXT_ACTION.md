@@ -60,8 +60,28 @@ throughout. The 512-wide compressed-KV cache input is byte-exact (S2b); the
 (softmax/ordering) remain bracketed inside S3, unreachable until RoPE parity
 exists. See the final addendum of `STATUS_2026-08-17.md`.
 
-**Immediate next action:** design the block-0 RoPE precision experiment
-(HF BF16 cos/sin + BF16 elementwise semantics for `q_pe`/`k_pe` at `il == 0`),
-hard-gated byte-exact on the recorded S1/S2 references, then re-measure S3
-with clean inputs. Still forbidden: MLP/MoE work, production FA patch,
-repaired 2050 run, widening any frozen criterion.
+**Update 2026-08-17 (frozen-512 checkpoint):** all previous next actions are
+complete — R0/R1 done, attention-core mechanism closed, and the frozen
+512-token criterion measured: **FAIL at 40/131,072 violations** (down from
+the 2,122 of the clean pre-diagnostic F32-KV baseline `sparse_512_fa_off_f32`
+= `1a8e37e2…`; the similarly named `sparse_512_fa_off` = `f39f77b6…` is the
+bf16-cache variant and NOT the memo baseline). Delta owed to the aggregate
+block-0 corrective stack, not A+B alone. See
+`WIN11_HANDOFF_2026-08-17_FROZEN512.md` (authoritative handoff) and the final
+addenda of `STATUS_2026-08-17.md`.
+
+**Immediate next action (measurement-only, NOT begun):** localize the first
+remaining unexplained downstream divergence responsible for the residual
+frozen-512 full-model gap, **without assuming the 40 violations originate in
+block-0 attention**. Start with the zero-new-run downstream boundary walk in
+the handoff's "Next scientific objective" section: production-angle A+B
+captures (`cpp_attn0_mla_expB_512/`, `cpp_attn0_mla_attnpath_512/`) preferred
+over R1 (clean-RoPE diagnostic only, different block-0 angle state), against
+`pre-gate4` HF oracles (`mlp0_resid` `cf48a0ad…`, `attn1_resid` `b4c1e5f6…`,
+`logical0_out` `5292e88a…`, `hf_hidden_512_v4` logical_01…12/result_norm),
+with mandatory per-pair verification (existence, SHA, shape/dtype, row/token
+representation, logical-vs-physical mapping, semantic equivalence — never
+filename inference). Measurement-only MLP/MoE boundary work is authorized;
+**MLP/MoE arithmetic remains forbidden** pending a reviewed plan. Still
+forbidden: production FA patch, 2050-token run, widening any frozen
+criterion, production RoPE changes, any other new arithmetic.
