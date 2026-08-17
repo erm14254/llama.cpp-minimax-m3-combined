@@ -1,0 +1,239 @@
+{
+  "description": "Block-2 LoRA norms under the quad reset: exact-input judgment + non-additive 2x2",
+  "quad_dir": "D:\\llama.cpp-longcat-claude\\cpp_resid_walk_inject3_b2_512",
+  "dual_dir": "D:\\llama.cpp-longcat-claude\\cpp_resid_walk_inject2_b2_512",
+  "hf_dir": "D:\\lc_block2_mla_512",
+  "parameter_provenance": {
+    "gguf_eps_metadata": 9.999999747378752e-06,
+    "cpp_eps_source": "build_norm uses hparams.f_norm_rms_eps at il>=1 (longcat-flash-ngram.cpp:710-715, :923-928)",
+    "hf_runtime_eps_gate": {
+      "method": "from_pretrained instantiation identical to the frozen captures; attribute read from the actual modules this session",
+      "q_a_layernorm.variance_epsilon": 1e-06,
+      "kv_a_layernorm.variance_epsilon": 1e-06,
+      "result": "PASS (both 1e-6)"
+    },
+    "norm_weights": "GGUF F32 == exact widening of HF BF16 (1536/1536, 512/512), verified in-script"
+  },
+  "norms": {
+    "q_a_norm": {
+      "elements": 786432,
+      "exact": 11,
+      "rel_rmse": 0.0023262351565796,
+      "max_abs": 0.12865829467773438,
+      "bf16_cpp_equal_hf": 580016,
+      "hf_on_bf16_lattice": 786432,
+      "classification": "bf16-irreducible",
+      "first_divergent_token": 0,
+      "attribution": "PERMITTED to the norm operator composite: activation input byte-exact (landing), weight exact widening, eps constants proven different (C++ 1e-5 vs HF 1e-6)"
+    },
+    "kv_a_norm": {
+      "elements": 262144,
+      "exact": 10,
+      "rel_rmse": 0.0023604135636643643,
+      "max_abs": 0.0008526891469955444,
+      "bf16_cpp_equal_hf": 192652,
+      "hf_on_bf16_lattice": 262144,
+      "classification": "bf16-irreducible",
+      "first_divergent_token": 0,
+      "attribution": "PERMITTED to the norm operator composite: activation input byte-exact (landing), weight exact widening, eps constants proven different (C++ 1e-5 vs HF 1e-6)"
+    }
+  },
+  "two_by_two": {
+    "q_a_norm": {
+      "closure_A5_vs_cpp_dump": {
+        "exact": 581661,
+        "elements": 786432,
+        "byte_exact": false,
+        "max_ulp": 4,
+        "ulp_le_1_pct": 91.86630249023438,
+        "closure": "NOT closed - model residue reported"
+      },
+      "closure_D6_vs_hf_dump": {
+        "exact": 786432,
+        "elements": 786432,
+        "byte_exact": true,
+        "closure": "CLOSED for this frozen capture (byte-exact)"
+      },
+      "eps_effect_under_A": {
+        "elements": 786432,
+        "exact": 0,
+        "rel_rmse": 9.853627491097549e-05,
+        "max_abs": 0.002048492431640625
+      },
+      "eps_effect_under_D": {
+        "elements": 786432,
+        "exact": 774732,
+        "rel_rmse": 0.0008099930505225818,
+        "max_abs": 0.25
+      },
+      "cast_effect_under_1e5": {
+        "elements": 786432,
+        "exact": 14,
+        "rel_rmse": 0.002325419618508138,
+        "max_abs": 0.12134361267089844
+      },
+      "cast_effect_under_1e6": {
+        "elements": 786432,
+        "exact": 4,
+        "rel_rmse": 0.0023261086280659767,
+        "max_abs": 0.12668228149414062
+      },
+      "combined_A5_vs_D6": {
+        "elements": 786432,
+        "exact": 14,
+        "rel_rmse": 0.0023262352106865236,
+        "max_abs": 0.12865638732910156
+      },
+      "non_additivity_note": "factors are non-additive; each effect is conditional on the other's regime; no causal partition is implied"
+    },
+    "kv_a_norm": {
+      "closure_A5_vs_cpp_dump": {
+        "exact": 190428,
+        "elements": 262144,
+        "byte_exact": false,
+        "max_ulp": 4,
+        "ulp_le_1_pct": 92.79747009277344,
+        "closure": "NOT closed - model residue reported"
+      },
+      "closure_D6_vs_hf_dump": {
+        "exact": 262137,
+        "elements": 262144,
+        "byte_exact": false,
+        "max_ulp": 65536,
+        "ulp_le_1_pct": 99.99732971191406,
+        "closure": "NOT closed - model residue reported"
+      },
+      "eps_effect_under_A": {
+        "elements": 262144,
+        "exact": 0,
+        "rel_rmse": 0.00012480970395153165,
+        "max_abs": 3.197789192199707e-05
+      },
+      "eps_effect_under_D": {
+        "elements": 262144,
+        "exact": 259777,
+        "rel_rmse": 0.0008677555291937308,
+        "max_abs": 0.0009765625
+      },
+      "cast_effect_under_1e5": {
+        "elements": 262144,
+        "exact": 7,
+        "rel_rmse": 0.002357895141040148,
+        "max_abs": 0.0008526891469955444
+      },
+      "cast_effect_under_1e6": {
+        "elements": 262144,
+        "exact": 2,
+        "rel_rmse": 0.0023583783016437932,
+        "max_abs": 0.0008711665868759155
+      },
+      "combined_A5_vs_D6": {
+        "elements": 262144,
+        "exact": 7,
+        "rel_rmse": 0.002360455763314901,
+        "max_abs": 0.0008526891469955444
+      },
+      "non_additivity_note": "factors are non-additive; each effect is conditional on the other's regime; no causal partition is implied"
+    }
+  },
+  "predecessor_intervention": {
+    "q_a_norm": {
+      "old_offlattice_predecessor": {
+        "rel_rmse": 0.002856388279318369,
+        "bf16_cpp_equal_hf": 511379,
+        "classification": "bf16-irreducible",
+        "max_abs": 0.14537429809570312
+      },
+      "new_exact_predecessor": {
+        "rel_rmse": 0.0023262351565796,
+        "bf16_cpp_equal_hf": 580016,
+        "classification": "bf16-irreducible",
+        "max_abs": 0.12865829467773438
+      },
+      "phrasing": "effect of the exact HF projection-output reset on this frozen capture; not an additive causal percentage"
+    },
+    "kv_a_norm": {
+      "old_offlattice_predecessor": {
+        "rel_rmse": 0.0030908633774870044,
+        "bf16_cpp_equal_hf": 157255,
+        "classification": "bf16-irreducible",
+        "max_abs": 0.001149490475654602
+      },
+      "new_exact_predecessor": {
+        "rel_rmse": 0.0023604135636643643,
+        "bf16_cpp_equal_hf": 192652,
+        "classification": "bf16-irreducible",
+        "max_abs": 0.0008526891469955444
+      },
+      "phrasing": "effect of the exact HF projection-output reset on this frozen capture; not an additive causal percentage"
+    }
+  },
+  "caveats": [
+    "Attribution targets the NORM OPERATOR COMPOSITE (differing eps constant + cast semantics + kernel detail); the 2x2 decomposes it.",
+    "2x2 factors are NON-ADDITIVE: eps reported under both cast regimes, cast under both eps regimes, plus the combined gap; no forced causal partition.",
+    "Mechanism closure claims are scoped to this frozen full-sequence capture and require whole-tensor byte-exact reproduction.",
+    "Predecessor-intervention numbers are the effect of the exact HF projection-output reset on this capture, not additive causal percentages (the nonlinear norm does not superpose)."
+  ],
+  "provenance": {
+    "suffix": "b2",
+    "oracle2_sha256": "afa16c6c3324387e9261c708cae044b8fcb08acda8c8f6315d2ba8d39a8f0fd7",
+    "oracle3_sha256": "32173b18459358494f943288b974ef7df70eb540ff9e366c720c14f250407a96",
+    "exit_code": 0,
+    "env_sweep_names": [
+      "LONGCAT_HIDDEN_DUMP_DIR",
+      "LONGCAT_ROPE_INJECT_DIR",
+      "LONGCAT_ROPE_ORACLE_DIR",
+      "LONGCAT_RESID_WALK_DUMP_DIR",
+      "LONGCAT_RESID_INJECT_DIR",
+      "LONGCAT_ATTN_NORM2_INJECT_DIR",
+      "LONGCAT_PROJ_INJECT_DIR",
+      "GGML_CUDA_ALLREDUCE",
+      "GGML_CUDA_CUBLAS_COMPUTE_TYPE",
+      "GGML_CUDA_DEVICES",
+      "GGML_CUDA_DISABLE_FUSION",
+      "GGML_CUDA_DISABLE_GRAPHS",
+      "GGML_CUDA_ENABLE_UNIFIED_MEMORY",
+      "GGML_CUDA_GRAPH_OPT",
+      "GGML_CUDA_NO_PINNED",
+      "GGML_CUDA_P2P",
+      "GGML_CUDA_PDL",
+      "GGML_CUDA_REGISTER_HOST",
+      "GGML_CUDA_VALIDATE_MUL_MAT_ID",
+      "GGML_CUDA_AR_BF16_THRESHOLD",
+      "GGML_CUDA_AR_COPY_CHUNK_BYTES",
+      "GGML_CUDA_AR_COPY_THRESHOLD",
+      "GGML_OP_OFFLOAD_MIN_BATCH",
+      "GGML_CPU_DISABLE_FUSION",
+      "GGML_BACKEND_PATH",
+      "GGML_TOTAL_THREADS",
+      "GGML_SCHED_DEBUG",
+      "GGML_SCHED_DEBUG_REALLOC",
+      "LLAMA_ATTN_ROT_DISABLE",
+      "LLAMA_GRAPH_REUSE_DISABLE",
+      "LLAMA_BATCH_DEBUG",
+      "LLAMA_GRAPH_INPUT_DEBUG",
+      "LLAMA_GRAPH_RESULT_DEBUG",
+      "LLAMA_KV_CACHE_DEBUG",
+      "LLAMA_DSV4_COMPRESS_DEBUG",
+      "LLAMA_TRACE",
+      "CUBLAS_LOGINFO_DBG",
+      "CUBLAS_LOGDEST_DBG",
+      "CUBLASLT_LOG_LEVEL",
+      "CUBLASLT_LOG_FILE",
+      "TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"
+    ],
+    "oracle4_sha256": "28ea5b52221a94ddf780f04507f11aee7b6fc8617974f53d558424d41c470f3f",
+    "binaries": {
+      "llama-common.dll": "61928e5f6709395b9cdb66bda98e585d717fe42eef87a32c2786c125ed2aaff4",
+      "ggml-cuda.dll": "502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48",
+      "llama.dll": "97592bb7ad1338ef36fd608da19709ccd75a39bd04b5609324204e055c99a10c",
+      "llama-debug.exe": "df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0"
+    },
+    "invocation": "llama-debug.exe -m \"D:\\LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-GGUF-BF16\\LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-BF16-00001-of-00008.gguf\" -f \"D:\\llama.cpp-longcat-claude\\prompt_512_a.txt\" -c 4608 -b 4608 -ub 512 -fa off -ctk f32 -ctv f32 --no-warmup -fitt 4096 -v --tensor-filter \"^(q_a_proj|q_a_norm|q_b_proj|q_pe_rope|kv_cmpr_pe|k_pe_rope|kv_a_norm|kv_cmpr_scaled|kqv_out|attn_out|ffn_inp)-0$\"",
+    "mode": "inject3",
+    "oracle_sha256": "d810f93c50ea42c5909ab289ebf62a0c5629f40530d2e5fc706dde67f0eaf763",
+    "instrumentation_head": "28b5bec649f52aaec2aca58e0aafec471befd66c",
+    "cublas_version": "6.14.11.1330",
+    "cublas_module": "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\bin\\x64\\cublas64_13.dll"
+  }
+}

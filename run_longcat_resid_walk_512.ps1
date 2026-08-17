@@ -13,7 +13,7 @@
 # regression hashes vs the committed attnpath manifest, landing gate (inject),
 # SHA256SUMS.txt over all dumps.
 param(
-    [Parameter(Mandatory=$true)][ValidateSet('control','inject','inject2')] [string]$Mode,
+    [Parameter(Mandatory=$true)][ValidateSet('control','inject','inject2','inject3')] [string]$Mode,
     [string]$Suffix = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -33,23 +33,25 @@ $runDir    = Join-Path $repo ("cpp_resid_walk_" + $tag + "_512")
 # prior is the single-reset inject_b1 run and reproduction is restricted to
 # the upstream-of-attn_norm-2 subset (everything downstream changes by
 # design).
-if ($Mode -eq 'inject2') {
+if ($Mode -in @('inject2','inject3')) {
     $priorDir = Join-Path $repo 'cpp_resid_walk_inject_b1_512'
 } else {
     $priorDir = Join-Path $repo ("cpp_resid_walk_" + $Mode + "_512")
 }
 
-# Instrumentation HEAD 02d9687dc (block-2 MLA walk plumbing; the model-file
-# name plumbing lands in llama.dll - recorded, inertness proven by the full
-# reproduction gate below).
+# Instrumentation HEAD 28b5bec64 (projection-output injector; only
+# llama-common.dll changed; llama.dll carries the 02d9687dc name plumbing).
 $expectedBins = @{
     'llama-debug.exe'  = 'df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0'
-    'llama-common.dll' = '8f0f365cb93cd32ffcced813ae00795b0be8497e21d7648e55afedce0930170d'
+    'llama-common.dll' = '61928e5f6709395b9cdb66bda98e585d717fe42eef87a32c2786c125ed2aaff4'
     'llama.dll'        = '97592bb7ad1338ef36fd608da19709ccd75a39bd04b5609324204e055c99a10c'
     'ggml-cuda.dll'    = '502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48'
 }
 $oracle2Dir = 'D:\lc_block1_stages_512'
 $expectedOracle2Sha = 'afa16c6c3324387e9261c708cae044b8fcb08acda8c8f6315d2ba8d39a8f0fd7'
+$oracle34Dir = 'D:\lc_block2_mla_512'
+$expectedOracle3Sha = '32173b18459358494f943288b974ef7df70eb540ff9e366c720c14f250407a96'
+$expectedOracle4Sha = '28ea5b52221a94ddf780f04507f11aee7b6fc8617974f53d558424d41c470f3f'
 $expectedPromptSha = 'd3c44b156c85427176e7038c4b8f902101424097bb3ce51095333e59e52e5aca'
 $expectedCublasVer = '6.14.11.1330'
 
@@ -104,7 +106,7 @@ foreach ($name in $expectedBins.Keys) {
     $h = Get-Sha256 $p
     if ($h -ne $expectedBins[$name]) { throw "binary SHA FAIL: $name $h != $($expectedBins[$name])" }
 }
-Write-Host "binary set: 4/4 match instrumentation build (HEAD 02d9687dc)"
+Write-Host "binary set: 4/4 match instrumentation build (HEAD 28b5bec64)"
 
 # 2. Environment-cleanliness sweep (parent session must be clean).
 # Source-audited fail-closed name list (wrapper-aware derivation 2026-08-17:
@@ -116,6 +118,7 @@ $sweep = @(
     # LONGCAT diagnostics (6)
     'LONGCAT_HIDDEN_DUMP_DIR','LONGCAT_ROPE_INJECT_DIR','LONGCAT_ROPE_ORACLE_DIR',
     'LONGCAT_RESID_WALK_DUMP_DIR','LONGCAT_RESID_INJECT_DIR','LONGCAT_ATTN_NORM2_INJECT_DIR',
+    'LONGCAT_PROJ_INJECT_DIR',
     # GGML_CUDA bare getenv (12; incl. P2P, missed by earlier subdir-limited greps)
     'GGML_CUDA_ALLREDUCE','GGML_CUDA_CUBLAS_COMPUTE_TYPE','GGML_CUDA_DEVICES',
     'GGML_CUDA_DISABLE_FUSION','GGML_CUDA_DISABLE_GRAPHS','GGML_CUDA_ENABLE_UNIFIED_MEMORY',
@@ -160,7 +163,7 @@ if ($Mode -ne 'control') {
     if ($recorded -ne $oracleSha) { throw "oracle SHA FAIL: disk $oracleSha != recorded $recorded" }
     Write-Host "oracle: $oracleSha OK (matches HF capture manifest)"
 }
-if ($Mode -eq 'inject2') {
+if ($Mode -in @('inject2','inject3')) {
     $oracle2Path = Join-Path $oracle2Dir 'attn0_norm.bin'
     if (-not (Test-Path $oracle2Path)) { throw "oracle2 missing: $oracle2Path" }
     if ((Get-Item $oracle2Path).Length -ne 6291456) { throw "oracle2 size FAIL" }
@@ -172,6 +175,27 @@ if ($Mode -eq 'inject2') {
     $recorded2 = ($line2 -split '\s+')[0].ToLower()
     if ($recorded2 -ne $oracle2Sha) { throw "oracle2 manifest mismatch" }
     Write-Host "oracle2: $oracle2Sha OK (attn0_norm, matches HF block1 manifest)"
+}
+$oracle3Sha = $null
+$oracle4Sha = $null
+if ($Mode -eq 'inject3') {
+    $o3 = Join-Path $oracle34Dir 'q_a_proj.bin'
+    $o4 = Join-Path $oracle34Dir 'kv_a_proj_with_mqa.bin'
+    if (-not (Test-Path $o3)) { throw "oracle3 missing: $o3" }
+    if (-not (Test-Path $o4)) { throw "oracle4 missing: $o4" }
+    if ((Get-Item $o3).Length -ne 3145728) { throw "oracle3 size FAIL" }
+    if ((Get-Item $o4).Length -ne 1179648) { throw "oracle4 size FAIL" }
+    $oracle3Sha = Get-Sha256 $o3
+    $oracle4Sha = Get-Sha256 $o4
+    if ($oracle3Sha -ne $expectedOracle3Sha) { throw "oracle3 SHA FAIL: $oracle3Sha" }
+    if ($oracle4Sha -ne $expectedOracle4Sha) { throw "oracle4 SHA FAIL: $oracle4Sha" }
+    $sums34 = Get-Content (Join-Path $oracle34Dir 'SHA256SUMS.txt')
+    $l3 = $sums34 | Where-Object { $_ -match '\sq_a_proj\.bin$' }
+    $l4 = $sums34 | Where-Object { $_ -match 'kv_a_proj_with_mqa\.bin$' }
+    if (-not $l3 -or (($l3 -split '\s+')[0].ToLower() -ne $oracle3Sha)) { throw "oracle3 manifest mismatch" }
+    if (-not $l4 -or (($l4 -split '\s+')[0].ToLower() -ne $oracle4Sha)) { throw "oracle4 manifest mismatch" }
+    Write-Host "oracle3: $oracle3Sha OK (q_a_proj)"
+    Write-Host "oracle4: $oracle4Sha OK (kv_a_proj_with_mqa)"
 }
 
 # 4. Fresh run dir.
@@ -202,8 +226,11 @@ $psi.EnvironmentVariables['LONGCAT_RESID_WALK_DUMP_DIR'] = $runDir
 if ($Mode -ne 'control') {
     $psi.EnvironmentVariables['LONGCAT_RESID_INJECT_DIR'] = $oracleDir
 }
-if ($Mode -eq 'inject2') {
+if ($Mode -in @('inject2','inject3')) {
     $psi.EnvironmentVariables['LONGCAT_ATTN_NORM2_INJECT_DIR'] = $oracle2Dir
+}
+if ($Mode -eq 'inject3') {
+    $psi.EnvironmentVariables['LONGCAT_PROJ_INJECT_DIR'] = $oracle34Dir
 }
 
 Write-Host "== launch =="
@@ -271,11 +298,20 @@ if ($Mode -ne 'control') {
     }
     Write-Host "injection log line OK"
 }
-if ($Mode -eq 'inject2') {
+if ($Mode -in @('inject2','inject3')) {
     if ($err -notmatch [regex]::Escape('LONGCAT_ATTN_NORM2_INJECT: attn_norm-2 <- attn0_norm.bin (6291456 bytes)')) {
         throw "attn_norm2 injection log-line gate FAIL"
     }
     Write-Host "attn_norm2 injection log line OK"
+}
+if ($Mode -eq 'inject3') {
+    if ($err -notmatch [regex]::Escape('LONGCAT_PROJ_INJECT: q_a_proj-2 <- q_a_proj.bin (3145728 bytes)')) {
+        throw "q_a_proj injection log-line gate FAIL"
+    }
+    if ($err -notmatch [regex]::Escape('LONGCAT_PROJ_INJECT: kv_cmpr_pe-2 <- kv_a_proj_with_mqa.bin (1179648 bytes)')) {
+        throw "kv_cmpr_pe injection log-line gate FAIL"
+    }
+    Write-Host "projection injection log lines OK"
 }
 
 # Final-row regression hashes.
@@ -303,12 +339,20 @@ if ($Mode -ne 'control') {
     if ($fr -ne $hfLogical00FinalRowSha) { throw "landing final-row gate FAIL: $fr" }
     Write-Host "landing final-row gate: logical_00.bin == HF final-row oracle OK"
 }
-if ($Mode -eq 'inject2') {
+if ($Mode -in @('inject2','inject3')) {
     # Second landing gate: the walk dump of the injected attn_norm-2 node
     # must equal the HF attn0_norm oracle byte-exactly.
     $landing2 = Get-Sha256 (Join-Path $runDir 'block1_attn0_norm_full.bin')
     if ($landing2 -ne $oracle2Sha) { throw "landing2 gate FAIL: block1_attn0_norm_full $landing2 != oracle2 $oracle2Sha" }
     Write-Host "landing2 gate: block1_attn0_norm_full.bin == attn0_norm oracle ($oracle2Sha) OK"
+}
+if ($Mode -eq 'inject3') {
+    $landing3 = Get-Sha256 (Join-Path $runDir 'block2_q_a_proj_full.bin')
+    if ($landing3 -ne $oracle3Sha) { throw "landing3 gate FAIL: block2_q_a_proj_full $landing3" }
+    Write-Host "landing3 gate: block2_q_a_proj_full.bin == HF q_a_proj oracle OK"
+    $landing4 = Get-Sha256 (Join-Path $runDir 'block2_kv_a_proj_full.bin')
+    if ($landing4 -ne $oracle4Sha) { throw "landing4 gate FAIL: block2_kv_a_proj_full $landing4" }
+    Write-Host "landing4 gate: block2_kv_a_proj_full.bin == HF kv_a_proj_with_mqa oracle OK"
 }
 
 # Full-seq dump inventory.
@@ -372,7 +416,7 @@ if ($Mode -eq 'inject2' -and $runDir -ne $dualPrior -and (Test-Path (Join-Path $
 # proving the extended instrumentation inert on all previous surfaces.
 if ($Suffix -ne '' -and (Test-Path (Join-Path $priorDir 'SHA256SUMS.txt'))) {
     $allow = $null
-    if ($Mode -eq 'inject2') {
+    if ($Mode -in @('inject2','inject3')) {
         # Upstream-of-attn_norm-2 subset only: 15 upstream final-row dumps +
         # the injected-node witnesses. Downstream of the second reset differs
         # by design and is data, not a gate.
@@ -408,12 +452,14 @@ Write-Host "manifest written: $manifest"
 $prov = @{
     mode = $Mode
     suffix = $Suffix
-    instrumentation_head = '02d9687dc58b8dfcd009e90a11e9c284b029090c'
+    instrumentation_head = '28b5bec649f52aaec2aca58e0aafec471befd66c'
     binaries = $expectedBins
     cublas_module = $cublasPath
     cublas_version = $cublasVer
     oracle_sha256 = $oracleSha
     oracle2_sha256 = $oracle2Sha
+    oracle3_sha256 = $oracle3Sha
+    oracle4_sha256 = $oracle4Sha
     exit_code = $proc.ExitCode
     env_sweep_names = $sweep
     invocation = ("llama-debug.exe " + $args)
