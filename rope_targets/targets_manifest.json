@@ -1,0 +1,26 @@
+{
+  "k_pe_rope_target.bin": {
+    "bytes": 131072,
+    "dtype": "float32-le",
+    "layout": "cpp-interleaved (permutation P applied)",
+    "name": "k_pe_rope_target.bin",
+    "order": "token-major",
+    "sha256": "3ed6f4e731227d49952fc687aefb2ede9067eceec7eed39096d861634158bc1d",
+    "shape": [
+      512,
+      64
+    ]
+  },
+  "q_pe_rope_target.bin": {
+    "bytes": 4194304,
+    "dtype": "float32-le",
+    "layout": "cpp-interleaved (permutation P applied)",
+    "name": "q_pe_rope_target.bin",
+    "order": "token-major",
+    "sha256": "c8b9b6bfd8759f839c333e2b74f3775fe0b89bf82dc296497ee17990669dfc95",
+    "shape": [
+      512,
+      2048
+    ]
+  }
+}

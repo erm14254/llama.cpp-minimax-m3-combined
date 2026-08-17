@@ -1,0 +1,12 @@
+{
+  "bytes": 131072,
+  "dtype": "float32-le",
+  "layout": "cpp-interleaved (permutation P applied)",
+  "name": "k_pe_rope_target.bin",
+  "order": "token-major",
+  "sha256": "3ed6f4e731227d49952fc687aefb2ede9067eceec7eed39096d861634158bc1d",
+  "shape": [
+    512,
+    64
+  ]
+}

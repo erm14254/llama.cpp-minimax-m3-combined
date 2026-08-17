@@ -320,6 +320,99 @@ static bool common_debug_longcat_wants_dump(const ggml_tensor * t) {
     return common_debug_longcat_dump_spec_for(t, spec);
 }
 
+// LONGCAT_ROPE_INJECT (Experiment R0 -- oracle-injection control ONLY):
+//
+// When LONGCAT_ROPE_INJECT_DIR is set, the post-RoPE physical block-0 tensors
+// q_pe-0 / k_pe-0 are OVERWRITTEN with the canonical HF targets produced by
+// make_longcat_rope_targets.py, immediately after the node computes and
+// before any dependent executes. This is NOT a RoPE implementation, NOT an
+// arithmetic fix, and NOT evidence that C++ reproduces HF rotary arithmetic.
+// It answers one causal question: with exact HF RoPE outputs supplied to the
+// existing downstream graph, what remains at kqv_out / o_proj / the residual?
+//
+// The op check disambiguates the known name collision: the pre-RoPE views are
+// also named q_pe-0 / k_pe-0 but their op is GGML_OP_VIEW, not GGML_OP_ROPE.
+// Layout: the rope outputs ([64, 32, 512] and [64, 1, 512], contiguous F32)
+// are byte-identical to the token-major target files (d fastest, then head,
+// then token) -- proven in the plan -- so the write needs no reordering.
+// Target-file SHA256s are verified by the run harness preflight; here the
+// exact byte size, type, and contiguity are enforced, and any failure aborts
+// the process (exit 87) so a partial injection can never produce a
+// plausible-looking capture.
+static bool common_debug_longcat_wants_rope_inject(const ggml_tensor * t) {
+    const char * dir = std::getenv("LONGCAT_ROPE_INJECT_DIR");
+    if (dir == nullptr || dir[0] == '\0') {
+        return false;
+    }
+    if (t->op != GGML_OP_ROPE) {
+        return false;
+    }
+    return strcmp(t->name, "q_pe-0") == 0 || strcmp(t->name, "k_pe-0") == 0;
+}
+
+static void common_debug_maybe_inject_longcat_rope(ggml_tensor * t) {
+    const char * dir = std::getenv("LONGCAT_ROPE_INJECT_DIR");
+    if (dir == nullptr || dir[0] == '\0') {
+        return;
+    }
+    if (t->op != GGML_OP_ROPE) {
+        return;
+    }
+
+    static const struct {
+        const char * name;
+        const char * file;
+        size_t       nbytes;
+    } targets[] = {
+        { "q_pe-0", "q_pe_rope_target.bin", (size_t) 512 * 2048 * 4 },
+        { "k_pe-0", "k_pe_rope_target.bin", (size_t) 512 *   64 * 4 },
+    };
+
+    static std::vector<uint8_t> cache[2];
+
+    for (int i = 0; i < 2; ++i) {
+        if (strcmp(t->name, targets[i].name) != 0) {
+            continue;
+        }
+
+        if (t->type != GGML_TYPE_F32 || !ggml_is_contiguous(t) ||
+            ggml_nbytes(t) != targets[i].nbytes) {
+            LOG_ERR(
+                "LONGCAT_ROPE_INJECT ABORT: %s type=%s contig=%d nbytes=%zu "
+                "(expected F32 contiguous %zu)\n",
+                t->name, ggml_type_name(t->type),
+                ggml_is_contiguous(t) ? 1 : 0,
+                ggml_nbytes(t), targets[i].nbytes);
+            common_log_flush(common_log_main());
+            std::exit(87);
+        }
+
+        if (cache[i].empty()) {
+            const std::string path = std::string(dir) + "/" + targets[i].file;
+            std::ifstream f(path, std::ios::binary);
+            if (!f) {
+                LOG_ERR("LONGCAT_ROPE_INJECT ABORT: cannot open %s\n", path.c_str());
+                common_log_flush(common_log_main());
+                std::exit(87);
+            }
+            cache[i].assign(std::istreambuf_iterator<char>(f),
+                            std::istreambuf_iterator<char>());
+            if (cache[i].size() != targets[i].nbytes) {
+                LOG_ERR(
+                    "LONGCAT_ROPE_INJECT ABORT: %s is %zu bytes, expected %zu\n",
+                    path.c_str(), cache[i].size(), targets[i].nbytes);
+                common_log_flush(common_log_main());
+                std::exit(87);
+            }
+        }
+
+        ggml_backend_tensor_set(t, cache[i].data(), 0, targets[i].nbytes);
+        LOG_INF("LONGCAT_ROPE_INJECT: %s <- %s (%zu bytes)\n",
+                t->name, targets[i].file, targets[i].nbytes);
+        return;
+    }
+}
+
 static void common_debug_maybe_dump_longcat_hidden(
         uint8_t * data,
         const ggml_tensor * t) {
@@ -508,8 +601,14 @@ bool common_debug_cb_eval(struct ggml_tensor * t, bool ask, void * user_data) {
     // Also request dump targets, so LONGCAT_HIDDEN_DUMP_DIR works whether or
     // not the tensor is covered by --tensor-filter.
     if (ask) {
-        return matches_filter || common_debug_longcat_wants_dump(t);
+        return matches_filter || common_debug_longcat_wants_dump(t) ||
+               common_debug_longcat_wants_rope_inject(t);
     }
+
+    // LONGCAT_ROPE_INJECT (R0): overwrite the post-RoPE block-0 tensors with
+    // the canonical HF targets before any dependent node executes. Must run
+    // before the host copy below, which would otherwise snapshot stale data.
+    common_debug_maybe_inject_longcat_rope(t);
 
     char src1_str[128] = { 0 };
     if (src1) {
