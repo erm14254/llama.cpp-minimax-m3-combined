@@ -1,0 +1,113 @@
+{
+  "first_real_divergence": "o_proj",
+  "surfaces": {
+    "kv_a_layernorm": {
+      "bf16_rounded": {
+        "divergent_rows": 0,
+        "exact_pct": 100.0,
+        "max_abs": 0.0,
+        "rel_rmse": 0.0,
+        "rmse": 0.0
+      },
+      "hf_on_bf16_lattice_pct": 100.0,
+      "raw": {
+        "divergent_rows": 0,
+        "exact_pct": 100.0,
+        "max_abs": 0.0,
+        "rel_rmse": 0.0,
+        "rmse": 0.0
+      },
+      "verdict": "byte-exact"
+    },
+    "kv_a_proj_with_mqa": {
+      "bf16_rounded": {
+        "divergent_rows": 0,
+        "exact_pct": 100.0,
+        "max_abs": 0.0,
+        "rel_rmse": 0.0,
+        "rmse": 0.0
+      },
+      "hf_on_bf16_lattice_pct": 100.0,
+      "raw": {
+        "divergent_rows": 0,
+        "exact_pct": 100.0,
+        "max_abs": 0.0,
+        "rel_rmse": 0.0,
+        "rmse": 0.0
+      },
+      "verdict": "byte-exact"
+    },
+    "o_proj": {
+      "bf16_rounded": {
+        "divergent_rows": 511,
+        "exact_pct": 33.24928283691406,
+        "max_abs": 0.0048828125,
+        "rel_rmse": 0.005003903841999267,
+        "rmse": 0.00015129515753667814
+      },
+      "hf_on_bf16_lattice_pct": 100.0,
+      "raw": {
+        "divergent_rows": 512,
+        "exact_pct": 0.000762939453125,
+        "max_abs": 0.004406079649925232,
+        "rel_rmse": 0.004759003129881009,
+        "rmse": 0.00014389048051035612
+      },
+      "verdict": "REAL"
+    },
+    "q_a_layernorm": {
+      "bf16_rounded": {
+        "divergent_rows": 0,
+        "exact_pct": 100.0,
+        "max_abs": 0.0,
+        "rel_rmse": 0.0,
+        "rmse": 0.0
+      },
+      "hf_on_bf16_lattice_pct": 100.0,
+      "raw": {
+        "divergent_rows": 0,
+        "exact_pct": 100.0,
+        "max_abs": 0.0,
+        "rel_rmse": 0.0,
+        "rmse": 0.0
+      },
+      "verdict": "byte-exact"
+    },
+    "q_a_proj": {
+      "bf16_rounded": {
+        "divergent_rows": 0,
+        "exact_pct": 100.0,
+        "max_abs": 0.0,
+        "rel_rmse": 0.0,
+        "rmse": 0.0
+      },
+      "hf_on_bf16_lattice_pct": 100.0,
+      "raw": {
+        "divergent_rows": 0,
+        "exact_pct": 100.0,
+        "max_abs": 0.0,
+        "rel_rmse": 0.0,
+        "rmse": 0.0
+      },
+      "verdict": "byte-exact"
+    },
+    "q_b_proj": {
+      "bf16_rounded": {
+        "divergent_rows": 0,
+        "exact_pct": 100.0,
+        "max_abs": 0.0,
+        "rel_rmse": 0.0,
+        "rmse": 0.0
+      },
+      "hf_on_bf16_lattice_pct": 100.0,
+      "raw": {
+        "divergent_rows": 0,
+        "exact_pct": 100.0,
+        "max_abs": 0.0,
+        "rel_rmse": 0.0,
+        "rmse": 0.0
+      },
+      "verdict": "byte-exact"
+    }
+  }
+}
