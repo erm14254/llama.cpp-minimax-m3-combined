@@ -1,0 +1,303 @@
+#!/usr/bin/env python3
+"""HF logical-layer-1 sub-boundary stages capture (full-sequence).
+
+Monkey-patches trunk.layers[1].forward with the proven snap pattern (the
+logical0 stages script), replicating modeling_longcat_flash_sparse.py
+lines 980-1032 statement-for-statement, and captures full-sequence
+[512, 3072] float32 surfaces:
+
+  input        layer-1 input (must equal hidden_states[1] and the committed
+               causal-reset oracle logical_00_oracle.bin byte-exactly)
+  attn0_norm   input_layernorm[0] output    (operator-isolated comparandum)
+  attn0_resid  residual + self_attn[0]
+  mlp0_resid   residual + mlps[0]           (ScMoE shortcut computed, NOT added)
+  attn1_norm   input_layernorm[1] output
+  attn1_resid  residual + self_attn[1] (topk_indices reused from attn[0])
+  layer_out    residual + mlps[1] + shortcut (must equal hidden_states[2]
+               same-pass AND the committed logical_01 full-sequence SHA)
+
+Fail-closed identity gates prove the patched forward is faithful and the
+comparanda inputs match the injected reset value byte-exactly.
+Measurement-only; no model or runtime modification.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import struct
+import time
+import types
+from pathlib import Path
+
+EXPECTED_RUNTIME_SHA256 = "a3bc31616c1f0ddff9f195cbc78f4561a40187c50fe3bf29e2e98d9228947428"
+EXPECTED_TOKEN_SHA256 = "4893d78751e8577f817da21a7e00718c7c14e0d80732e1b7e4da36da6677821c"
+EXPECTED_ORACLE_SHA256 = "d810f93c50ea42c5909ab289ebf62a0c5629f40530d2e5fc706dde67f0eaf763"
+EXPECTED_LOGICAL01_SHA256 = "85097c18565f04c0e0676146ae7ee3f5ffc674789db6f17c028606595d6d16e2"
+EXPECTED_TOKEN_COUNT = 512
+EXPECTED_HIDDEN = 3072
+EXPECTED_HIDDEN_STATES = 15
+VOCAB_SIZE = 131072
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def stop(msg: str) -> None:
+    raise SystemExit(f"STOP: {msg}")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--model-dir", required=True)
+    ap.add_argument("--tokens-bin", required=True)
+    ap.add_argument("--oracle-bin", required=True)
+    ap.add_argument("--out-dir", required=True)
+    ns = ap.parse_args()
+
+    model_dir = Path(ns.model_dir).resolve()
+    tokens_bin = Path(ns.tokens_bin).resolve()
+    oracle_bin = Path(ns.oracle_bin).resolve()
+    out_dir = Path(ns.out_dir).resolve()
+
+    if os.environ.get("TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"):
+        stop("TORCH_ALLOW_TF32_CUBLAS_OVERRIDE is set - refusing to run")
+
+    for p, what in ((model_dir, "model dir"), (tokens_bin, "token file"), (oracle_bin, "oracle")):
+        if not p.exists():
+            stop(f"{what} missing: {p}")
+
+    runtime = model_dir / "modeling_longcat_flash_sparse.py"
+    if not runtime.is_file():
+        stop(f"runtime missing: {runtime}")
+
+    runtime_sha = sha256_file(runtime)
+    token_sha = sha256_file(tokens_bin)
+    oracle_sha = sha256_file(oracle_bin)
+    print(f"runtime_sha256={runtime_sha}")
+    print(f"tokens_bin_sha256={token_sha}")
+    print(f"oracle_sha256={oracle_sha}")
+    if runtime_sha != EXPECTED_RUNTIME_SHA256:
+        stop("frozen runtime SHA mismatch")
+    if token_sha != EXPECTED_TOKEN_SHA256:
+        stop("authoritative token SHA mismatch")
+    if oracle_sha != EXPECTED_ORACLE_SHA256:
+        stop("causal-reset oracle SHA mismatch")
+
+    raw = tokens_bin.read_bytes()
+    if len(raw) != EXPECTED_TOKEN_COUNT * 4:
+        stop(f"unexpected token file size: {len(raw)}")
+    ids = list(struct.unpack(f"<{EXPECTED_TOKEN_COUNT}i", raw))
+    for i, token_id in enumerate(ids):
+        if not 0 <= token_id < VOCAB_SIZE:
+            stop(f"token {i} out of range: {token_id}")
+
+    try:
+        import numpy as np
+        import torch
+        import transformers
+        from transformers import AutoModelForCausalLM
+    except Exception as exc:
+        stop(f"import failure: {exc}")
+
+    if not torch.cuda.is_available():
+        stop("CUDA unavailable")
+    print(f"torch={torch.__version__}")
+    print(f"transformers={transformers.__version__}")
+
+    oracle = np.frombuffer(oracle_bin.read_bytes(), dtype="<f4").reshape(
+        EXPECTED_TOKEN_COUNT, EXPECTED_HIDDEN
+    )
+
+    torch.set_grad_enabled(False)
+    torch.backends.cuda.matmul.allow_tf32 = False
+
+    t0 = time.perf_counter()
+    model = AutoModelForCausalLM.from_pretrained(
+        str(model_dir),
+        trust_remote_code=True,
+        local_files_only=True,
+        torch_dtype=torch.bfloat16,
+        low_cpu_mem_usage=True,
+        device_map={"": "cuda:0"},
+    )
+    model.eval()
+    torch.cuda.synchronize()
+    print(f"load_seconds={time.perf_counter() - t0:.3f}")
+
+    trunk = model.model
+    if len(trunk.layers) != 14:
+        stop(f"unexpected logical layer count: {len(trunk.layers)}")
+    layer1 = trunk.layers[1]
+
+    captured: dict[str, torch.Tensor] = {}
+
+    def snap(name: str, tensor: torch.Tensor) -> None:
+        if name in captured:
+            stop("duplicate stage capture: " + name)
+        if tuple(tensor.shape) != (1, EXPECTED_TOKEN_COUNT, EXPECTED_HIDDEN):
+            stop(f"{name} unexpected shape {tuple(tensor.shape)}")
+        captured[name] = tensor.detach().clone()
+
+    # Statement-for-statement replica of LongcatFlashSparseDecoderLayer.forward
+    # (modeling_longcat_flash_sparse.py:980-1032) with snap() inserts only.
+    def capture_forward(
+        self,
+        hidden_states,
+        attention_mask=None,
+        position_ids=None,
+        past_key_values=None,
+        use_cache=False,
+        position_embeddings=None,
+        sequence_attention_mask=None,
+        **kwargs,
+    ):
+        snap("input", hidden_states)
+
+        residual = hidden_states
+        hidden_states = self.input_layernorm[0](hidden_states)
+        snap("attn0_norm", hidden_states)
+
+        hidden_states, _, topk_indices = self.self_attn[0](
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            use_cache=use_cache,
+            position_embeddings=position_embeddings,
+            sequence_attention_mask=sequence_attention_mask,
+            **kwargs,
+        )
+        hidden_states = residual + hidden_states
+        snap("attn0_resid", hidden_states)
+
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm[0](hidden_states)
+        shortcut_mlp_output = self.mlp(hidden_states)
+        hidden_states = self.mlps[0](hidden_states)
+        hidden_states = residual + hidden_states
+        snap("mlp0_resid", hidden_states)
+
+        residual = hidden_states
+        hidden_states = self.input_layernorm[1](hidden_states)
+        snap("attn1_norm", hidden_states)
+
+        hidden_states, _, _ = self.self_attn[1](
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            use_cache=use_cache,
+            position_embeddings=position_embeddings,
+            sequence_attention_mask=sequence_attention_mask,
+            topk_indices=topk_indices,
+            **kwargs,
+        )
+        hidden_states = residual + hidden_states
+        snap("attn1_resid", hidden_states)
+
+        residual = hidden_states
+        hidden_states = self.post_attention_layernorm[1](hidden_states)
+        hidden_states = self.mlps[1](hidden_states)
+        hidden_states = residual + hidden_states + shortcut_mlp_output
+        snap("layer_out", hidden_states)
+        return hidden_states
+
+    original_forward = layer1.forward
+    layer1.forward = types.MethodType(capture_forward, layer1)
+
+    input_ids = torch.tensor([ids], dtype=torch.long, device="cuda:0")
+    try:
+        t1 = time.perf_counter()
+        with torch.inference_mode():
+            out = trunk(
+                input_ids=input_ids,
+                use_cache=False,
+                output_hidden_states=True,
+                return_dict=True,
+            )
+        torch.cuda.synchronize()
+        print(f"forward_seconds={time.perf_counter() - t1:.3f}")
+    finally:
+        layer1.forward = original_forward
+
+    hidden_states = out.hidden_states
+    if hidden_states is None or len(hidden_states) != EXPECTED_HIDDEN_STATES:
+        stop("unexpected hidden_states")
+
+    expected_names = {
+        "input", "attn0_norm", "attn0_resid", "mlp0_resid",
+        "attn1_norm", "attn1_resid", "layer_out",
+    }
+    if set(captured) != expected_names:
+        stop(f"captured stage set mismatch: {sorted(captured)}")
+
+    # Faithfulness + input-identity gates (same pass, bytewise).
+    if not torch.equal(captured["input"], hidden_states[1]):
+        stop("input snap != hidden_states[1]")
+    if not torch.equal(captured["layer_out"], hidden_states[2]):
+        stop("layer_out snap != hidden_states[2] - patched forward not faithful")
+    inp_f32 = (
+        captured["input"][0].float().detach().cpu().contiguous().numpy().astype("<f4", copy=False)
+    )
+    if not np.array_equal(inp_f32, oracle):
+        stop("layer-1 input != causal-reset oracle bytes")
+    print("identity gates: input==hidden_states[1]==oracle, layer_out==hidden_states[2] PASS")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    order = ["input", "attn0_norm", "attn0_resid", "mlp0_resid", "attn1_norm", "attn1_resid", "layer_out"]
+
+    summary = {
+        "description": "HF logical-layer-1 sub-boundary stages (full-sequence, causal-reset comparanda)",
+        "runtime_sha256": runtime_sha,
+        "tokens_bin_sha256": token_sha,
+        "oracle_sha256": oracle_sha,
+        "sequence_length": EXPECTED_TOKEN_COUNT,
+        "hidden_size": EXPECTED_HIDDEN,
+        "layout": "token-major [512, 3072] float32-le",
+        "torch": torch.__version__,
+        "transformers": transformers.__version__,
+        "tf32_disabled": True,
+        "identity_gates": "input==hidden_states[1]==oracle; layer_out==hidden_states[2]; bytewise, same pass",
+        "surfaces": {},
+    }
+    sums_lines = []
+    for name in order:
+        v = (
+            captured[name][0].float().detach().cpu().contiguous().numpy().astype("<f4", copy=False)
+        )
+        if not np.isfinite(v).all():
+            stop(f"{name}: non-finite values")
+        path = out_dir / f"{name}.bin"
+        path.write_bytes(v.tobytes())
+        full_sha = sha256_file(path)
+        summary["surfaces"][name] = {
+            "sha256": full_sha,
+            "min": float(v.min()),
+            "max": float(v.max()),
+            "rms": float(np.sqrt(np.mean(v.astype(np.float64) ** 2))),
+        }
+        sums_lines.append(f"{full_sha}  {name}.bin")
+        print(f"{name}: sha256={full_sha}")
+
+    # layer_out file must equal the committed logical_01 full-sequence capture.
+    if summary["surfaces"]["layer_out"]["sha256"] != EXPECTED_LOGICAL01_SHA256:
+        stop("layer_out.bin != committed logical_01 full-sequence SHA")
+    print("layer_out == committed logical_01 full-sequence SHA PASS")
+
+    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    sums_lines.append(f"{sha256_file(out_dir / 'summary.json')}  summary.json")
+    (out_dir / "SHA256SUMS.txt").write_text("\n".join(sums_lines) + "\n", encoding="utf-8")
+
+    print("HF BLOCK1 STAGES CAPTURE: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

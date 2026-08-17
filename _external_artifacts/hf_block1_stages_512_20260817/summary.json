@@ -1,0 +1,57 @@
+{
+  "description": "HF logical-layer-1 sub-boundary stages (full-sequence, causal-reset comparanda)",
+  "runtime_sha256": "a3bc31616c1f0ddff9f195cbc78f4561a40187c50fe3bf29e2e98d9228947428",
+  "tokens_bin_sha256": "4893d78751e8577f817da21a7e00718c7c14e0d80732e1b7e4da36da6677821c",
+  "oracle_sha256": "d810f93c50ea42c5909ab289ebf62a0c5629f40530d2e5fc706dde67f0eaf763",
+  "sequence_length": 512,
+  "hidden_size": 3072,
+  "layout": "token-major [512, 3072] float32-le",
+  "torch": "2.13.0+cu132",
+  "transformers": "5.15.0",
+  "tf32_disabled": true,
+  "identity_gates": "input==hidden_states[1]==oracle; layer_out==hidden_states[2]; bytewise, same pass",
+  "surfaces": {
+    "input": {
+      "sha256": "d810f93c50ea42c5909ab289ebf62a0c5629f40530d2e5fc706dde67f0eaf763",
+      "min": -15.25,
+      "max": 17.875,
+      "rms": 0.10572163639877703
+    },
+    "attn0_norm": {
+      "sha256": "afa16c6c3324387e9261c708cae044b8fcb08acda8c8f6315d2ba8d39a8f0fd7",
+      "min": -4.65625,
+      "max": 10.9375,
+      "rms": 0.11282485138053502
+    },
+    "attn0_resid": {
+      "sha256": "4718460be4d2bb0243c4b9bcf76e20ca4b8d5a0f35ec3717ca6b8dd5cb5f73c3",
+      "min": -15.1875,
+      "max": 17.75,
+      "rms": 0.10521369830226493
+    },
+    "mlp0_resid": {
+      "sha256": "16b9283f2cccec060e6a78004774020d730394fbfa7c314d68a9ad959ac336fc",
+      "min": -40.0,
+      "max": 41.75,
+      "rms": 0.16816947079168132
+    },
+    "attn1_norm": {
+      "sha256": "6a6280625b6cdf05f40d84b807f581043badd318140e306d3260f368a2d3ef1e",
+      "min": -3.03125,
+      "max": 3.734375,
+      "rms": 0.07510310441645231
+    },
+    "attn1_resid": {
+      "sha256": "40e19bfabd731936d695746876ad1101cb5ea95ef31e18aa5b169fe3d95e56e9",
+      "min": -40.0,
+      "max": 41.75,
+      "rms": 0.1898122037307245
+    },
+    "layer_out": {
+      "sha256": "85097c18565f04c0e0676146ae7ee3f5ffc674789db6f17c028606595d6d16e2",
+      "min": -88.0,
+      "max": 89.0,
+      "rms": 0.2830075659405142
+    }
+  }
+}
