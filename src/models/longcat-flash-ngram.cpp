@@ -676,6 +676,25 @@ llama_model_longcat_flash_ngram::graph::graph(
 
             // compressed KV + rope
             ggml_tensor * kv_cmpr_pe = ggml_mul_mat(ctx0, model.layers[il].wkv_a_mqa, cur);
+            if (il == 0) {
+                // LONGCAT_ATTN0_KV_BF16_SEMANTICS_DIAGNOSTIC (Experiment A/D1):
+                //
+                // HF kv_a_proj_with_mqa is a BF16 nn.Linear: its full 576-wide
+                // output is BF16 *before* the [512, 64] split
+                // (modeling_longcat_flash.py:419-420). The authoritative
+                // Blackwell comparison showed all 294912/294912 elements of
+                // this F32 GEMM output equal the HF oracle after one
+                // round-to-nearest-even BF16 rounding (STATUS_2026-08-17.md).
+                // Round the full tensor here so both split views -- kv_cmpr
+                // and the RoPE input k_pe -- read the HF lattice, then widen
+                // back to F32 so view strides and the downstream graph are
+                // unchanged.
+                kv_cmpr_pe = ggml_cast(ctx0, kv_cmpr_pe, GGML_TYPE_BF16);
+                kv_cmpr_pe = ggml_cast(ctx0, kv_cmpr_pe, GGML_TYPE_F32);
+            }
+            // LONGCAT_MLA_STAGE_SURFACE: at il == 0 this callback observes the
+            // post-roundtrip tensor -- the dumped surface must represent the
+            // gated semantics, not the pre-cast intermediate.
             cb(kv_cmpr_pe, "kv_cmpr_pe", il);
 
             ggml_tensor * kv_cmpr =
@@ -701,12 +720,38 @@ llama_model_longcat_flash_ngram::graph::graph(
             // normalize compressed KV
             if (il == 0) {
                 // LONGCAT_ATTN0_KVA_NORM_EPS_DIAGNOSTIC:
-                // HF LongCat kv_a_layernorm uses the RMSNorm default eps=1e-6.
+                // HF LongCat kv_a_layernorm uses the RMSNorm default eps=1e-6
+                // (LongcatFlashRMSNorm.__init__ default at
+                // modeling_longcat_flash.py:49; constructed without an eps
+                // override at :367). eps is fixed by source: the offline sweep
+                // excludes 1e-5 but cannot distinguish 1e-6 from 1e-8.
                 kv_cmpr = ggml_rms_norm(ctx0, kv_cmpr, 1.0e-6f);
+
+                // LONGCAT_ATTN0_KV_BF16_SEMANTICS_DIAGNOSTIC (Experiment A/D2):
+                //
+                // LongcatFlashRMSNorm casts the normalized activation back to
+                // BF16 before multiplying by its BF16 weight, and the product
+                // is stored in BF16 (modeling_longcat_flash.py:57-62). Mirror
+                // of the proven Q-side pattern above, which reproduces the HF
+                // oracle byte-exactly at width 1536.
+                kv_cmpr = ggml_cast(ctx0, kv_cmpr, GGML_TYPE_BF16);
+                kv_cmpr = ggml_cast(ctx0, kv_cmpr, GGML_TYPE_F32);
+
                 kv_cmpr = ggml_mul(
                     ctx0,
                     kv_cmpr,
                     model.layers[il].attn_kv_a_norm);
+
+                // RMSNorm output is BF16.
+                kv_cmpr = ggml_cast(ctx0, kv_cmpr, GGML_TYPE_BF16);
+                // LONGCAT_MLA_STAGE_SURFACE: HF kv_a_layernorm boundary, before
+                // the MLA LoRA kv scaling below. The callback observes the
+                // final rounded tensor; the dump helper widens BF16 to F32.
+                cb(kv_cmpr, "kv_a_norm", il);
+
+                // Widen the rounded result for the existing F32 scaling and
+                // cache path, exactly as the Q path widens after q_b_proj.
+                kv_cmpr = ggml_cast(ctx0, kv_cmpr, GGML_TYPE_F32);
             } else {
                 kv_cmpr = build_norm(
                     kv_cmpr,
@@ -714,11 +759,11 @@ llama_model_longcat_flash_ngram::graph::graph(
                     nullptr,
                     LLM_NORM_RMS,
                     il);
+                // LONGCAT_MLA_STAGE_SURFACE: HF kv_a_layernorm boundary, before
+                // the MLA LoRA kv scaling below. Renamed because the pre-norm
+                // view at the top of this block already uses "kv_cmpr".
+                cb(kv_cmpr, "kv_a_norm", il);
             }
-            // LONGCAT_MLA_STAGE_SURFACE: HF kv_a_layernorm boundary, before
-            // the MLA LoRA kv scaling below. Renamed because the pre-norm view
-            // at the top of this block already uses "kv_cmpr".
-            cb(kv_cmpr, "kv_a_norm", il);
 
             // MLA LoRA scaling: kv_cmpr *= sqrt(hidden_size / kv_lora_rank)
             kv_cmpr = ggml_scale(ctx0, kv_cmpr, mla_scale_kv);
