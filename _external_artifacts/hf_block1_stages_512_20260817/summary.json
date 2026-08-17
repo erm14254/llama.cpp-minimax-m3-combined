@@ -13,42 +13,56 @@
   "surfaces": {
     "input": {
       "sha256": "d810f93c50ea42c5909ab289ebf62a0c5629f40530d2e5fc706dde67f0eaf763",
+      "determinism_gate": "PASS",
       "min": -15.25,
       "max": 17.875,
       "rms": 0.10572163639877703
     },
     "attn0_norm": {
       "sha256": "afa16c6c3324387e9261c708cae044b8fcb08acda8c8f6315d2ba8d39a8f0fd7",
+      "determinism_gate": "PASS",
       "min": -4.65625,
       "max": 10.9375,
       "rms": 0.11282485138053502
     },
+    "attn0_out": {
+      "sha256": "c90c8e0669b9261f3bfa21abc1cc7f4f7fae48ee4393755ad99ed9e7c1a5e2e9",
+      "determinism_gate": "recorded-fresh",
+      "min": -0.44140625,
+      "max": 0.6953125,
+      "rms": 0.03781413231810395
+    },
     "attn0_resid": {
       "sha256": "4718460be4d2bb0243c4b9bcf76e20ca4b8d5a0f35ec3717ca6b8dd5cb5f73c3",
+      "determinism_gate": "PASS",
       "min": -15.1875,
       "max": 17.75,
       "rms": 0.10521369830226493
     },
     "mlp0_resid": {
       "sha256": "16b9283f2cccec060e6a78004774020d730394fbfa7c314d68a9ad959ac336fc",
+      "determinism_gate": "PASS",
       "min": -40.0,
       "max": 41.75,
       "rms": 0.16816947079168132
     },
     "attn1_norm": {
       "sha256": "6a6280625b6cdf05f40d84b807f581043badd318140e306d3260f368a2d3ef1e",
+      "determinism_gate": "PASS",
       "min": -3.03125,
       "max": 3.734375,
       "rms": 0.07510310441645231
     },
     "attn1_resid": {
       "sha256": "40e19bfabd731936d695746876ad1101cb5ea95ef31e18aa5b169fe3d95e56e9",
+      "determinism_gate": "PASS",
       "min": -40.0,
       "max": 41.75,
       "rms": 0.1898122037307245
     },
     "layer_out": {
       "sha256": "85097c18565f04c0e0676146ae7ee3f5ffc674789db6f17c028606595d6d16e2",
+      "determinism_gate": "PASS",
       "min": -88.0,
       "max": 89.0,
       "rms": 0.2830075659405142

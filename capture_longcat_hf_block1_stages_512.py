@@ -174,6 +174,9 @@ def main() -> int:
             sequence_attention_mask=sequence_attention_mask,
             **kwargs,
         )
+        # Pre-residual-add attention output (post-o_proj): the semantic match
+        # to the C++ attn_out-2 node, captured BEFORE the add.
+        snap("attn0_out", hidden_states)
         hidden_states = residual + hidden_states
         snap("attn0_resid", hidden_states)
 
@@ -232,7 +235,7 @@ def main() -> int:
         stop("unexpected hidden_states")
 
     expected_names = {
-        "input", "attn0_norm", "attn0_resid", "mlp0_resid",
+        "input", "attn0_norm", "attn0_out", "attn0_resid", "mlp0_resid",
         "attn1_norm", "attn1_resid", "layer_out",
     }
     if set(captured) != expected_names:
@@ -251,7 +254,20 @@ def main() -> int:
     print("identity gates: input==hidden_states[1]==oracle, layer_out==hidden_states[2] PASS")
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    order = ["input", "attn0_norm", "attn0_resid", "mlp0_resid", "attn1_norm", "attn1_resid", "layer_out"]
+    order = ["input", "attn0_norm", "attn0_out", "attn0_resid", "mlp0_resid", "attn1_norm", "attn1_resid", "layer_out"]
+
+    # Determinism gate: every previously captured surface must reproduce the
+    # committed manifest hash of the first capture run byte-exactly
+    # (attn0_out is new and recorded fresh).
+    prior_sha = {
+        "input": "d810f93c50ea42c5909ab289ebf62a0c5629f40530d2e5fc706dde67f0eaf763",
+        "attn0_norm": "afa16c6c3324387e9261c708cae044b8fcb08acda8c8f6315d2ba8d39a8f0fd7",
+        "attn0_resid": "4718460be4d2bb0243c4b9bcf76e20ca4b8d5a0f35ec3717ca6b8dd5cb5f73c3",
+        "mlp0_resid": "16b9283f2cccec060e6a78004774020d730394fbfa7c314d68a9ad959ac336fc",
+        "attn1_norm": "6a6280625b6cdf05f40d84b807f581043badd318140e306d3260f368a2d3ef1e",
+        "attn1_resid": "40e19bfabd731936d695746876ad1101cb5ea95ef31e18aa5b169fe3d95e56e9",
+        "layer_out": "85097c18565f04c0e0676146ae7ee3f5ffc674789db6f17c028606595d6d16e2",
+    }
 
     summary = {
         "description": "HF logical-layer-1 sub-boundary stages (full-sequence, causal-reset comparanda)",
@@ -277,14 +293,22 @@ def main() -> int:
         path = out_dir / f"{name}.bin"
         path.write_bytes(v.tobytes())
         full_sha = sha256_file(path)
+        if name in prior_sha and full_sha != prior_sha[name]:
+            stop(
+                f"{name}: determinism gate FAIL: {full_sha} != committed {prior_sha[name]}"
+            )
         summary["surfaces"][name] = {
             "sha256": full_sha,
+            "determinism_gate": "PASS" if name in prior_sha else "recorded-fresh",
             "min": float(v.min()),
             "max": float(v.max()),
             "rms": float(np.sqrt(np.mean(v.astype(np.float64) ** 2))),
         }
         sums_lines.append(f"{full_sha}  {name}.bin")
-        print(f"{name}: sha256={full_sha}")
+        print(
+            f"{name}: sha256={full_sha} "
+            f"{'determinism PASS' if name in prior_sha else 'fresh'}"
+        )
 
     # layer_out file must equal the committed logical_01 full-sequence capture.
     if summary["surfaces"]["layer_out"]["sha256"] != EXPECTED_LOGICAL01_SHA256:
