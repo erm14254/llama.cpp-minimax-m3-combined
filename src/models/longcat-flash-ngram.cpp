@@ -1061,24 +1061,7 @@ llama_model_longcat_flash_ngram::graph::graph(
         cb(ffn_inp, "ffn_inp", il);
 
         // FFN norm
-        // LONGCAT_TRUNK_FFN_NORM_HF_SEMANTICS (production, ALL il, N2): HF
-        // post_attention_layernorm is byte-closed as
-        // bf16(bf16(x*rsqrt(var+1e-5))*w) at ffn_norm-2 under an exact
-        // predecessor (1572864/1572864; runtime-verified eps 1e-5), and HF
-        // construction is role-uniform across the trunk. This site was
-        // uncorrected at EVERY layer including il == 0 (the block-0
-        // corrective stack never touched the FFN half); the reviewed
-        // trunk-norm audit scopes N2 to il = 0..27. eps unchanged
-        // (f_norm_rms_eps = 1e-5, matching HF).
-        cur = ggml_rms_norm(ctx0, ffn_inp, hparams.f_norm_rms_eps);
-
-        cur = ggml_cast(ctx0, cur, GGML_TYPE_BF16);
-        cur = ggml_cast(ctx0, cur, GGML_TYPE_F32);
-
-        cur = ggml_mul(ctx0, cur, model.layers[il].ffn_norm);
-
-        cur = ggml_cast(ctx0, cur, GGML_TYPE_BF16);
-        cur = ggml_cast(ctx0, cur, GGML_TYPE_F32);
+        cur = build_norm(ffn_inp, model.layers[il].ffn_norm, NULL, LLM_NORM_RMS, il);
         cb(cur, "ffn_norm", il);
 
         if (is_even_block) {
