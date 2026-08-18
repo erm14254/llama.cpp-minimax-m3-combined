@@ -1,0 +1,142 @@
+{
+  "gates": [
+    {
+      "actual_sha256": "32173b18459358494f943288b974ef7df70eb540ff9e366c720c14f250407a96",
+      "expected_sha256": "32173b18459358494f943288b974ef7df70eb540ff9e366c720c14f250407a96",
+      "file": "block2_q_a_proj_full.bin",
+      "gate": "B1_q_a_proj",
+      "verdict": "PASS"
+    },
+    {
+      "actual_sha256": "28ea5b52221a94ddf780f04507f11aee7b6fc8617974f53d558424d41c470f3f",
+      "expected_sha256": "28ea5b52221a94ddf780f04507f11aee7b6fc8617974f53d558424d41c470f3f",
+      "file": "block2_kv_a_proj_full.bin",
+      "gate": "B4_kv_a_proj",
+      "verdict": "PASS"
+    },
+    {
+      "actual_sha256": "4c9792430fee2716b573ccf365617e537adf8305571e2a5a0b1a881c0c4de340",
+      "expected_sha256": "4c9792430fee2716b573ccf365617e537adf8305571e2a5a0b1a881c0c4de340",
+      "file": "block2_q_a_norm_full.bin",
+      "gate": "Bqn_q_a_norm",
+      "note": "D6 byte-closure prediction",
+      "verdict": "PASS"
+    },
+    {
+      "actual_sha256": "3b2af169a13df34402afb8b25039af9ab8ed004a5df895078f94fed8d08b6674",
+      "expected_sha256": "c91991eb459352ec407aebcee5ee2b12e7b25db0bafd3e0462955a8f8144df6b",
+      "file": "block2_kv_a_norm_full.bin",
+      "gate": "Bkvn_kv_a_norm",
+      "note": "7/262144 one-bf16-ulp mismatches (documented D6 residue class was 7/262144); NOT auto-accepted - review required",
+      "verdict": "NEAR_TIE_STOP_FOR_REVIEW"
+    },
+    {
+      "actual_sha256": "ecb70ef6c9bd4d6f28a67467f3b5ec3fc575d4f37cd2e81bce7cc7554323f308",
+      "expected_sha256": "ecb70ef6c9bd4d6f28a67467f3b5ec3fc575d4f37cd2e81bce7cc7554323f308",
+      "file": "block2_q_b_proj_full.bin",
+      "gate": "B2_q_b_proj",
+      "verdict": "PASS"
+    },
+    {
+      "actual_sha256": "d9234fa93a69490a5932c4ba10a5cfef58c96752b094362093ef92336f29da21",
+      "expected_sha256": "d9234fa93a69490a5932c4ba10a5cfef58c96752b094362093ef92336f29da21",
+      "file": "block2_q_scaled_full.bin",
+      "gate": "B3_q_scaled",
+      "verdict": "PASS"
+    },
+    {
+      "actual_sha256": "14a1b04f05c8dd3e2f4e3b73416f4e940d057ff689820a04b6e90fea64fc1bb0",
+      "expected_sha256": "22f1d6be4cee2b8704f973110876d62761e1891a95e0b71681f606f40a93d0c9",
+      "file": "block2_kv_cmpr_scaled_full.bin",
+      "gate": "B5_kv_cmpr_scaled",
+      "note": "upstream kv norm gate not byte-exact: chain gate not independently interpretable",
+      "verdict": "FAIL"
+    }
+  ],
+  "kv_a_norm_near_tie_analysis": {
+    "all_one_ulp": true,
+    "first_mismatch_flat_index": 90699,
+    "max_ulp": 1,
+    "mismatches": 7,
+    "one_ulp_count": 7,
+    "total": 262144
+  },
+  "observational_expected_divergent": {
+    "block1_attn0_out_full.bin": "9f472973450a89d86038cd2f7f86397e7b8f7b521a8aa572939dbfbc13245e2a",
+    "block2_k_pe_rope_full.bin": "85fdd3327205d28406480ddfbb8a131eb62aa6e2cde19c272a096e9302c4a669",
+    "block2_kqv_out_full.bin": "d0f722f8c827ac991d1e06da136ee5a0c846c60859e67aa1c9c6e250dbdcb617",
+    "block2_q_pe_rope_full.bin": "cd0c29105e3e0da69ff8959e1b16503107c12bcdca9e7b161eccbee0a7c9bd88"
+  },
+  "overall": "FAIL",
+  "run_dir": "D:\\llama.cpp-longcat-claude\\cpp_resid_walk_inject2_stageB_512",
+  "run_provenance": {
+    "arithmetic_head": "39abf9d49b36df2ccba7cfb31f20b94b83733296",
+    "binaries": {
+      "ggml-cuda.dll": "502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48",
+      "llama-common.dll": "9367c541149a0969c2f495e5b4f13cbe883967fc4f5df06663c78e73e2ea4888",
+      "llama-debug.exe": "df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0",
+      "llama.dll": "a615af01141fe5ab96b90cdd2ec0e28e54ebdfbca0c4f0e5983537604028b247"
+    },
+    "cublas_module": "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\bin\\x64\\cublas64_13.dll",
+    "cublas_version": "6.14.11.1330",
+    "env_sweep_names": [
+      "LONGCAT_HIDDEN_DUMP_DIR",
+      "LONGCAT_ROPE_INJECT_DIR",
+      "LONGCAT_ROPE_ORACLE_DIR",
+      "LONGCAT_RESID_WALK_DUMP_DIR",
+      "LONGCAT_RESID_INJECT_DIR",
+      "LONGCAT_ATTN_NORM2_INJECT_DIR",
+      "LONGCAT_PROJ_INJECT_DIR",
+      "LONGCAT_NORM_INJECT_DIR",
+      "GGML_CUDA_ALLREDUCE",
+      "GGML_CUDA_CUBLAS_COMPUTE_TYPE",
+      "GGML_CUDA_DEVICES",
+      "GGML_CUDA_DISABLE_FUSION",
+      "GGML_CUDA_DISABLE_GRAPHS",
+      "GGML_CUDA_ENABLE_UNIFIED_MEMORY",
+      "GGML_CUDA_GRAPH_OPT",
+      "GGML_CUDA_NO_PINNED",
+      "GGML_CUDA_P2P",
+      "GGML_CUDA_PDL",
+      "GGML_CUDA_REGISTER_HOST",
+      "GGML_CUDA_VALIDATE_MUL_MAT_ID",
+      "GGML_CUDA_AR_BF16_THRESHOLD",
+      "GGML_CUDA_AR_COPY_CHUNK_BYTES",
+      "GGML_CUDA_AR_COPY_THRESHOLD",
+      "GGML_OP_OFFLOAD_MIN_BATCH",
+      "GGML_CPU_DISABLE_FUSION",
+      "GGML_BACKEND_PATH",
+      "GGML_TOTAL_THREADS",
+      "GGML_SCHED_DEBUG",
+      "GGML_SCHED_DEBUG_REALLOC",
+      "LLAMA_ATTN_ROT_DISABLE",
+      "LLAMA_GRAPH_REUSE_DISABLE",
+      "LLAMA_BATCH_DEBUG",
+      "LLAMA_GRAPH_INPUT_DEBUG",
+      "LLAMA_GRAPH_RESULT_DEBUG",
+      "LLAMA_KV_CACHE_DEBUG",
+      "LLAMA_DSV4_COMPRESS_DEBUG",
+      "LLAMA_TRACE",
+      "CUBLAS_LOGINFO_DBG",
+      "CUBLAS_LOGDEST_DBG",
+      "CUBLASLT_LOG_LEVEL",
+      "CUBLASLT_LOG_FILE",
+      "TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"
+    ],
+    "exit_code": 0,
+    "instrumentation_head": "923fad90d4d34388a14e2a6c83cf1b7dff9b4ba8",
+    "invocation": "llama-debug.exe -m \"D:\\LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-GGUF-BF16\\LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-BF16-00001-of-00008.gguf\" -f \"D:\\llama.cpp-longcat-claude\\prompt_512_a.txt\" -c 4608 -b 4608 -ub 512 -fa off -ctk f32 -ctv f32 --no-warmup -fitt 4096 -v --tensor-filter \"^(q_a_proj|q_a_norm|q_b_proj|q_pe_rope|kv_cmpr_pe|k_pe_rope|kv_a_norm|kv_cmpr_scaled|kqv_out|attn_out|ffn_inp)-0$\"",
+    "mode": "inject2",
+    "moved_surfaces": {
+      "logical0_attn1_resid.bin": "23a5b42d9509c8fd7c976f5f2f9435fd85c052c711b12822f8becc9f93c1630e"
+    },
+    "oracle2_sha256": "afa16c6c3324387e9261c708cae044b8fcb08acda8c8f6315d2ba8d39a8f0fd7",
+    "oracle3_sha256": null,
+    "oracle4_sha256": null,
+    "oracle5_sha256": null,
+    "oracle6_sha256": null,
+    "oracle_sha256": "d810f93c50ea42c5909ab289ebf62a0c5629f40530d2e5fc706dde67f0eaf763",
+    "suffix": "stageB"
+  },
+  "stage": "B"
+}

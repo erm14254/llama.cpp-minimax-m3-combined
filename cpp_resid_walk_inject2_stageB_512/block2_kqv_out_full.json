@@ -1,0 +1,11 @@
+{
+  "tensor": "kqv_out-2",
+  "shape": [512, 4096],
+  "order": "token-major",
+  "dtype": "float32-le",
+  "bytes": 8388608,
+  "source_type": "f32",
+  "source_contiguous": true,
+  "source_ne": [4096, 512, 1, 1],
+  "source_nb": [4, 16384, 8388608, 8388608]
+}
