@@ -43,7 +43,7 @@ $standingViolations    = 40   # the pre-change standing FAIL count; not an accep
 $expectedBins = @{
     'llama-debug.exe'  = 'df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0'
     'llama-common.dll' = '9367c541149a0969c2f495e5b4f13cbe883967fc4f5df06663c78e73e2ea4888'
-    'llama.dll'        = 'b03c8e7ae15963ee3c41bdd42a9479130c6017d4d822714a01a9b800753d7496'
+    'llama.dll'        = '84012cc489d8864dadca84e1d3f1e426507e5fa5bea9f5fe5283e5b5ead7c343'
     'ggml-cuda.dll'    = '502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48'
 }
 
@@ -205,7 +205,7 @@ Get-ChildItem $outDir -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | So
 $prov = @{
     tag = $Tag
     instrumentation_head = '923fad90d4d34388a14e2a6c83cf1b7dff9b4ba8'
-    arithmetic_head = 'eb6b278b49303dd54b9b34038b6d2beecd8b0454'
+    arithmetic_head = 'f136453d3f001009c5ee039e37b120f352a5e89d'
     binaries = $expectedBins
     cublas_module = $cublasPath
     cublas_version = $cublasVer
