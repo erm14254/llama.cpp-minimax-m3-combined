@@ -705,6 +705,17 @@ llama_model_longcat_flash_ngram::graph::graph(
                         ctx0,
                         model.layers[il].wq_a,
                         cur);
+
+                    // LONGCAT_MLA_BF16_OUTPUT_BOUNDARY (production, il >= 1, A1):
+                    // HF q_a_proj is a BF16 nn.Linear. The block-2 MLA walk
+                    // proved this F32 GEMM output HF-equivalent at the BF16
+                    // output boundary from all-exact inputs (786432/786432
+                    // after RNE rounding). Round, then widen so view strides
+                    // and the downstream F32 graph are unchanged
+                    // (AUDIT_MLA_PRODSCOPE_2026-08-18.md).
+                    q = ggml_cast(ctx0, q, GGML_TYPE_BF16);
+                    q = ggml_cast(ctx0, q, GGML_TYPE_F32);
+
                     // LONGCAT_BLOCK2_MLA_STAGE_SURFACE: distinct names at
                     // il == 2 only, so the block-2 MLA walk can dump the
                     // three Q boundaries separately (name plumbing only; the
@@ -723,10 +734,28 @@ llama_model_longcat_flash_ngram::graph::graph(
                         ctx0,
                         model.layers[il].wq_b,
                         q);
+
+                    // LONGCAT_MLA_BF16_OUTPUT_BOUNDARY (production, il >= 1, A2):
+                    // HF q_b_proj output is BF16; the hex reset proved this
+                    // GEMM HF-equivalent at the BF16 output boundary from
+                    // all-exact inputs (3145728/3145728 after RNE rounding).
+                    q = ggml_cast(ctx0, q, GGML_TYPE_BF16);
+                    q = ggml_cast(ctx0, q, GGML_TYPE_F32);
                     cb(q, il == 2 ? "q_b_proj" : "q", il);
 
                     // MLA LoRA scaling: q *= sqrt(hidden_size / q_lora_rank)
                     q = ggml_scale(ctx0, q, mla_scale_q);
+
+                    // LONGCAT_MLA_BF16_OUTPUT_BOUNDARY (production, il >= 1, A3):
+                    // HF scales the BF16 q_pass/q_rot tensors after the split
+                    // (modeling_longcat_flash.py:424-425), so the scaled q is
+                    // stored on the BF16 lattice. Source-audit-derived and
+                    // block-0-known-answer-supported (the accepted il == 0
+                    // post-scale round above; R1/t=0 rope-entry identity) --
+                    // NOT independently causal-frontier-measured at block 2;
+                    // gated by the offline T4 target in the stage-A run.
+                    q = ggml_cast(ctx0, q, GGML_TYPE_BF16);
+                    q = ggml_cast(ctx0, q, GGML_TYPE_F32);
                     cb(q, "q_scaled", il);
                 }
             } else {
@@ -763,6 +792,15 @@ llama_model_longcat_flash_ngram::graph::graph(
                 // and the RoPE input k_pe -- read the HF lattice, then widen
                 // back to F32 so view strides and the downstream graph are
                 // unchanged.
+                kv_cmpr_pe = ggml_cast(ctx0, kv_cmpr_pe, GGML_TYPE_BF16);
+                kv_cmpr_pe = ggml_cast(ctx0, kv_cmpr_pe, GGML_TYPE_F32);
+            } else {
+                // LONGCAT_MLA_BF16_OUTPUT_BOUNDARY (production, il >= 1, A4):
+                // same full-576 boundary as the il == 0 diagnostic branch
+                // above, which is preserved literally per the reviewed plan.
+                // The block-2 MLA walk proved this GEMM output HF-equivalent
+                // at the BF16 boundary from all-exact inputs (294912/294912
+                // after RNE rounding); both split views read the HF lattice.
                 kv_cmpr_pe = ggml_cast(ctx0, kv_cmpr_pe, GGML_TYPE_BF16);
                 kv_cmpr_pe = ggml_cast(ctx0, kv_cmpr_pe, GGML_TYPE_F32);
             }
@@ -949,6 +987,15 @@ llama_model_longcat_flash_ngram::graph::graph(
                 // o_proj/residual and is measured as delta(A->B). Widen for
                 // the existing F32 cache path. The kv_cmpr_scaled label lands
                 // on the rounded tensor (graph label only, not a dump target).
+                kv_cmpr = ggml_cast(ctx0, kv_cmpr, GGML_TYPE_BF16);
+                kv_cmpr = ggml_cast(ctx0, kv_cmpr, GGML_TYPE_F32);
+            } else {
+                // LONGCAT_MLA_BF16_OUTPUT_BOUNDARY (production, il >= 1, A5):
+                // same post-scale boundary as the il == 0 Experiment B/D3
+                // branch above, preserved literally per the reviewed plan.
+                // The hex reset proved the scale HF-equivalent at the BF16
+                // output boundary from all-exact inputs (262144/262144 after
+                // RNE rounding; scale constant f32-bit-identical 0x401cc471).
                 kv_cmpr = ggml_cast(ctx0, kv_cmpr, GGML_TYPE_BF16);
                 kv_cmpr = ggml_cast(ctx0, kv_cmpr, GGML_TYPE_F32);
             }
