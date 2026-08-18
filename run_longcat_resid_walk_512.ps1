@@ -52,7 +52,7 @@ if ($Mode -in @('inject2','inject3','inject4')) {
 $expectedBins = @{
     'llama-debug.exe'  = 'df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0'
     'llama-common.dll' = '261f08a5d3a4db5f0d699b0b99f4d2dfba4f74d11967d6574b5ce68db2ca9894'
-    'llama.dll'        = '608092376ff15fde2663908c25f7929de773413b83011da54201449ae5860a05'
+    'llama.dll'        = 'afd19bb513c389039f9d644d0b3e7281cbac4ddd9727314a40d03716f509e7c4'
     'ggml-cuda.dll'    = '502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48'
 }
 $expectedOracle5Sha = '4c9792430fee2716b573ccf365617e537adf8305571e2a5a0b1a881c0c4de340'
@@ -81,14 +81,19 @@ $upstreamRegression = @{
     'kqv_out.bin'              = 'fce2bb9840c8eb35977b54f5a3cd56bb31c3da1c3a17620a56087a03383f40ce'
     'o_proj.bin'               = 'ac91a8310515ffcbf8802d761028705a371865e553bfc2a9d4dad8f7f416bf3f'
     'logical0_attn0_resid.bin' = '7e05940b5c1b6b8f3bcaf210ac8938a44ea3006052c1f16e20c855df6452f109'
-    'logical0_mlp0_resid.bin'  = 'de18420a5b2e0d4e2575d1f597cc67c01ccd6e1b17c03dccfd5a20d687b31cb7'
 }
-# Pre-registered expected-moved surface under the stage-A il>=1 arithmetic:
-# ffn_inp-1 (physical block 1, il=1) is the single il>=1-dependent member of
-# the historical 15-file upstream set. Recorded (old committed hash kept for
-# reference), NOT gated; every il==0/pre-layer surface above stays a hard gate.
+# Pre-registered expected-moved surfaces (recorded with their last committed
+# hashes for reference, NOT gated; every surface above stays a hard gate):
+# - ffn_inp-1 (il=1) moved under the stage-A il>=1 arithmetic;
+# - l_out-0 (logical0_mlp0_resid) moves under stage N2, which corrects
+#   ffn_norm-0 - the block-0 FFN half was never part of the block-0
+#   corrective stack, so this is the first arithmetic change inside block 0
+#   since the frozen block-0 gates were established. The 13 surfaces above
+#   (anchors, block-0 MLA six, rope/kqv/o_proj, ffn_inp-0) are all upstream
+#   of ffn_norm-0 and remain hard invariants.
 $expectedMovedSurfaces = @{
     'logical0_attn1_resid.bin' = 'af49add8343451d0f9379dd874a5cd9f59cbe43f95179a7a4fca69cce3da0e12'
+    'logical0_mlp0_resid.bin'  = 'de18420a5b2e0d4e2575d1f597cc67c01ccd6e1b17c03dccfd5a20d687b31cb7'
 }
 $downstreamRegression = @{
     'logical_00.bin'  = 'fa813b529fba809778497da7b43a5c5dc653dcb5906f9078fa08e8c9b35f1e3b'
@@ -581,7 +586,7 @@ $prov = @{
     mode = $Mode
     suffix = $Suffix
     instrumentation_head = 'ac8010739a5081ca94fad1363b5d276eb06c90ae'
-    arithmetic_head = '720e134a39a5b8e3c2ea5a37fda1b7551dd0c417'
+    arithmetic_head = '4a0906394f9a3a875404093b3ec5d85cbb20305c'
     oracle_ffn_sha256 = $oracleFfnSha
     binaries = $expectedBins
     moved_surfaces = $movedRecord
