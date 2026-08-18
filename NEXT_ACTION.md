@@ -504,3 +504,44 @@ V-mem-effective/V-mask/V-logit blocking; rows 2048/2049 reported
 separately), the HF-side 2050 wrapper with fail-closed sparse-engagement
 asserts, `-ub 2304` geometry with a freshly recorded placement tuple —
 then STOP FOR REVIEW before execution.**
+
+**Update 2026-08-18 (C++ 2050 determinism round COMPLETE — the first
+sparse-active execution on the transplanted branch; see the final
+2026-08-18 addendum of `STATUS_2026-08-17.md`):** protocol commit
+`2dd49d39c` (runners + comparator, authored and committed before any
+run); **S1/S2/S3 and P1/P2/P3 all passed every runner gate**; the fresh
+`-ub 2304` placement was established on S1 and reproduced EXACTLY by all
+five later runs — `(29, 17, UP), id_dense_start=0`, offloaded 29/30 (the
+standing `(29, 15, ATTN)` gate remains `-ub 512`-only); every run showed
+real sparse evidence (14 owner + 14 reuse audit lines at `n_kv=2304`,
+14/14 pointer pairing, exactly one
+`query_pos=2049 visible=2050 forced=1040 init_pos=[0,15]
+local_pos=[1026,2049]` mask line); S/P input stream `eb04e101…` exact on
+both families. **Comparator exit 0, reasons empty, anomaly none**
+(`lsa_determinism_2050/verdict.json`): V-input stable (all 8 non-top-K
+surfaces byte-identical across S1/S2/S3); structural top-K validity PASS
+across all 3×14×2050 rows; V-ord — raw ordering differs everywhere
+(characterization-only, as pre-registered for CUB unsorted); V-mem-raw —
+69,504/86,100 row-pair comparisons differ, ALL confined to causally
+invisible −inf fillers, zero visible-affecting; rows 2048/2049 — zero
+raw-set differences across every owner/pair; V-mem-effective — zero
+differences; V-mask — all 42 owner×pair comparisons equal; V-logit —
+P1=P2=P3 logits SHA `52a95141e0b8f10135eb9e632692b22fb5d66804f5857f3da0f1b2f58990ea16`,
+all finite, top-1 483. **Scoped conclusion: the top-K determinism
+blocker (blocker 4) is DISCHARGED for the frozen C++
+machine/runtime/`-ub 2304` protocol — raw ordering remains
+nondeterministic and invisible filler membership may vary (both
+attention-inert); this is NOT a cross-runtime guarantee and NOT a Gate-4
+criterion. Blockers 1–3 remain unresolved. Gate 4 remains NOT RUN.**
+
+**NEXT ACTION (a plan question, NOT begun; its own reviewed plan): the
+HF 2050 first-owner semantic-capture round** — the HF-side 2050 wrapper
+(frozen runtime, raw-ids injection pinned to `eb04e101…`/2050,
+`use_cache=False`, fail-closed sparse-engagement asserts) capturing the
+first-owner indexer surfaces to judge blockers 1–3 (indexer K-norm BF16
+cast ordering; rope/nope split/layout equivalence; YaRN `attn_factor`
+on the indexer RoPE) against the S-family capture set. **No C++
+arithmetic changes and no new C++ 2050 execution are currently
+required.** All standing prohibitions unchanged (never widen frozen
+criteria; no production FA; runtime/toolchain contracts; Gate-4
+criterion is a future review decision).
