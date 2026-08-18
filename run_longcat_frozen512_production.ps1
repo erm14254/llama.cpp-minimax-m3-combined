@@ -49,8 +49,8 @@ $expectedCublasVer     = '6.14.11.1330'
 # exe/ggml-cuda byte-identical to the b98070666 instrumentation set.
 $expectedBins = @{
     'llama-debug.exe'  = 'df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0'
-    'llama-common.dll' = '9367c541149a0969c2f495e5b4f13cbe883967fc4f5df06663c78e73e2ea4888'
-    'llama.dll'        = '84012cc489d8864dadca84e1d3f1e426507e5fa5bea9f5fe5283e5b5ead7c343'
+    'llama-common.dll' = '261f08a5d3a4db5f0d699b0b99f4d2dfba4f74d11967d6574b5ce68db2ca9894'
+    'llama.dll'        = '608092376ff15fde2663908c25f7929de773413b83011da54201449ae5860a05'
     'ggml-cuda.dll'    = '502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48'
 }
 
@@ -212,7 +212,7 @@ Get-ChildItem $outDir -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | So
 $prov = @{
     tag = $Tag
     instrumentation_head = '923fad90d4d34388a14e2a6c83cf1b7dff9b4ba8'
-    arithmetic_head = 'f136453d3f001009c5ee039e37b120f352a5e89d'
+    arithmetic_head = '720e134a39a5b8e3c2ea5a37fda1b7551dd0c417'
     binaries = $expectedBins
     cublas_module = $cublasPath
     cublas_version = $cublasVer
