@@ -1,0 +1,21 @@
+{
+    "exit_code":  0,
+    "logits_sha256":  "fd5cefbf95ee7ca097004c1cdcee3122618b9b77a8f27ebf2c663ff549480441",
+    "invocation":  "llama-debug.exe -m \u003cgguf\u003e -f prompt_512_a.txt -c 4608 -b 4608 -ub 512 -fa off -ctk f32 -ctv f32 --no-warmup -fitt 4096 -v --save-logits --logits-output-dir cpp_logits_512_stageB",
+    "comparator_sha256":  "6976fbc035c60692406a02cc1a6706b2702bbb16f579829e44c29dcdcc57bc93",
+    "binaries":  {
+                     "llama-common.dll":  "9367c541149a0969c2f495e5b4f13cbe883967fc4f5df06663c78e73e2ea4888",
+                     "ggml-cuda.dll":  "502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48",
+                     "llama.dll":  "a615af01141fe5ab96b90cdd2ec0e28e54ebdfbca0c4f0e5983537604028b247",
+                     "llama-debug.exe":  "df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0"
+                 },
+    "instrumentation_head":  "923fad90d4d34388a14e2a6c83cf1b7dff9b4ba8",
+    "arithmetic_head":  "39abf9d49b36df2ccba7cfb31f20b94b83733296",
+    "tokens_sha256":  "4893d78751e8577f817da21a7e00718c7c14e0d80732e1b7e4da36da6677821c",
+    "postprocessing_note":  "scripted run threw at the comparator-exit-code check (comparator exits 1 on a legitimate FAIL verdict); check fixed to verdict-JSON-based; manifest/provenance completed manually in the scripted order against the untouched outputs",
+    "verdict":  "STOP_FOR_REVIEW - 96/131072 violations exceeds the standing 40 (top-1 483 agrees; worst ratio 1.453; top-20 19/20); per the pre-registered rule NOT by itself stage disproof (all stage-B local gates passed to the characterized 7-element near-tie); review decides",
+    "hf_oracle_sha256":  "8825d92d7d9cdea42a4ea3aa2e3df5766bdf880323b1f48ea8c17ff63f3c5ecf",
+    "tag":  "stageB",
+    "cublas_version":  "6.14.11.1330",
+    "cublas_module":  "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\bin\\x64\\cublas64_13.dll"
+}

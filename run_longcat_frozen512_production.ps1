@@ -186,8 +186,13 @@ Write-Host "logits: $($logitsBin.Name) ($logitsSha)"
 Write-Host "== frozen comparator =="
 $cmpJson = Join-Path $outDir ("frozen512_" + $Tag + ".json")
 & $venvPy $comparator --hf-bin $hfOracle --cpp-bin $logitsBin.FullName --out-json $cmpJson
-if ($LASTEXITCODE -ne 0) { throw "comparator exited $LASTEXITCODE" }
+# The comparator exits 1 on a FAIL verdict (a legitimate measurement) and
+# also on hard STOP errors; the verdict JSON existing and parsing with a
+# 'passed' field distinguishes them. Only a missing/unparseable JSON is an
+# infrastructure failure here - the decision rule below owns the verdict.
+if (-not (Test-Path $cmpJson)) { throw "comparator produced no verdict JSON (exit $LASTEXITCODE)" }
 $r = Get-Content $cmpJson -Raw | ConvertFrom-Json
+if ($null -eq $r.passed) { throw "comparator JSON lacks 'passed' (exit $LASTEXITCODE)" }
 
 # Manifest + provenance before the verdict (results are recorded regardless).
 $manifest = Join-Path $outDir 'SHA256SUMS.txt'
