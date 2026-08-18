@@ -422,6 +422,8 @@ public:
 
     ggml_tensor * self_k_rot_lid = nullptr;
 
+    bool longcat_lsa = false;
+
     const llama_hparams hparams;
     const llama_cparams cparams;
 

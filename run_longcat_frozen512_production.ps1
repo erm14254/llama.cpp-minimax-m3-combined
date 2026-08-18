@@ -41,16 +41,14 @@ $expectedTokensSha     = '4893d78751e8577f817da21a7e00718c7c14e0d80732e1b7e4da36
 $expectedCublasVer     = '6.14.11.1330'
 # ($StandingViolations is now the mandatory per-invocation parameter above.)
 
-# Standing state = stage A (stage B reverted by 11d93b56a after the 96-
-# violation endpoint review): source byte-identical to the 458a03685 +
-# 923fad90d pair. The recompiled llama.dll is 99ad8993... (MSVC timestamp
-# embedding; original stage-A build was c890671e...); functional identity is
-# proven by the endpoint reproducing the stage-A logits 9d8583e3... byte-exact.
-# exe/ggml-cuda byte-identical to the b98070666 instrumentation set.
+# Standing arithmetic = Stage A + N2 (promotion bec291558). llama.dll
+# 578dc5b3... is the LSA-transplant Commit A build (additive LSA
+# infrastructure, dead code for this arch; arithmetic byte-untouched);
+# exe/llama-common/ggml-cuda byte-identical to the promotion set.
 $expectedBins = @{
     'llama-debug.exe'  = 'df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0'
     'llama-common.dll' = '261f08a5d3a4db5f0d699b0b99f4d2dfba4f74d11967d6574b5ce68db2ca9894'
-    'llama.dll'        = '15543e91e1dd3048263b29d6f1ee83d66d49150ebfb79844ef711246faec0bb9'
+    'llama.dll'        = '578dc5b33e86d041d4d45233fec5557919ea887aeebdae10c1324517435d53df'
     'ggml-cuda.dll'    = '502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48'
 }
 

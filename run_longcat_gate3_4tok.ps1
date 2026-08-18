@@ -32,13 +32,14 @@ $expectedPromptSha     = '315f5bdb76d078c43b8ac0064e4a0164612b1fce77c869345bfc94
 $expectedTokensSha     = 'ad9883df7c21de340e1fea799c2c9746afb5e4097fd0df7a596fda68f634fb0f'
 $expectedCublasVer     = '6.14.11.1330'
 
-# Standing state = stage A (stage B reverted by 11d93b56a). llama.dll is the
-# post-revert recompile 99ad8993... (functional identity to the stage-A
-# build proven by the stageArevert endpoint reproduction).
+# Standing arithmetic = Stage A + N2 (promotion bec291558). llama.dll
+# 578dc5b3... is the LSA-transplant Commit A build (additive LSA
+# infrastructure, dead code for this arch; arithmetic byte-untouched);
+# exe/llama-common/ggml-cuda byte-identical to the promotion set.
 $expectedBins = @{
     'llama-debug.exe'  = 'df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0'
     'llama-common.dll' = '261f08a5d3a4db5f0d699b0b99f4d2dfba4f74d11967d6574b5ce68db2ca9894'
-    'llama.dll'        = '15543e91e1dd3048263b29d6f1ee83d66d49150ebfb79844ef711246faec0bb9'
+    'llama.dll'        = '578dc5b33e86d041d4d45233fec5557919ea887aeebdae10c1324517435d53df'
     'ggml-cuda.dll'    = '502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48'
 }
 

@@ -43,16 +43,16 @@ if ($Mode -in @('inject2','inject3','inject4')) {
     $priorDir = Join-Path $repo ("cpp_resid_walk_" + $Mode + "_512")
 }
 
-# Instrumentation HEAD ac8010739 (ffn_inp-2 injector + ffn_norm-2 dump spec
-# in llama-common.dll 261f08a5...). Production arithmetic = standing stage A
-# (stage B and both bisect variants reverted): llama.dll 84012cc4... is the
-# post-bisect recompile of the 0-diff stage-A source, functional identity
-# proven by the byte-exact 9d8583e3... endpoint reproduction.
-# exe/ggml-cuda byte-identical to the b98070666 instrumentation set.
+# Production arithmetic = standing Stage A + N2 (promotion bec291558).
+# llama.dll 578dc5b3... is the LSA-transplant Commit A build: additive
+# LSA infrastructure only (kv-cache LSA mask builder + DSA/graph plumbing,
+# dead code for this arch until the activation commit); model-file
+# arithmetic byte-untouched. exe/llama-common/ggml-cuda byte-identical to
+# the promotion set (df2a57f6... / 261f08a5... / 502e50e8...).
 $expectedBins = @{
     'llama-debug.exe'  = 'df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0'
     'llama-common.dll' = '261f08a5d3a4db5f0d699b0b99f4d2dfba4f74d11967d6574b5ce68db2ca9894'
-    'llama.dll'        = '15543e91e1dd3048263b29d6f1ee83d66d49150ebfb79844ef711246faec0bb9'
+    'llama.dll'        = '578dc5b33e86d041d4d45233fec5557919ea887aeebdae10c1324517435d53df'
     'ggml-cuda.dll'    = '502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48'
 }
 $expectedOracle5Sha = '4c9792430fee2716b573ccf365617e537adf8305571e2a5a0b1a881c0c4de340'
