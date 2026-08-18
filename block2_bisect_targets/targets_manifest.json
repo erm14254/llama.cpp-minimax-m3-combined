@@ -1,0 +1,84 @@
+{
+  "gguf_eps_metadata": 1e-05,
+  "inputs": {
+    "hf_kv_a_norm": {
+      "path": "D:\\lc_block2_mla_512\\kv_a_layernorm.bin",
+      "sha256": "c91991eb459352ec407aebcee5ee2b12e7b25db0bafd3e0462955a8f8144df6b"
+    },
+    "hf_kv_a_proj": {
+      "path": "D:\\lc_block2_mla_512\\kv_a_proj_with_mqa.bin",
+      "sha256": "28ea5b52221a94ddf780f04507f11aee7b6fc8617974f53d558424d41c470f3f"
+    },
+    "hf_q_a_norm": {
+      "path": "D:\\lc_block2_mla_512\\q_a_layernorm.bin",
+      "sha256": "4c9792430fee2716b573ccf365617e537adf8305571e2a5a0b1a881c0c4de340"
+    },
+    "hf_q_a_proj": {
+      "path": "D:\\lc_block2_mla_512\\q_a_proj.bin",
+      "sha256": "32173b18459358494f943288b974ef7df70eb540ff9e366c720c14f250407a96"
+    },
+    "quad_kv_a_norm": {
+      "path": "D:\\llama.cpp-longcat-claude\\cpp_resid_walk_inject3_b2_512\\block2_kv_a_norm_full.bin",
+      "sha256": "93d7442a30cd7d742f21b777398783ea00faf0e9012658d37dae7d13a07698a9"
+    },
+    "quad_q_a_norm": {
+      "path": "D:\\llama.cpp-longcat-claude\\cpp_resid_walk_inject3_b2_512\\block2_q_a_norm_full.bin",
+      "sha256": "2b60008293032656185fa55ca5f0bb579855c67998ad7082feee8b3991ec8bb4"
+    }
+  },
+  "known_answer_gates": {
+    "A5_kv_exact": 190428,
+    "A5_kv_max_ulp": 4,
+    "A5_q_exact": 581661,
+    "A5_q_max_ulp": 4,
+    "D6_kv_exact": 262137,
+    "D6_kv_residue": "7 one-bf16-ulp (token 177 class)",
+    "D6_q_byte_exact": 786432
+  },
+  "targets": {
+    "block2_kv_a_norm_A6_target.bin": {
+      "dtype": "float32-le",
+      "gate_note": "f32 off-lattice; V-eps gate: max f32-ulp <= 4",
+      "name": "block2_kv_a_norm_A6_target.bin",
+      "order": "token-major",
+      "sha256": "e68065566f20dbfdec371f389a5f27af500b85c0dbd0eb5e03d44d335a072245",
+      "shape": [
+        512,
+        512
+      ]
+    },
+    "block2_kv_a_norm_D5_target.bin": {
+      "dtype": "float32-le",
+      "gate_note": "f32-widened bf16; V-cast gate: BYTE-EXACT only",
+      "name": "block2_kv_a_norm_D5_target.bin",
+      "order": "token-major",
+      "sha256": "6b25aeadf87d32d53fe99e54e5c597e61d2587742a3466f2122ccc070498c606",
+      "shape": [
+        512,
+        512
+      ]
+    },
+    "block2_q_a_norm_A6_target.bin": {
+      "dtype": "float32-le",
+      "gate_note": "f32 off-lattice; V-eps gate: max f32-ulp <= 4",
+      "name": "block2_q_a_norm_A6_target.bin",
+      "order": "token-major",
+      "sha256": "a4d2dd1c6bbf20cadb44e82a896fedb4574472f1769baa97dc893acccc01c65d",
+      "shape": [
+        512,
+        1536
+      ]
+    },
+    "block2_q_a_norm_D5_target.bin": {
+      "dtype": "float32-le",
+      "gate_note": "f32-widened bf16; V-cast gate: BYTE-EXACT only",
+      "name": "block2_q_a_norm_D5_target.bin",
+      "order": "token-major",
+      "sha256": "0fa0234c3f232bfd116d5c34b1f7970d286cf20a1081888589dc675215442d3c",
+      "shape": [
+        512,
+        1536
+      ]
+    }
+  }
+}

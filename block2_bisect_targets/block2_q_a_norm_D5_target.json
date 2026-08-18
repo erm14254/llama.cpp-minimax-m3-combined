@@ -1,0 +1,11 @@
+{
+  "dtype": "float32-le",
+  "gate_note": "f32-widened bf16; V-cast gate: BYTE-EXACT only",
+  "name": "block2_q_a_norm_D5_target.bin",
+  "order": "token-major",
+  "sha256": "0fa0234c3f232bfd116d5c34b1f7970d286cf20a1081888589dc675215442d3c",
+  "shape": [
+    512,
+    1536
+  ]
+}

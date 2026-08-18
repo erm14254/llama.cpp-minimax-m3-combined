@@ -1,0 +1,11 @@
+{
+  "dtype": "float32-le",
+  "gate_note": "f32 off-lattice; V-eps gate: max f32-ulp <= 4",
+  "name": "block2_q_a_norm_A6_target.bin",
+  "order": "token-major",
+  "sha256": "a4d2dd1c6bbf20cadb44e82a896fedb4574472f1769baa97dc893acccc01c65d",
+  "shape": [
+    512,
+    1536
+  ]
+}
