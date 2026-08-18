@@ -50,16 +50,18 @@ if ($Mode -in @('inject2','inject3','inject4')) {
 }
 
 # Production arithmetic = standing Stage A + N2 (promotion bec291558).
-# llama.dll b58eae1d... is the LSA-transplant de-clobber build: Commit B
-# (ba4b7d02...) plus the review-authorized removal of the two historical
-# cb() markers (lsa_full_owner / lsa_full_reuse) that renamed standing/
-# canonical tensor names. Instrumentation-only; zero graph/value change.
-# exe/llama-common/ggml-cuda byte-identical to the promotion set
-# (df2a57f6... / 261f08a5... / 502e50e8...).
+# llama.dll 37431a19... / llama-common.dll 39bffc90... are the 2026-08-18
+# LSA measurement-apparatus instrumentation build on top of the de-clobber
+# build b58eae1d.../261f08a5...: three il==0-gated dump-only additions in
+# the model (lsa_indexer_k_2d / lsa_indexer_q_proj name / lsa_indexer_q_2d)
+# plus the LONGCAT_LSA_DUMP_DIR dump family in common/debug.cpp.
+# Instrumentation-only; zero arithmetic change (proven by this round's
+# inertness re-pass). exe/ggml-cuda byte-identical to the promotion set
+# (df2a57f6... / 502e50e8...).
 $expectedBins = @{
     'llama-debug.exe'  = 'df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0'
-    'llama-common.dll' = '261f08a5d3a4db5f0d699b0b99f4d2dfba4f74d11967d6574b5ce68db2ca9894'
-    'llama.dll'        = 'b58eae1dc4602868109f615457bd5f3412835464e26fe1d61fcb4cd1892c2cf4'
+    'llama-common.dll' = '39bffc906c03a59af82931cb2505735e3c8ad4e99fc24c121b6113cf77e62bd2'
+    'llama.dll'        = '37431a1916e5118af619defe864db63e96d2b5dd290580fa205c36737d4e2d5b'
     'ggml-cuda.dll'    = '502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48'
 }
 $expectedOracle5Sha = '4c9792430fee2716b573ccf365617e537adf8305571e2a5a0b1a881c0c4de340'
@@ -138,10 +140,11 @@ Write-Host "binary set: 4/4 match the recorded stage build (see `$expectedBins c
 # excluded; cuBLAS/cuBLASLt logging vars are the library's own contract;
 # TORCH override is python-side, swept defensively). Count is descriptive.
 $sweep = @(
-    # LONGCAT diagnostics (6)
+    # LONGCAT diagnostics (10; incl. the LSA measurement-round dump dir)
     'LONGCAT_HIDDEN_DUMP_DIR','LONGCAT_ROPE_INJECT_DIR','LONGCAT_ROPE_ORACLE_DIR',
     'LONGCAT_RESID_WALK_DUMP_DIR','LONGCAT_RESID_INJECT_DIR','LONGCAT_ATTN_NORM2_INJECT_DIR',
     'LONGCAT_PROJ_INJECT_DIR','LONGCAT_NORM_INJECT_DIR','LONGCAT_FFN_INP2_INJECT_DIR',
+    'LONGCAT_LSA_DUMP_DIR',
     # GGML_CUDA bare getenv (12; incl. P2P, missed by earlier subdir-limited greps)
     'GGML_CUDA_ALLREDUCE','GGML_CUDA_CUBLAS_COMPUTE_TYPE','GGML_CUDA_DEVICES',
     'GGML_CUDA_DISABLE_FUSION','GGML_CUDA_DISABLE_GRAPHS','GGML_CUDA_ENABLE_UNIFIED_MEMORY',
@@ -587,6 +590,7 @@ Write-Host "manifest written: $manifest"
 $prov = @{
     mode = $Mode
     suffix = $Suffix
+    git_head = (& git -C $repo rev-parse HEAD)
     instrumentation_head = 'ac8010739a5081ca94fad1363b5d276eb06c90ae'
     arithmetic_head = 'bec291558383fe3184b82a44ea888556a52bfe2d'
     oracle_ffn_sha256 = $oracleFfnSha

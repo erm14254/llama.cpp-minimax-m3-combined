@@ -42,14 +42,15 @@ $expectedCublasVer     = '6.14.11.1330'
 # ($StandingViolations is now the mandatory per-invocation parameter above.)
 
 # Standing arithmetic = Stage A + N2 (promotion bec291558). llama.dll
-# b58eae1d... is the LSA-transplant de-clobber build: Commit B plus the
-# review-authorized removal of the two historical cb() markers
-# (lsa_full_owner / lsa_full_reuse). Instrumentation-only; zero
-# graph/value change. exe/llama-common/ggml-cuda = the promotion set.
+# 37431a19... / llama-common.dll 39bffc90... are the 2026-08-18 LSA
+# measurement-apparatus instrumentation build (dump-only views + the
+# LONGCAT_LSA_DUMP_DIR family) on top of the de-clobber build.
+# Instrumentation-only; zero arithmetic change. exe/ggml-cuda = the
+# promotion set.
 $expectedBins = @{
     'llama-debug.exe'  = 'df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0'
-    'llama-common.dll' = '261f08a5d3a4db5f0d699b0b99f4d2dfba4f74d11967d6574b5ce68db2ca9894'
-    'llama.dll'        = 'b58eae1dc4602868109f615457bd5f3412835464e26fe1d61fcb4cd1892c2cf4'
+    'llama-common.dll' = '39bffc906c03a59af82931cb2505735e3c8ad4e99fc24c121b6113cf77e62bd2'
+    'llama.dll'        = '37431a1916e5118af619defe864db63e96d2b5dd290580fa205c36737d4e2d5b'
     'ggml-cuda.dll'    = '502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48'
 }
 
@@ -66,12 +67,15 @@ foreach ($name in $expectedBins.Keys) {
 }
 Write-Host "binary set: 4/4 match the recorded stage build"
 
-# Environment-cleanliness sweep - the audited 42-name list, verbatim from
-# run_longcat_resid_walk_512.ps1 (the names are the contract).
+# Environment-cleanliness sweep - the audited 44-name list, aligned with
+# run_longcat_resid_walk_512.ps1 (the names are the contract; the
+# 2026-08-18 LSA measurement round added LONGCAT_FFN_INP2_INJECT_DIR --
+# previously walk-harness-only -- and LONGCAT_LSA_DUMP_DIR).
 $sweep = @(
     'LONGCAT_HIDDEN_DUMP_DIR','LONGCAT_ROPE_INJECT_DIR','LONGCAT_ROPE_ORACLE_DIR',
     'LONGCAT_RESID_WALK_DUMP_DIR','LONGCAT_RESID_INJECT_DIR','LONGCAT_ATTN_NORM2_INJECT_DIR',
-    'LONGCAT_PROJ_INJECT_DIR','LONGCAT_NORM_INJECT_DIR',
+    'LONGCAT_PROJ_INJECT_DIR','LONGCAT_NORM_INJECT_DIR','LONGCAT_FFN_INP2_INJECT_DIR',
+    'LONGCAT_LSA_DUMP_DIR',
     'GGML_CUDA_ALLREDUCE','GGML_CUDA_CUBLAS_COMPUTE_TYPE','GGML_CUDA_DEVICES',
     'GGML_CUDA_DISABLE_FUSION','GGML_CUDA_DISABLE_GRAPHS','GGML_CUDA_ENABLE_UNIFIED_MEMORY',
     'GGML_CUDA_GRAPH_OPT','GGML_CUDA_NO_PINNED','GGML_CUDA_P2P','GGML_CUDA_PDL',
@@ -210,6 +214,7 @@ Get-ChildItem $outDir -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | So
 } | Out-File -Encoding ascii $manifest
 $prov = @{
     tag = $Tag
+    git_head = (& git -C $repo rev-parse HEAD)
     instrumentation_head = '923fad90d4d34388a14e2a6c83cf1b7dff9b4ba8'
     arithmetic_head = 'bec291558383fe3184b82a44ea888556a52bfe2d'
     binaries = $expectedBins

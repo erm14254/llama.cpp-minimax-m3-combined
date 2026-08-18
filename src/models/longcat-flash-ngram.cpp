@@ -849,6 +849,21 @@ llama_model_longcat_flash_ngram::graph::graph(
                     indexer_k = ggml_cast(ctx0, indexer_k, GGML_TYPE_BF16);
                     cb(indexer_k, "lsa_indexer_k", il);
 
+                    // LONGCAT_LSA_DUMP_SURFACE (measurement round, dump-only):
+                    // the canonical lsa_indexer_k is [128, 1, n_tokens] and
+                    // the dump helper rejects ne[2] != 1, so a first-owner 2D
+                    // contiguous copy is made purely for the dump. It feeds
+                    // nothing downstream; ggml_build_forward_expand forces its
+                    // evaluation. Values byte-identical; zero arithmetic
+                    // change.
+                    if (il == 0) {
+                        ggml_tensor * indexer_k_dump = ggml_cont_2d(
+                            ctx0, indexer_k,
+                            n_embd_indexer_head, n_tokens);
+                        cb(indexer_k_dump, "lsa_indexer_k_2d", il);
+                        ggml_build_forward_expand(gf, indexer_k_dump);
+                    }
+
                     // ggml_set_rows() currently accepts F32/F16 source rows,
                     // not BF16. Preserve the BF16-projected/RoPE'd values above,
                     // then widen exactly for the cache write. The destination
@@ -868,6 +883,15 @@ llama_model_longcat_flash_ngram::graph::graph(
                         // Preserve BF16 Q projection rounding, then widen only
                         // for the CPU RoPE kernel exactly as for indexer K.
                         indexer_q = ggml_cast(ctx0, indexer_q, GGML_TYPE_BF16);
+                        // LONGCAT_LSA_DUMP_SURFACE (measurement round,
+                        // name-only): expose the first-owner pre-RoPE BF16
+                        // Q-projection boundary for the 2050 capture. The
+                        // cast node is otherwise unnamed; owners 2..26 are
+                        // deliberately not named. Zero graph nodes; zero
+                        // arithmetic change.
+                        if (il == 0) {
+                            cb(indexer_q, "lsa_indexer_q_proj", il);
+                        }
                         indexer_q = ggml_cast(ctx0, indexer_q, GGML_TYPE_F32);
 
                         ggml_tensor * indexer_q_pe =
@@ -893,6 +917,21 @@ llama_model_longcat_flash_ngram::graph::graph(
                             ctx0, indexer_q_pe, indexer_q_nope, 0);
                         indexer_q = ggml_cast(ctx0, indexer_q, GGML_TYPE_BF16);
                         cb(indexer_q, "lsa_indexer_q", il);
+
+                        // LONGCAT_LSA_DUMP_SURFACE (measurement round,
+                        // dump-only): lsa_indexer_q is [128, 16, n_tokens];
+                        // a first-owner 2D contiguous copy (head-major rows,
+                        // h*128+d) is made purely for the dump, evaluation
+                        // forced, nothing consumed downstream. Values
+                        // byte-identical; zero arithmetic change.
+                        if (il == 0) {
+                            ggml_tensor * indexer_q_dump = ggml_cont_2d(
+                                ctx0, indexer_q,
+                                n_indexer_head * n_embd_indexer_head,
+                                n_tokens);
+                            cb(indexer_q_dump, "lsa_indexer_q_2d", il);
+                            ggml_build_forward_expand(gf, indexer_q_dump);
+                        }
 
                         ggml_tensor * indexer_weights =
                             ggml_mul_mat(ctx0, model.layers[il].indexer_proj, cur);

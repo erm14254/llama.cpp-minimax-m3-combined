@@ -387,6 +387,67 @@ static bool common_debug_longcat_resid_walk_spec_for(
     return false;
 }
 
+// LONGCAT_LSA_DUMP (LSA measurement-apparatus round, 2026-08-18):
+//
+// When LONGCAT_LSA_DUMP_DIR is set, the first-owner (il == 0) LSA indexer
+// surfaces, their two attribution anchors, and the per-owner top-K index
+// tensors are dumped full-sequence. This family is independent of (and its
+// filenames disjoint from) the two standing dump families above; everything
+// is dump-only and the standing spec tables are untouched.
+//
+// Naming reality (source-verified 2026-08-18): the owner top-K tensor is
+// renamed in place by the reuse block's historical cb() marker, so at eval
+// time the 14 owner tensors are named lsa_top_k_reuse-<odd il> only; the
+// owner block (il - 1) is recorded in the output filename. The I32 index
+// tensors are written through the shared writer's exact (float) conversion
+// -- value-lossless for indices < 2^24 (here < 4608).
+static bool common_debug_longcat_lsa_spec_for(
+        const ggml_tensor * t,
+        common_debug_longcat_dump_spec & spec) {
+    const std::string tensor_name = t->name;
+
+    spec.full_sequence = true;
+
+    static const struct {
+        const char * name;
+        const char * file;
+        int64_t      ne0;
+    } lsa_surfaces[] = {
+        // First-owner attribution anchors (exist at every length).
+        { "attn_norm-0",           "lsa_anchor_attn_norm0_full.bin", 3072 },
+        { "q_a_norm-0",            "lsa_anchor_q_a_norm0_full.bin",  1536 },
+        // Below-threshold owner-K class (exist at every length).
+        { "lsa_indexer_k_proj-0",  "lsa_indexer_k_proj_full.bin",     128 },
+        { "lsa_indexer_k_norm-0",  "lsa_indexer_k_norm_full.bin",     128 },
+        { "lsa_indexer_k_2d-0",    "lsa_indexer_k_full.bin",          128 },
+        // Sparse-only first-owner surfaces (exist only when
+        // n_kv_lid > indexer_top_k, i.e. never in a <=2048 real decode).
+        { "lsa_indexer_q_proj-0",  "lsa_indexer_q_proj_full.bin",    2048 },
+        { "lsa_indexer_q_2d-0",    "lsa_indexer_q_full.bin",         2048 },
+        { "lsa_indexer_weights-0", "lsa_indexer_weights_full.bin",     16 },
+    };
+    for (const auto & surface : lsa_surfaces) {
+        if (tensor_name == surface.name) {
+            spec.filename   = surface.file;
+            spec.expect_ne0 = surface.ne0;
+            return true;
+        }
+    }
+
+    // Per-owner top-K membership (sparse-only).
+    for (int il = 1; il <= 27; il += 2) {
+        if (tensor_name == "lsa_top_k_reuse-" + std::to_string(il)) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "lsa_top_k_owner%02d_full.bin", il - 1);
+            spec.filename   = buf;
+            spec.expect_ne0 = 2048;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 // NOTE: an early-abort hook (LONGCAT_ABORT_AFTER_TENSOR) was attempted here
 // and deliberately removed.
 //
@@ -429,6 +490,18 @@ static bool common_debug_longcat_wants_resid_walk_dump(const ggml_tensor * t) {
     common_debug_longcat_dump_spec spec;
 
     return common_debug_longcat_resid_walk_spec_for(t, spec);
+}
+
+static bool common_debug_longcat_wants_lsa_dump(const ggml_tensor * t) {
+    const char * dump_dir = std::getenv("LONGCAT_LSA_DUMP_DIR");
+
+    if (dump_dir == nullptr || dump_dir[0] == '\0') {
+        return false;
+    }
+
+    common_debug_longcat_dump_spec spec;
+
+    return common_debug_longcat_lsa_spec_for(t, spec);
 }
 
 // LONGCAT_RESID_INJECT (causal-reset experiment -- oracle reset ONLY):
@@ -1101,6 +1174,22 @@ static void common_debug_maybe_dump_longcat_resid_walk(
     common_debug_write_longcat_dump(data, t, dump_dir, spec);
 }
 
+static void common_debug_maybe_dump_longcat_lsa(
+        uint8_t * data,
+        const ggml_tensor * t) {
+    const char * dump_dir = std::getenv("LONGCAT_LSA_DUMP_DIR");
+    if (dump_dir == nullptr || dump_dir[0] == '\0') {
+        return;
+    }
+
+    common_debug_longcat_dump_spec spec;
+    if (!common_debug_longcat_lsa_spec_for(t, spec)) {
+        return;
+    }
+
+    common_debug_write_longcat_dump(data, t, dump_dir, spec);
+}
+
 /**
  * GGML operations callback during the graph execution.
  *
@@ -1137,6 +1226,7 @@ bool common_debug_cb_eval(struct ggml_tensor * t, bool ask, void * user_data) {
     if (ask) {
         return matches_filter || common_debug_longcat_wants_dump(t) ||
                common_debug_longcat_wants_resid_walk_dump(t) ||
+               common_debug_longcat_wants_lsa_dump(t) ||
                common_debug_longcat_wants_rope_inject(t) ||
                common_debug_longcat_wants_resid_inject(t) ||
                common_debug_longcat_wants_attn_norm2_inject(t) ||
@@ -1199,6 +1289,7 @@ bool common_debug_cb_eval(struct ggml_tensor * t, bool ask, void * user_data) {
         // written before evaluation stops.
         common_debug_maybe_dump_longcat_hidden(data, t);
         common_debug_maybe_dump_longcat_resid_walk(data, t);
+        common_debug_maybe_dump_longcat_lsa(data, t);
 
         if (matches_filter) {
             const bool saw_nan = common_debug_print_tensor(data, t->type, t->ne, t->nb, 3);
