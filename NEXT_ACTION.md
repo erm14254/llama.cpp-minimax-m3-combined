@@ -444,3 +444,31 @@ transplant commits (pre-registered default disposition).** Standing
 production arithmetic remains Stage A + N2, byte-preserved. Gate 4
 remains NOT RUN; the >2048 measurement round stays blocked behind a
 clean checkpoint and its own review.
+
+**Update 2026-08-18 (de-clobber + prior-epoch correction COMPLETE — the
+full ≤2048 LSA-transplant inertness checkpoint is CLEAN; see the final
+addendum of `STATUS_2026-08-17.md`):** review authorized (1) the removal
+of BOTH colliding historical `cb()` markers (`lsa_full_reuse`,
+`lsa_full_owner`) as recorded instrumentation-only deviations (commit
+`36fe02796`; diff proof = exactly the two `cb()` lines; only `llama.dll`
+moved, `b58eae1d…`), and (2) the injectffn prior-manifest **reference
+epoch correction** (commit `3ac389d99`, one executable line:
+`$priorDir` → `cpp_resid_walk_injectffn_promoN2_512`) after the lsaC run
+exposed the latent graduation contradiction (2/17 vs retired pre-N2
+values while both surfaces were byte-exact to the standing `32134b64…`/
+`398de74c…`) — the correction restores the standing reference epoch
+without dropping any comparison (stronger than the rejected exclusion
+alternative; mechanical record: 15 names agree across epochs, exactly 2
+graduated names differ). **Combined checkpoint evidence: frozen-512
+`b8067779…` byte-exact + DSA two-cache live (lsaC), Gate-3 `8852bd5b…`
+byte-exact (lsaC), injectffn ALL GATES PASS incl. 17/17 prior
+reproduction, restored `block1_attn1_norm_full.bin` = `1ce81e69…`, and
+operator `9815422f…` (lsaD).** The surgical LSA transplant is proven
+byte-inert at ≤2048 on the standing Stage-A+N2 arithmetic. **Gate 4
+remains NOT RUN. Next decision (NOT begun; its own reviewed plan): the
+>2048 measurement-only first-owner indexer round — pre-freeze surface
+audit first (≤512 owner-K dump proofs; static audit of the sparse-only
+scoring/top-K surfaces incl. I32 top-K serializer support), then the
+Type-S/Type-P split-capture + determinism protocol per the approved
+plan's §5, with its own placement policy and structural validity gates.
+No 2050-token execution and no Gate-4 protocol until that review.**
