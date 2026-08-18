@@ -256,3 +256,21 @@ logical_01…12/result_norm), with mandatory per-pair verification
 (existence, SHA, shape/dtype, row/token representation,
 logical-vs-physical mapping, semantic equivalence — never filename
 inference).
+
+**Update 2026-08-18 (Stage A COMPLETE — see the 2026-08-18 addendum of
+`STATUS_2026-08-17.md`):** the reviewed production plan was approved (MTP
+excluded; two validated stages) and Stage A (BF16 output boundaries at the
+five il≥1 MLA projection/scale sites) landed with every gate passing: all
+five local semantic gates byte-exact under the dual reset (A1/A4 vs HF
+oracles, A2/A3/A5 vs known-answer-gated targets; quad-norm premise gates
+byte-exact), block-0 invariants 14/14, and the frozen-512 endpoint moved
+**40 → 1 violations** (top-1 483 agrees; worst ratio 1.059; still FAIL —
+PASS requires 0; not an acceptance threshold). Current action: **Stage B**
+— LoRA-norm HF cast semantics + eps 1e-6 at il≥1 (replace `build_norm` at
+the two LoRA-norm sites with the byte-proven il==0 chain), then the
+stage-B dual-reset chain gates (`4c979243…`, `c91991eb…` near-tie
+stop-rule, `ecb70ef6…`, TB4 `d9234fa9…`, `22f1d6be…`), the frozen-512
+endpoint, and after both stages the Gate-3 4-token regression (oracle
+located: `D:\llama.cpp-longcat-mtp\longcat_sparse_gate3_hf_v4_logits.bin`
+= `2c178ea5…`; historical run dir `longcat_sparse_gate3_default_cache_after_fix`
+prompt "Hello, world!").
