@@ -52,7 +52,7 @@ if ($Mode -in @('inject2','inject3','inject4')) {
 $expectedBins = @{
     'llama-debug.exe'  = 'df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0'
     'llama-common.dll' = '261f08a5d3a4db5f0d699b0b99f4d2dfba4f74d11967d6574b5ce68db2ca9894'
-    'llama.dll'        = 'c4db8f0e36e84dc47d66c2ef67e1bb9c5fae26be50ae7cd0555a13f3983e15ef'
+    'llama.dll'        = '15543e91e1dd3048263b29d6f1ee83d66d49150ebfb79844ef711246faec0bb9'
     'ggml-cuda.dll'    = '502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48'
 }
 $expectedOracle5Sha = '4c9792430fee2716b573ccf365617e537adf8305571e2a5a0b1a881c0c4de340'
@@ -586,7 +586,7 @@ $prov = @{
     mode = $Mode
     suffix = $Suffix
     instrumentation_head = 'ac8010739a5081ca94fad1363b5d276eb06c90ae'
-    arithmetic_head = '4ce5d669896d4066a4e4bef91c25c22a5558afa5'
+    arithmetic_head = 'bec291558383fe3184b82a44ea888556a52bfe2d'
     oracle_ffn_sha256 = $oracleFfnSha
     binaries = $expectedBins
     moved_surfaces = $movedRecord
