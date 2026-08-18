@@ -965,8 +965,16 @@ llama_model_longcat_flash_ngram::graph::graph(
                             (void *) top_k);
                         cb(top_k, "lsa_top_k_owner", il);
                     } else {
+                        // LONGCAT_LSA_DEVIATION (instrumentation-only, review
+                        // 2026-08-18): the historical marker
+                        // cb(indexer_k, "lsa_full_owner", il) is removed - in
+                        // the sparse-inactive regime it renamed the canonical
+                        // lsa_indexer_k-<il> surface required by the planned
+                        // <=512 below-threshold indexer-K dump proof. Values,
+                        // owner/reuse semantics, and every graph operation are
+                        // unchanged; >2048 structural evidence lives in the
+                        // LONGCAT_LSA_AUDIT logs.
                         prev_top_k = nullptr;
-                        cb(indexer_k, "lsa_full_owner", il);
                     }
                 } else {
                     if (sparse_active) {
@@ -985,8 +993,15 @@ llama_model_longcat_flash_ngram::graph::graph(
                             (void *) top_k);
                         cb(top_k, "lsa_top_k_reuse", il);
                     } else {
+                        // LONGCAT_LSA_DEVIATION (instrumentation-only, review
+                        // 2026-08-18): the historical marker
+                        // cb(cur, "lsa_full_reuse", il) is removed - it renamed
+                        // the standing attn_norm-<il> tensor of every odd block
+                        // and broke the name-keyed attn_norm-3 full-sequence
+                        // dump (the Stage-3 inventory failure). Values and
+                        // semantics unchanged; >2048 structural evidence lives
+                        // in the LONGCAT_LSA_AUDIT logs.
                         GGML_ASSERT(prev_top_k == nullptr);
-                        cb(cur, "lsa_full_reuse", il);
                     }
                 }
             }

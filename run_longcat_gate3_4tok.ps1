@@ -33,14 +33,14 @@ $expectedTokensSha     = 'ad9883df7c21de340e1fea799c2c9746afb5e4097fd0df7a596fda
 $expectedCublasVer     = '6.14.11.1330'
 
 # Standing arithmetic = Stage A + N2 (promotion bec291558). llama.dll
-# ba4b7d02... is the LSA-transplant Commit B (activation) build: DSA
-# two-cache + verbatim-grafted LSA indexer graph (structural transplant;
-# hardened arithmetic byte-untouched; sparse scoring unreachable at
-# <=2048). exe/llama-common/ggml-cuda byte-identical to the promotion set.
+# b58eae1d... is the LSA-transplant de-clobber build: Commit B plus the
+# review-authorized removal of the two historical cb() markers
+# (lsa_full_owner / lsa_full_reuse). Instrumentation-only; zero
+# graph/value change. exe/llama-common/ggml-cuda = the promotion set.
 $expectedBins = @{
     'llama-debug.exe'  = 'df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0'
     'llama-common.dll' = '261f08a5d3a4db5f0d699b0b99f4d2dfba4f74d11967d6574b5ce68db2ca9894'
-    'llama.dll'        = 'ba4b7d0240ed0e7357aedd768a783f028ec20a536cd33b7b8e1009a072cc1e07'
+    'llama.dll'        = 'b58eae1dc4602868109f615457bd5f3412835464e26fe1d61fcb4cd1892c2cf4'
     'ggml-cuda.dll'    = '502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48'
 }
 
