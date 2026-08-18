@@ -36,9 +36,15 @@ $runDir    = Join-Path $repo ("cpp_resid_walk_" + $tag + "_512")
 if ($Mode -in @('inject2','inject3','inject4')) {
     $priorDir = Join-Path $repo 'cpp_resid_walk_inject_b1_512'
 } elseif ($Mode -eq 'injectffn') {
-    # Prior generation for injectffn is the ffn_norm-experiment run; only
-    # the invariant subset is gated against it (see $allow below).
-    $priorDir = Join-Path $repo 'cpp_resid_walk_injectffn_ffnNorm_512'
+    # Prior generation for injectffn is the N2-promotion operator-gate run -
+    # the standing Stage-A+N2 reference epoch; only the invariant subset is
+    # gated against it (see $allow below). Epoch corrected 2026-08-18
+    # (review Option 1): the previous ffnNorm-era reference predates the N2
+    # promotion and carries retired pre-N2 values for the two graduated
+    # surfaces (logical0_mlp0_resid de18420a->32134b64, logical0_attn1_resid
+    # 8a7ab8c6->398de74c); the two manifests agree byte-for-byte on the
+    # other 15 allowlisted names. No comparison dropped or weakened.
+    $priorDir = Join-Path $repo 'cpp_resid_walk_injectffn_promoN2_512'
 } else {
     $priorDir = Join-Path $repo ("cpp_resid_walk_" + $Mode + "_512")
 }
