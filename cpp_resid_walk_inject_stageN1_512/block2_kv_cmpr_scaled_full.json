@@ -1,0 +1,11 @@
+{
+  "tensor": "kv_cmpr_scaled-2",
+  "shape": [512, 512],
+  "order": "token-major",
+  "dtype": "float32-le",
+  "bytes": 1048576,
+  "source_type": "f32",
+  "source_contiguous": true,
+  "source_ne": [512, 512, 1, 1],
+  "source_nb": [4, 2048, 1048576, 1048576]
+}

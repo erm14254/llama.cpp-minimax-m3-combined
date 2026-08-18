@@ -1,0 +1,5 @@
+c784bd3e2a8a0ed61760e8458bb62529a4e8d7d819ea27631207f45e15bb18f4  frozen512_stageN1.json
+69dece2db09fb1512cc609de89c3486f638dcb279c3006b6cd9860ecbc7ab9a6  llamacpp-LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-BF16-00001-of-00008.bin
+3ad93b76c57fde1f6d606192890a6e08705c091119b942849f4d741c9ede9329  llamacpp-LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-BF16-00001-of-00008.txt
+c322ddd65c35b4480ee2cab3e92f80e6d05226ee281bc81e9ec1527572bd70e4  llamacpp-LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-BF16-00001-of-00008-prompt.txt
+4893d78751e8577f817da21a7e00718c7c14e0d80732e1b7e4da36da6677821c  llamacpp-LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-BF16-00001-of-00008-tokens.bin
