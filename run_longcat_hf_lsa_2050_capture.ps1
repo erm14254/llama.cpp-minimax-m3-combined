@@ -33,10 +33,13 @@ $logitsDir  = Join-Path $repo 'hf_logits_2050_v1'
 $captureDir = Join-Path $repo 'hf_lsa_2050_capture'
 
 # Protocol-commit script SHAs (authoring-time frozen; any drift aborts).
+# Hashes are of the canonical CRLF checkout form (core.autocrlf=true on
+# this machine; the committed blobs are LF-normalized -- same class as
+# the historical d267bf29/dfda8836 line-ending twin).
 $expectedScripts = @{
-    $runBScript = '01ed8d2539ab7d6ca1d9d80ce28ed0f2e7a64b248510c623a228b9c199a865b8'
-    $runAScript = '40b064a8c7015ee8220486828f0bbca008029bdb4f3a6256efd5d7c3eb1ffde8'
-    $cmpScript  = '7f53b49d798aeb9898b01a6131452a169e29eb7bbe658b4cd95d66203acb0b30'
+    $runBScript = '6fed7c41e37bd1f4cdaff577541d9a5640bf86839141e6ce1947c70adb75aebc'
+    $runAScript = '18fcc5e191e39bf23489e4848ad6ec7659c638c341cd8a919b96c36bd9b9e18f'
+    $cmpScript  = '4cbdd82cd53917ec3a3a9530e36dd69007f7fd72ed4dfe3bb6fbe35f74334037'
 }
 $expectedCoreSha    = 'bb82bcb6c3bc1d21685221a884dac3b39dc7af06f54fea6187f606dddf4213cb'
 $expectedRuntimeSha = 'a3bc31616c1f0ddff9f195cbc78f4561a40187c50fe3bf29e2e98d9228947428'
