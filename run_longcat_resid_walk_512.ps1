@@ -44,15 +44,16 @@ if ($Mode -in @('inject2','inject3','inject4')) {
 }
 
 # Production arithmetic = standing Stage A + N2 (promotion bec291558).
-# llama.dll 578dc5b3... is the LSA-transplant Commit A build: additive
-# LSA infrastructure only (kv-cache LSA mask builder + DSA/graph plumbing,
-# dead code for this arch until the activation commit); model-file
-# arithmetic byte-untouched. exe/llama-common/ggml-cuda byte-identical to
-# the promotion set (df2a57f6... / 261f08a5... / 502e50e8...).
+# llama.dll ba4b7d02... is the LSA-transplant Commit B (activation) build:
+# DSA two-cache memory case + the verbatim-grafted LSA indexer graph
+# (structural transplant; every hardened arithmetic chain byte-untouched;
+# sparse scoring unreachable at <=2048). Commit A build was 578dc5b3....
+# exe/llama-common/ggml-cuda byte-identical to the promotion set
+# (df2a57f6... / 261f08a5... / 502e50e8...).
 $expectedBins = @{
     'llama-debug.exe'  = 'df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0'
     'llama-common.dll' = '261f08a5d3a4db5f0d699b0b99f4d2dfba4f74d11967d6574b5ce68db2ca9894'
-    'llama.dll'        = '578dc5b33e86d041d4d45233fec5557919ea887aeebdae10c1324517435d53df'
+    'llama.dll'        = 'ba4b7d0240ed0e7357aedd768a783f028ec20a536cd33b7b8e1009a072cc1e07'
     'ggml-cuda.dll'    = '502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48'
 }
 $expectedOracle5Sha = '4c9792430fee2716b573ccf365617e537adf8305571e2a5a0b1a881c0c4de340'

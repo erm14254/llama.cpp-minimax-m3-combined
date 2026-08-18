@@ -1,6 +1,8 @@
 #include "models.h"
 
 #include "../llama-graph.h"
+#include "../llama-impl.h"
+#include "../llama-kv-cache-dsa.h"
 #include "../llama-model.h"
 
 #include <cmath>
@@ -493,6 +495,14 @@ llama_model_longcat_flash_ngram::graph::graph(
 
     const uint32_t kv_lora_rank = hparams.n_lora_kv;
 
+    const bool longcat_lsa = arch == LLM_ARCH_LONGCAT_FLASH_SPARSE;
+    const int64_t n_indexer_head = hparams.indexer_n_head;
+    const int64_t n_embd_indexer_head = hparams.indexer_head_size;
+    const int64_t n_embd_indexer_head_rope = n_embd_head_qk_rope;
+    const int64_t n_embd_indexer_head_nope =
+        n_embd_indexer_head - n_embd_indexer_head_rope;
+    const uint32_t n_indexer_top_k = hparams.indexer_top_k;
+
     // MLA LoRA scaling factors (LongCat-Flash-specific, not in DeepSeek2)
     const float mla_scale_q  = sqrtf((float) n_embd / (float) hparams.n_lora_q);
     const float mla_scale_kv = sqrtf((float) n_embd / (float) kv_lora_rank);
@@ -587,9 +597,17 @@ llama_model_longcat_flash_ngram::graph::graph(
 
     ggml_tensor * inp_pos = build_inp_pos();
 
-    auto * inp_attn_k = build_attn_inp_k();
+    llm_graph_input_attn_k * inp_attn_k = nullptr;
+    llm_graph_input_attn_k_dsa * inp_attn_dsa = nullptr;
+    if (longcat_lsa) {
+        inp_attn_dsa = build_attn_inp_k_dsa();
+    } else {
+        inp_attn_k = build_attn_inp_k();
+    }
 
     ggml_tensor * inp_out_ids = build_inp_out_ids();
+
+    ggml_tensor * prev_top_k = nullptr;
 
     for (int il = 0; il < n_layer; ++il) {
         ggml_tensor * inpSA = inpL;
@@ -637,6 +655,7 @@ llama_model_longcat_flash_ngram::graph::graph(
         // MLA self-attention (same as DeepSeek2 with absorption optimization)
         {
             ggml_tensor * q = NULL;
+            ggml_tensor * q_lora = nullptr;
 
             if (model.layers[il].wq_a) {
                 // LoRA Q path
@@ -680,6 +699,11 @@ llama_model_longcat_flash_ngram::graph::graph(
                     q = ggml_cast(ctx0, q, GGML_TYPE_BF16);
                     // LONGCAT_MLA_STAGE_SURFACE: HF q_a_layernorm boundary.
                     cb(q, "q_a_norm", il);
+
+                    // LONGCAT_LSA_TAP: the indexer Q path consumes the
+                    // standing post-q_a_layernorm tensor. Alias only - the
+                    // hardened chain must stay byte-untouched.
+                    q_lora = q;
 
                     // q_b_proj consumes BF16 and produces BF16 in HF.
                     q = ggml_mul_mat(
@@ -730,6 +754,9 @@ llama_model_longcat_flash_ngram::graph::graph(
                         il);
                     cb(q, il == 2 ? "q_a_norm" : "q", il);
 
+                    // LONGCAT_LSA_TAP: alias only (see the il == 0 branch).
+                    q_lora = q;
+
                     q = ggml_mul_mat(
                         ctx0,
                         model.layers[il].wq_b,
@@ -761,6 +788,207 @@ llama_model_longcat_flash_ngram::graph::graph(
             } else {
                 q = ggml_mul_mat(ctx0, model.layers[il].wq, cur);
                 cb(q, "q", il);
+            }
+
+            ggml_tensor * top_k = nullptr;
+
+            if (longcat_lsa) {
+                GGML_ASSERT(inp_attn_dsa != nullptr);
+                GGML_ASSERT(q_lora != nullptr);
+                GGML_ASSERT(hparams.indexer_cli_factor == 2);
+
+                const bool indexer_owner = hparams.is_indexer_full((uint32_t) il);
+                const auto * mctx_lid = inp_attn_dsa->mctx->get_lid();
+                const uint32_t n_kv_lid = mctx_lid->get_n_kv();
+                const bool sparse_active = n_kv_lid > n_indexer_top_k;
+
+                if (indexer_owner) {
+                    GGML_ASSERT(model.layers[il].indexer_k_norm);
+                    GGML_ASSERT(model.layers[il].indexer_proj);
+                    GGML_ASSERT(model.layers[il].indexer_attn_k);
+                    GGML_ASSERT(model.layers[il].indexer_attn_q_b);
+
+                    ggml_tensor * indexer_hidden =
+                        ggml_cast(ctx0, cur, GGML_TYPE_BF16);
+                    ggml_tensor * indexer_k =
+                        ggml_mul_mat(ctx0, model.layers[il].indexer_attn_k, indexer_hidden);
+                    cb(indexer_k, "lsa_indexer_k_proj", il);
+
+                    indexer_k = ggml_rms_norm(
+                        ctx0, indexer_k, hparams.indexer_k_norm_eps);
+                    indexer_k = ggml_mul(
+                        ctx0, indexer_k, model.layers[il].indexer_k_norm);
+                    // Match HF's BF16 projection/norm rounding point, but
+                    // CPU ggml_rope supports only F16/F32. Widen the already-
+                    // rounded BF16 values solely for RoPE, then round back.
+                    indexer_k = ggml_cast(ctx0, indexer_k, GGML_TYPE_BF16);
+                    cb(indexer_k, "lsa_indexer_k_norm", il);
+                    indexer_k = ggml_cast(ctx0, indexer_k, GGML_TYPE_F32);
+
+                    ggml_tensor * indexer_k_pe =
+                        ggml_view_3d(ctx0, indexer_k,
+                            n_embd_indexer_head_rope, 1, n_tokens,
+                            ggml_row_size(indexer_k->type, n_embd_indexer_head),
+                            ggml_row_size(indexer_k->type, n_embd_indexer_head), 0);
+
+                    ggml_tensor * indexer_k_nope =
+                        ggml_view_3d(ctx0, indexer_k,
+                            n_embd_indexer_head_nope, 1, n_tokens,
+                            ggml_row_size(indexer_k->type, n_embd_indexer_head),
+                            ggml_row_size(indexer_k->type, n_embd_indexer_head),
+                            ggml_row_size(indexer_k->type, n_embd_indexer_head_rope));
+
+                    indexer_k_pe = ggml_rope_ext(
+                        ctx0, indexer_k_pe, inp_pos, nullptr,
+                        n_embd_indexer_head_rope, LLAMA_ROPE_TYPE_NORM,
+                        n_ctx_orig, freq_base, freq_scale,
+                        ext_factor, attn_factor, beta_fast, beta_slow);
+
+                    indexer_k = ggml_concat(
+                        ctx0, indexer_k_pe, indexer_k_nope, 0);
+                    indexer_k = ggml_cast(ctx0, indexer_k, GGML_TYPE_BF16);
+                    cb(indexer_k, "lsa_indexer_k", il);
+
+                    // ggml_set_rows() currently accepts F32/F16 source rows,
+                    // not BF16. Preserve the BF16-projected/RoPE'd values above,
+                    // then widen exactly for the cache write. The destination
+                    // indexer cache remains BF16.
+                    ggml_tensor * indexer_k_store =
+                        ggml_cast(ctx0, indexer_k, GGML_TYPE_F32);
+
+                    const auto & k_idxs_lid = inp_attn_dsa->get_k_idxs_lid();
+                    ggml_build_forward_expand(
+                        gf, mctx_lid->cpy_k(ctx0, indexer_k_store, k_idxs_lid, il));
+
+                    if (sparse_active) {
+                        ggml_tensor * indexer_q_in =
+                            ggml_cast(ctx0, q_lora, GGML_TYPE_BF16);
+                        ggml_tensor * indexer_q =
+                            ggml_mul_mat(ctx0, model.layers[il].indexer_attn_q_b, indexer_q_in);
+                        // Preserve BF16 Q projection rounding, then widen only
+                        // for the CPU RoPE kernel exactly as for indexer K.
+                        indexer_q = ggml_cast(ctx0, indexer_q, GGML_TYPE_BF16);
+                        indexer_q = ggml_cast(ctx0, indexer_q, GGML_TYPE_F32);
+
+                        ggml_tensor * indexer_q_pe =
+                            ggml_view_3d(ctx0, indexer_q,
+                                n_embd_indexer_head_rope, n_indexer_head, n_tokens,
+                                ggml_row_size(indexer_q->type, n_embd_indexer_head),
+                                ggml_row_size(indexer_q->type, n_embd_indexer_head) * n_indexer_head, 0);
+
+                        ggml_tensor * indexer_q_nope =
+                            ggml_view_3d(ctx0, indexer_q,
+                                n_embd_indexer_head_nope, n_indexer_head, n_tokens,
+                                ggml_row_size(indexer_q->type, n_embd_indexer_head),
+                                ggml_row_size(indexer_q->type, n_embd_indexer_head) * n_indexer_head,
+                                ggml_row_size(indexer_q->type, n_embd_indexer_head_rope));
+
+                        indexer_q_pe = ggml_rope_ext(
+                            ctx0, indexer_q_pe, inp_pos, nullptr,
+                            n_embd_indexer_head_rope, LLAMA_ROPE_TYPE_NORM,
+                            n_ctx_orig, freq_base, freq_scale,
+                            ext_factor, attn_factor, beta_fast, beta_slow);
+
+                        indexer_q = ggml_concat(
+                            ctx0, indexer_q_pe, indexer_q_nope, 0);
+                        indexer_q = ggml_cast(ctx0, indexer_q, GGML_TYPE_BF16);
+                        cb(indexer_q, "lsa_indexer_q", il);
+
+                        ggml_tensor * indexer_weights =
+                            ggml_mul_mat(ctx0, model.layers[il].indexer_proj, cur);
+                        indexer_weights = ggml_scale(
+                            ctx0, indexer_weights,
+                            1.0f / sqrtf(float(n_embd_indexer_head * n_indexer_head)));
+                        cb(indexer_weights, "lsa_indexer_weights", il);
+
+                        ggml_tensor * indexer_k_cached = mctx_lid->get_k(ctx0, il);
+
+                        const auto n_stream = indexer_k_cached->ne[3];
+                        indexer_q = ggml_view_4d(
+                            ctx0, indexer_q,
+                            indexer_q->ne[0], indexer_q->ne[1],
+                            indexer_q->ne[2] / n_stream, n_stream,
+                            indexer_q->nb[1], indexer_q->nb[2],
+                            indexer_q->nb[3] / n_stream, 0);
+                        indexer_weights = ggml_view_4d(
+                            ctx0, indexer_weights,
+                            indexer_weights->ne[0],
+                            indexer_weights->ne[1] / n_stream,
+                            indexer_weights->ne[2], n_stream,
+                            indexer_weights->nb[1],
+                            indexer_weights->nb[2] / n_stream,
+                            indexer_weights->nb[3] / n_stream, 0);
+
+                        indexer_q = ggml_permute(ctx0, indexer_q, 0, 2, 1, 3);
+                        indexer_k_cached =
+                            ggml_permute(ctx0, indexer_k_cached, 0, 2, 1, 3);
+
+                        ggml_tensor * indexer_kq =
+                            ggml_mul_mat(ctx0, indexer_k_cached, indexer_q);
+                        ggml_mul_mat_set_prec(indexer_kq, GGML_PREC_F32);
+                        cb(indexer_kq, "lsa_indexer_kq", il);
+
+                        indexer_kq = ggml_cont(
+                            ctx0, ggml_permute(ctx0, indexer_kq, 2, 1, 0, 3));
+
+                        ggml_tensor * indexer_score =
+                            ggml_relu(ctx0, indexer_kq);
+                        indexer_score =
+                            ggml_mul(ctx0, indexer_score, indexer_weights);
+                        indexer_score =
+                            ggml_sum_rows(ctx0, indexer_score);
+                        indexer_score = ggml_cont(
+                            ctx0, ggml_permute(ctx0, indexer_score, 2, 1, 0, 3));
+
+                        indexer_score = ggml_add(
+                            ctx0, indexer_score, inp_attn_dsa->get_kq_mask_lid());
+                        cb(indexer_score, "lsa_indexer_score", il);
+
+                        const uint32_t n_top_k =
+                            std::min<uint32_t>(
+                                (uint32_t) indexer_score->ne[0],
+                                n_indexer_top_k);
+                        GGML_ASSERT(n_top_k == n_indexer_top_k);
+
+                        top_k = ggml_cont(
+                            ctx0, ggml_top_k(ctx0, indexer_score, n_top_k));
+                        GGML_ASSERT(top_k != nullptr);
+                        GGML_ASSERT(top_k->ne[0] == n_indexer_top_k);
+
+                        prev_top_k = top_k;
+                        LLAMA_LOG_DEBUG(
+                            "LONGCAT_LSA_AUDIT owner block=%d n_kv=%u "
+                            "top_k=%lld tensor=%p\n",
+                            il,
+                            n_kv_lid,
+                            (long long) top_k->ne[0],
+                            (void *) top_k);
+                        cb(top_k, "lsa_top_k_owner", il);
+                    } else {
+                        prev_top_k = nullptr;
+                        cb(indexer_k, "lsa_full_owner", il);
+                    }
+                } else {
+                    if (sparse_active) {
+                        GGML_ASSERT(prev_top_k != nullptr &&
+                            "LongCat CLI reuse block must follow an owner top-K");
+                        top_k = prev_top_k;
+                        GGML_ASSERT(top_k->ne[0] == n_indexer_top_k);
+
+                        LLAMA_LOG_DEBUG(
+                            "LONGCAT_LSA_AUDIT reuse block=%d owner_block=%d "
+                            "n_kv=%u top_k=%lld tensor=%p\n",
+                            il,
+                            il - 1,
+                            n_kv_lid,
+                            (long long) top_k->ne[0],
+                            (void *) top_k);
+                        cb(top_k, "lsa_top_k_reuse", il);
+                    } else {
+                        GGML_ASSERT(prev_top_k == nullptr);
+                        cb(cur, "lsa_full_reuse", il);
+                    }
+                }
             }
 
             // split Q into nope and rope parts
@@ -1023,9 +1251,23 @@ llama_model_longcat_flash_ngram::graph::graph(
             ggml_tensor * Vcur = kv_cmpr;
             cb(Vcur, "Vcur", il);
 
-            cur = build_attn(inp_attn_k,
-                    model.layers[il].wo, NULL, model.layers[il].wo_s,
-                    Qcur, Kcur, Vcur, nullptr, nullptr, model.layers[il].wv_b, kq_scale, il);
+            if (longcat_lsa) {
+                GGML_ASSERT(inp_attn_dsa != nullptr);
+                const uint32_t n_kv_lid =
+                    inp_attn_dsa->mctx->get_lid()->get_n_kv();
+                const bool sparse_expected =
+                    n_kv_lid > n_indexer_top_k;
+                GGML_ASSERT(sparse_expected == (top_k != nullptr));
+
+                cur = build_attn(inp_attn_dsa,
+                        model.layers[il].wo, NULL, model.layers[il].wo_s,
+                        Qcur, Kcur, Vcur, nullptr, nullptr,
+                        model.layers[il].wv_b, top_k, kq_scale, il);
+            } else {
+                cur = build_attn(inp_attn_k,
+                        model.layers[il].wo, NULL, model.layers[il].wo_s,
+                        Qcur, Kcur, Vcur, nullptr, nullptr, model.layers[il].wv_b, kq_scale, il);
+            }
 
             // LONGCAT_MLA_STAGE_SURFACE: HF o_proj boundary.
             //

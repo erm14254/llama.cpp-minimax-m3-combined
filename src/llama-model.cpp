@@ -2129,6 +2129,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
             } break;
         case LLM_ARCH_GLM_DSA:
         case LLM_ARCH_DEEPSEEK32:
+        case LLM_ARCH_LONGCAT_FLASH_SPARSE:
             {
                 if (params.ctx_type == LLAMA_CONTEXT_TYPE_MTP && hparams.n_layer_nextn > 0) {
                     // The NextN/MTP draft head runs dense MLA (no DSA indexer), so the
@@ -2161,7 +2162,12 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                     if (hparams.n_layer_nextn > 0) {
                         filter_mla = [&](uint32_t il) { return il < hparams.n_layer(); };
                     }
-                    llama_kv_cache::layer_filter_cb filter_lid = [&](uint32_t il) { return il < hparams.n_layer() && (arch != LLM_ARCH_GLM_DSA || hparams.is_indexer_full(il)); };
+                    llama_kv_cache::layer_filter_cb filter_lid = [&](uint32_t il) {
+                        const bool owner_filtered =
+                            arch == LLM_ARCH_GLM_DSA || arch == LLM_ARCH_LONGCAT_FLASH_SPARSE;
+                        return il < hparams.n_layer() &&
+                               (!owner_filtered || hparams.is_indexer_full(il));
+                    };
 
                     res = new llama_kv_cache_dsa(
                             *this,
