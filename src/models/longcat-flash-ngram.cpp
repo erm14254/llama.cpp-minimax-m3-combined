@@ -722,20 +722,12 @@ llama_model_longcat_flash_ngram::graph::graph(
                     // generic "q" label is reused three times otherwise).
                     cb(q, il == 2 ? "q_a_proj" : "q", il);
 
-                    // LONGCAT_BISECT_VCAST (transient diagnostic, il >= 1):
-                    // the HF BF16 cast-ordering chain (stage-B pattern) with
-                    // the eps UNCHANGED at hparams.f_norm_rms_eps (1e-5) --
-                    // isolating the cast factor of the 2x2. To be reverted
-                    // after the bisect measurements per the reviewed plan.
-                    q = ggml_rms_norm(ctx0, q, hparams.f_norm_rms_eps);
-                    q = ggml_cast(ctx0, q, GGML_TYPE_BF16);
-                    q = ggml_cast(ctx0, q, GGML_TYPE_F32);
-                    q = ggml_mul(
-                        ctx0,
+                    q = build_norm(
                         q,
-                        model.layers[il].attn_q_a_norm);
-                    q = ggml_cast(ctx0, q, GGML_TYPE_BF16);
-                    q = ggml_cast(ctx0, q, GGML_TYPE_F32);
+                        model.layers[il].attn_q_a_norm,
+                        nullptr,
+                        LLM_NORM_RMS,
+                        il);
                     cb(q, il == 2 ? "q_a_norm" : "q", il);
 
                     q = ggml_mul_mat(
@@ -971,19 +963,12 @@ llama_model_longcat_flash_ngram::graph::graph(
                 // cache path, exactly as the Q path widens after q_b_proj.
                 kv_cmpr = ggml_cast(ctx0, kv_cmpr, GGML_TYPE_F32);
             } else {
-                // LONGCAT_BISECT_VCAST (transient diagnostic, il >= 1): same
-                // cast-only pattern as the q_a site above - HF cast ordering
-                // at the unchanged eps 1e-5. To be reverted after the bisect
-                // measurements per the reviewed plan.
-                kv_cmpr = ggml_rms_norm(ctx0, kv_cmpr, hparams.f_norm_rms_eps);
-                kv_cmpr = ggml_cast(ctx0, kv_cmpr, GGML_TYPE_BF16);
-                kv_cmpr = ggml_cast(ctx0, kv_cmpr, GGML_TYPE_F32);
-                kv_cmpr = ggml_mul(
-                    ctx0,
+                kv_cmpr = build_norm(
                     kv_cmpr,
-                    model.layers[il].attn_kv_a_norm);
-                kv_cmpr = ggml_cast(ctx0, kv_cmpr, GGML_TYPE_BF16);
-                kv_cmpr = ggml_cast(ctx0, kv_cmpr, GGML_TYPE_F32);
+                    model.layers[il].attn_kv_a_norm,
+                    nullptr,
+                    LLM_NORM_RMS,
+                    il);
                 // LONGCAT_MLA_STAGE_SURFACE: HF kv_a_layernorm boundary, before
                 // the MLA LoRA kv scaling below. Renamed because the pre-norm
                 // view at the top of this block already uses "kv_cmpr".
