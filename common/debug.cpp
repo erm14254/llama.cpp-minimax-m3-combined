@@ -326,6 +326,10 @@ static bool common_debug_longcat_resid_walk_spec_for(
         { "q_a_proj-2",       "block2_q_a_proj_full.bin",       1536 },
         { "q_a_norm-2",       "block2_q_a_norm_full.bin",       1536 },
         { "q_b_proj-2",       "block2_q_b_proj_full.bin",       6144 },
+        // Post-mla_scale_q boundary surface (stage-A site A3): gives the
+        // production post-scale round a directly gateable dump against the
+        // offline T4 target. Dump-only; same 2D shape class as q_b_proj-2.
+        { "q_scaled-2",       "block2_q_scaled_full.bin",       6144 },
         { "kv_cmpr_pe-2",     "block2_kv_a_proj_full.bin",       576 },
         { "kv_a_norm-2",      "block2_kv_a_norm_full.bin",       512 },
         { "kv_cmpr_scaled-2", "block2_kv_cmpr_scaled_full.bin",  512 },
