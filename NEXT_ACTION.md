@@ -301,3 +301,17 @@ measurement (measurement-only already authorized); (f) MTP twins;
 otherwise unchanged: no Gate-4/2050 run until 512 parity is resolved,
 never widen any frozen criterion, no production FA, `.venv`/toolchain/
 reference trees immutable, cuBLAS 13.2 child-runtime contract mandatory.
+
+**Update 2026-08-18 (cast-vs-eps bisect COMPLETE — see the final
+2026-08-18 addendum of `STATUS_2026-08-17.md`): the stage-B endpoint
+regression is an INTERACTION effect.** Four-way frozen-512 comparison
+(violations / logits): Stage A **1** (`9d8583e3…`, standing) · V-eps
+**3** (`8c1be7de…`) · V-cast **1** (`43fdae39…`) · combined Stage B
+**96** (`fd5cefbf…`). Both variants passed their pre-registered operator
+gates (A6 max-ulp-4; D5 **byte-exact both norms** — zero near-ties at
+eps 1e-5, proving the token-177 knife-edge is eps-regime-dependent).
+Both variants fully reverted; standing Stage-A state restored and proven
+by the third independent byte-exact `9d8583e3…` endpoint reproduction.
+**Stopped for review.** Next-round candidates unchanged (see the
+2026-08-18 session-close update above), now with the bisect baselines as
+pre-registered expectations for any future D6 re-application.
