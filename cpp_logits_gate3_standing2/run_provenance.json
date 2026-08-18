@@ -1,0 +1,19 @@
+{
+    "reconstruction_note":  "memo-era flag set unrecorded; standard production-style parameters used and recorded per the reviewed plan",
+    "cublas_version":  "6.14.11.1330",
+    "invocation":  "llama-debug.exe -m \"D:\\LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-GGUF-BF16\\LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-BF16-00001-of-00008.gguf\" -f \"D:\\llama.cpp-longcat-claude\\prompt_gate3_helloworld.txt\" -c 4608 -b 4608 -ub 512 -fa off -ctk f32 -ctv f32 --no-warmup -fitt 4096 -v --save-logits --logits-output-dir \"D:\\llama.cpp-longcat-claude\\cpp_logits_gate3_standing2\"",
+    "purpose":  "project Gate-3 regression (4-token, established criterion)",
+    "binaries":  {
+                     "llama-common.dll":  "261f08a5d3a4db5f0d699b0b99f4d2dfba4f74d11967d6574b5ce68db2ca9894",
+                     "ggml-cuda.dll":  "502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48",
+                     "llama.dll":  "f85a02d90bb2998543a7a9e0f2c736d0a75766b26372e42618b8dc67da1425ad",
+                     "llama-debug.exe":  "df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0"
+                 },
+    "logits_sha256":  "2dfd730e245287c4d6374cbb41817987220b44e821fd093b3262e4bbdc471909",
+    "hf_oracle_sha256":  "2c178ea5384d9b8ef59755658ecce2dfba33528edc7bf58964f23db81a26e050",
+    "comparator_sha256":  "6976fbc035c60692406a02cc1a6706b2702bbb16f579829e44c29dcdcc57bc93",
+    "tokens_sha256":  "ad9883df7c21de340e1fea799c2c9746afb5e4097fd0df7a596fda68f634fb0f",
+    "tag":  "standing2",
+    "cublas_module":  "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA\\v13.2\\bin\\x64\\cublas64_13.dll",
+    "arithmetic_head":  "6c991c8a58f35732e0742b8b56795e177abee1d2"
+}

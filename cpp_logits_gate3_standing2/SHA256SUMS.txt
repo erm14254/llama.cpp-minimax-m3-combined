@@ -1,0 +1,5 @@
+5fb058a59baeee4f20d30efa78311a3f258819e784a5949b468f94c7ee78a274  gate3_standing2.json
+2dfd730e245287c4d6374cbb41817987220b44e821fd093b3262e4bbdc471909  llamacpp-LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-BF16-00001-of-00008.bin
+b79af217a121d184cdabe1ce4c8790a86a7f8fb6d6cd8bb48b8cce30f0856b06  llamacpp-LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-BF16-00001-of-00008.txt
+92f020480b23256d9ccac905baaf38ab640746ec9592e8b04fb590a61f6389eb  llamacpp-LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-BF16-00001-of-00008-prompt.txt
+ad9883df7c21de340e1fea799c2c9746afb5e4097fd0df7a596fda68f634fb0f  llamacpp-LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-BF16-00001-of-00008-tokens.bin

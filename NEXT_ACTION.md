@@ -334,3 +334,22 @@ audit + staged production design** (norm sites, layer coverage, MoE/dense
 identity; endpoint expectations informed by the bisect interaction
 finding) — production trunk-norm arithmetic remains forbidden until that
 plan is reviewed and approved. All other standing prohibitions unchanged.
+
+**Update 2026-08-18 (trunk-norm round COMPLETE — see the three final
+2026-08-18 addenda of `STATUS_2026-08-17.md`):** both role stages were
+executed with **byte-exact operator gates** (attn_norm-2 == `afa16c6c…`
+under the l_out-1 reset; ffn_norm-2 == `9815422f…` under the ffn_inp-2
+reset — the trunk-norm class is now production-proven at the operator
+level for both roles), endpoints measured (Stage A 1 / N1 18 / N1+N2 17,
+top-1 483 held throughout), and **both stages reverted per the final
+review** — standing = Stage A, restoration proven by the fourth
+byte-exact `9d8583e3…` reproduction, **Project Gate-3 PASS re-verified**
+(0 violations, top-1 444, logits `2dfd730e…` byte-identical to the prior
+Gate-3 run). **Next decision (NOT begun):** the remaining-mechanism
+rounds — production RoPE angle generation, il≥1 attention-core
+measurement, MLP/MoE per-operator measurement (measurement-only already
+authorized) — each needing its own reviewed plan; the eventual full-stack
+round re-applies the three proven norm-class corrections together with
+those mechanisms and re-measures. All standing prohibitions unchanged
+(no Gate-4/2050 until 512 parity; never widen frozen criteria; no
+production FA; runtime/toolchain contracts).
