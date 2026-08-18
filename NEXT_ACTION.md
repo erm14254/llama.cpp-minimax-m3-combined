@@ -472,3 +472,35 @@ scoring/top-K surfaces incl. I32 top-K serializer support), then the
 Type-S/Type-P split-capture + determinism protocol per the approved
 plan's §5, with its own placement policy and structural validity gates.
 No 2050-token execution and no Gate-4 protocol until that review.**
+
+**Update 2026-08-18 (LSA measurement-apparatus instrumentation COMPLETE —
+see the final 2026-08-18 addendum of `STATUS_2026-08-17.md`): the
+apparatus is landed and proven.** Instrumentation checkpoint `09e42fc14`
+(parent `46f412728`; committed with clean tree BEFORE any run): three
+il==0-gated dump-only model additions (`lsa_indexer_k_2d`,
+`lsa_indexer_q_proj` name, `lsa_indexer_q_2d`), the `LONGCAT_LSA_DUMP_DIR`
+dump family (anchors `attn_norm-0`/`q_a_norm-0`, owner-K trio, sparse-only
+first-owner Q/weights, 14 reuse-name-keyed top-K entries), 44-name sweep
+contracts (incl. the F7 Type-P hardening), `git_head` run provenance, the
+`prompt_2050_a.txt` asset (`e2791fac…`), and the ≤512 proof
+harness/analyzer. Binary movement exactly as pre-registered (`llama.dll`
+`37431a19…`, `llama-common.dll` `39bffc90…`; exe/ggml-cuda byte-identical).
+**Standing inertness re-pass CLEAN at the new build: frozen-512
+`b8067779…` BYTE-EXACT (0/131,072, top-1 483), Gate-3 `8852bd5b…`
+BYTE-EXACT (0, top-1 444), injectffn ALL GATES (landing `4718460b…`,
+15/15 invariants, 32/32 inventory, 17/17 prior reproduction, zero
+`lsa_*` files). ≤512 dumpability proof ALL GATES PASS
+(`cpp_lsa_dump_proof_lsaE_512/`): 5+5 inventory exact, negative control
+clean, nope-half identity byte-exact, BF16-lattice 100% incl. the
+`attn_norm-0` semantic check, and the `q_a_norm-0` anchor byte-identical
+(`956bd3e8…`) to the standing frozen Q-trio surface through the
+independent new family.** The four indexer blockers remain deliberately
+untouched. **Gate 4 remains NOT RUN; no 2050-token execution has
+occurred. Next decision (NOT begun; its own reviewed plan): the 2050
+Type-S/Type-P measurement round — author the 2050 runners + the
+determinism comparator implementing the pre-registered verdict stack
+(structural validity gates; V-ord/V-mem-raw characterization;
+V-mem-effective/V-mask/V-logit blocking; rows 2048/2049 reported
+separately), the HF-side 2050 wrapper with fail-closed sparse-engagement
+asserts, `-ub 2304` geometry with a freshly recorded placement tuple —
+then STOP FOR REVIEW before execution.**
