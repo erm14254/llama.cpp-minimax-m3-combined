@@ -1,0 +1,44 @@
+{
+  "A_model_vs_cpp": {
+    "a_model_vs_cpp_bf16_agreement": 1572858,
+    "a_model_vs_cpp_bf16_agreement_note": "A-MODEL-VS-C++ agreement only - NOT C++-vs-HF BF16 recovery",
+    "exact_count": 1199530,
+    "max_f32_ulp": 4,
+    "protocol": "established F32 reduction-noise: max f32-ulp <= 4; exact count recorded",
+    "total": 1572864,
+    "verdict": "PASS"
+  },
+  "D_model_vs_hf": {
+    "byte_exact_count": 1572864,
+    "closure": "CLOSED (whole-tensor byte-exact)",
+    "eps_used": 1e-05,
+    "total": 1572864
+  },
+  "all_input_rule": {
+    "attribution": "PERMITTED at this surface (exact input + verified parameters)",
+    "eps_cpp_gguf_metadata": 9.999999747378752e-06,
+    "eps_cpp_source_cites": [
+      "llama-graph.cpp:1790 build_norm LLM_NORM_RMS -> hparams.f_norm_rms_eps",
+      "longcat-flash-ngram.cpp:1053 build_norm(ffn_inp, ffn_norm, ...)"
+    ],
+    "eps_hf_runtime_gate": {
+      "config_rms_norm_eps": 1e-05,
+      "note": "read from the instantiated modules; verified, not assumed",
+      "post_attention_layernorm_0_variance_epsilon": 1e-05,
+      "post_attention_layernorm_1_variance_epsilon": 1e-05
+    },
+    "input_identity": "C++ landing == HF capture attn0_resid == oracle 4718460be4d2bb0243c4b9bcf76e20ca4b8d5a0f35ec3717ca6b8dd5cb5f73c3",
+    "weight_widening_equivalence": "3072/3072 (GGUF blk.2.ffn_norm.weight == widen(HF model.layers.1.post_attention_layernorm.0.weight))"
+  },
+  "cpp_dump_sha256": "50a17cb149ecc80297e1f0b096ac1aa400e8dd524db571643270a684e58487b4",
+  "cross_classification_cpp_vs_hf": {
+    "cpp_vs_hf_bf16_recovery": 1163642,
+    "cpp_vs_hf_bf16_recovery_note": "count of bf16(cpp) == hf (HF dump is bf16-on-lattice)",
+    "raw_eq": 1388,
+    "rel_rmse": 0.00231235967994959,
+    "total": 1572864
+  },
+  "epsilon_discrimination_diagnostic": "D(1e-6) differs from the HF dump (1459382/1572864 equal): numerical discrimination SUPPORTING the runtime-verified eps 1e-05",
+  "experiment": "ffn_norm-2 / HF post_attention_layernorm[0] under exact ffn_inp-2 predecessor",
+  "hf_dump_sha256": "9815422f3830a50597016270fcdafe56165de97950ab7083ecbd9877d22b24bb"
+}

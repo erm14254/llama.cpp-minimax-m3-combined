@@ -1,0 +1,91 @@
+{
+  "attn0_resid_oracle_sha256": "4718460be4d2bb0243c4b9bcf76e20ca4b8d5a0f35ec3717ca6b8dd5cb5f73c3",
+  "description": "HF logical-layer-1 post_attention_layernorm capture (full-sequence)",
+  "hidden_size": 3072,
+  "identity_gates": "input==hidden_states[1]; layer_out==hidden_states[2]; attn0_resid==committed oracle; norm input==attn0_resid same-pass",
+  "layout": "token-major [512, 3072] float32-le",
+  "runtime_eps_gate": {
+    "config_rms_norm_eps": 1e-05,
+    "note": "read from the instantiated modules; verified, not assumed",
+    "post_attention_layernorm_0_variance_epsilon": 1e-05,
+    "post_attention_layernorm_1_variance_epsilon": 1e-05
+  },
+  "runtime_sha256": "a3bc31616c1f0ddff9f195cbc78f4561a40187c50fe3bf29e2e98d9228947428",
+  "sequence_length": 512,
+  "surfaces": {
+    "attn0_norm": {
+      "determinism_gate": "PASS",
+      "max": 10.9375,
+      "min": -4.65625,
+      "rms": 0.11282485138053502,
+      "sha256": "afa16c6c3324387e9261c708cae044b8fcb08acda8c8f6315d2ba8d39a8f0fd7"
+    },
+    "attn0_out": {
+      "determinism_gate": "PASS",
+      "max": 0.6953125,
+      "min": -0.44140625,
+      "rms": 0.03781413231810395,
+      "sha256": "c90c8e0669b9261f3bfa21abc1cc7f4f7fae48ee4393755ad99ed9e7c1a5e2e9"
+    },
+    "attn0_resid": {
+      "determinism_gate": "PASS",
+      "max": 17.75,
+      "min": -15.1875,
+      "rms": 0.10521369830226493,
+      "sha256": "4718460be4d2bb0243c4b9bcf76e20ca4b8d5a0f35ec3717ca6b8dd5cb5f73c3"
+    },
+    "attn1_norm": {
+      "determinism_gate": "PASS",
+      "max": 3.734375,
+      "min": -3.03125,
+      "rms": 0.07510310441645231,
+      "sha256": "6a6280625b6cdf05f40d84b807f581043badd318140e306d3260f368a2d3ef1e"
+    },
+    "attn1_resid": {
+      "determinism_gate": "PASS",
+      "max": 41.75,
+      "min": -40.0,
+      "rms": 0.1898122037307245,
+      "sha256": "40e19bfabd731936d695746876ad1101cb5ea95ef31e18aa5b169fe3d95e56e9"
+    },
+    "ffn0_norm": {
+      "determinism_gate": "recorded-fresh",
+      "max": 7.125,
+      "min": -6.59375,
+      "rms": 0.271711258474225,
+      "sha256": "9815422f3830a50597016270fcdafe56165de97950ab7083ecbd9877d22b24bb"
+    },
+    "ffn1_norm": {
+      "determinism_gate": "recorded-fresh",
+      "max": 4.90625,
+      "min": -3.859375,
+      "rms": 0.10609950829765664,
+      "sha256": "205e8d8f5bb7245fcc927698c0f82e69021318cd924b5fc5a61dcb91bed88d07"
+    },
+    "input": {
+      "determinism_gate": "PASS",
+      "max": 17.875,
+      "min": -15.25,
+      "rms": 0.10572163639877703,
+      "sha256": "d810f93c50ea42c5909ab289ebf62a0c5629f40530d2e5fc706dde67f0eaf763"
+    },
+    "layer_out": {
+      "determinism_gate": "PASS",
+      "max": 89.0,
+      "min": -88.0,
+      "rms": 0.2830075659405142,
+      "sha256": "85097c18565f04c0e0676146ae7ee3f5ffc674789db6f17c028606595d6d16e2"
+    },
+    "mlp0_resid": {
+      "determinism_gate": "PASS",
+      "max": 41.75,
+      "min": -40.0,
+      "rms": 0.16816947079168132,
+      "sha256": "16b9283f2cccec060e6a78004774020d730394fbfa7c314d68a9ad959ac336fc"
+    }
+  },
+  "tf32_disabled": true,
+  "tokens_bin_sha256": "4893d78751e8577f817da21a7e00718c7c14e0d80732e1b7e4da36da6677821c",
+  "torch": "2.13.0+cu132",
+  "transformers": "5.15.0"
+}

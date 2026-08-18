@@ -315,3 +315,22 @@ by the third independent byte-exact `9d8583e3…` endpoint reproduction.
 **Stopped for review.** Next-round candidates unchanged (see the
 2026-08-18 session-close update above), now with the bisect baselines as
 pre-registered expectations for any future D6 re-application.
+
+**Update 2026-08-18 (ffn_norm causal measurement COMPLETE — see the final
+2026-08-18 addendum of `STATUS_2026-08-17.md`): the second trunk
+hidden-size norm role is independently validated.** Under an exact
+`ffn_inp-2` predecessor (new `injectffn` harness mode, landing
+`4718460b…` byte-exact, 14/14 invariants, 43-name sweep) with the
+all-input rule satisfied (weight widening 3072/3072; eps verified BOTH
+sides at 1e-5 — runtime-instantiated-module gate + GGUF metadata), the HF
+`post_attention_layernorm[0]` mechanism is **BYTE-CLOSED:
+`bf16(bf16(x·rsqrt(var+1e-5))·w)` 1,572,864/1,572,864**; C++ is the plain
+F32-kept norm (A-model max-ulp 4); cross C++-vs-HF bf16-recovery 74.0%,
+rel 2.312e-3 — the same class and magnitude as the closed `attn_norm-2`
+(74.3%, 2.357e-3). Both trunk-norm roles are now individually measured.
+Bisect wording corrected per review (strong/dominant non-additive
+interaction). **Next decision (NOT begun): the reviewed trunk-norm source
+audit + staged production design** (norm sites, layer coverage, MoE/dense
+identity; endpoint expectations informed by the bisect interaction
+finding) — production trunk-norm arithmetic remains forbidden until that
+plan is reviewed and approved. All other standing prohibitions unchanged.
