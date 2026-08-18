@@ -6,14 +6,21 @@
 # LONGCAT_*/diagnostic env; child-only CUDA v13.2-first PATH pin with
 # live-process module verification.
 #
-# Endpoint decision rule (reviewed plan; frozen criterion NEVER widened):
-#   PASS only at 0 violations + top-1 agreement.
-#   top-1 change or violations > 40  -> STOP_FOR_REVIEW (exit 2). With all
-#     stage local gates passed this is NOT stage disproof by itself - the
-#     review decides (error cancellation is known in this project).
-#   violations <= 40 with top-1 agreement -> RECORD (exit 0), a measurement.
+# Endpoint decision rule (reviewed plans; frozen criterion NEVER widened):
+#   PASS only at 0 violations + top-1 agreement, always.
+#   top-1 change or violations > the per-invocation -StandingViolations
+#     baseline -> STOP_FOR_REVIEW (exit 2). With all stage local gates
+#     passed this is NOT stage disproof by itself - the review decides
+#     (error cancellation is known in this project).
+#   violations <= the baseline with top-1 agreement -> RECORD (exit 0).
 param(
-    [Parameter(Mandatory = $true)][string]$Tag
+    [Parameter(Mandatory = $true)][string]$Tag,
+    # DYNAMIC review baseline (reviewed trunk-norm plan): the mandatory-
+    # stop-for-review threshold is per-invocation, never globally hard-coded.
+    # Stage N1 runs at the accepted stage-A count (1); stage N2 runs at the
+    # accepted N1 endpoint count (so a 0->1 regression stops for review).
+    # PASS is always only 0 violations + top-1 agreement.
+    [Parameter(Mandatory = $true)][int]$StandingViolations
 )
 $ErrorActionPreference = 'Stop'
 
@@ -32,7 +39,7 @@ $expectedComparatorSha = '6976fbc035c60692406a02cc1a6706b2702bbb16f579829e44c29d
 $expectedPromptSha     = 'd3c44b156c85427176e7038c4b8f902101424097bb3ce51095333e59e52e5aca'
 $expectedTokensSha     = '4893d78751e8577f817da21a7e00718c7c14e0d80732e1b7e4da36da6677821c'
 $expectedCublasVer     = '6.14.11.1330'
-$standingViolations    = 40   # the pre-change standing FAIL count; not an acceptance threshold
+# ($StandingViolations is now the mandatory per-invocation parameter above.)
 
 # Standing state = stage A (stage B reverted by 11d93b56a after the 96-
 # violation endpoint review): source byte-identical to the 458a03685 +
@@ -216,20 +223,20 @@ $prov = @{
     exit_code = $proc.ExitCode
     env_sweep_names = $sweep
     invocation = ("llama-debug.exe " + $args)
-    standing_violations_reference = $standingViolations
+    standing_violations_baseline = $StandingViolations
 }
 $prov | ConvertTo-Json | Out-File -Encoding ascii (Join-Path $outDir 'run_provenance.json')
 
 Write-Host "== endpoint decision rule =="
-Write-Host ("violations = " + $r.violations + " / 131072 (standing pre-change: " + $standingViolations + ")")
+Write-Host ("violations = " + $r.violations + " / 131072 (review baseline this invocation: " + $StandingViolations + ")")
 Write-Host ("top1: hf=" + $r.hf_top1 + " cpp=" + $r.cpp_top1 + " agree=" + $r.top1_agree)
 Write-Host ("worst_ratio=" + $r.worst_tolerance_ratio + " max_abs=" + $r.max_abs_error + " rmse=" + $r.rmse + " cosine=" + $r.cosine_similarity)
 if (-not $r.top1_agree) {
     Write-Host "VERDICT: STOP_FOR_REVIEW (top-1 disagreement - mandatory review; frozen criterion unchanged)"
     exit 2
 }
-if ($r.violations -gt $standingViolations) {
-    Write-Host "VERDICT: STOP_FOR_REVIEW (violations exceed the standing $standingViolations - mandatory review; NOT by itself stage disproof if all local gates passed)"
+if ($r.violations -gt $StandingViolations) {
+    Write-Host "VERDICT: STOP_FOR_REVIEW (violations exceed the review baseline $StandingViolations - mandatory review; NOT by itself stage disproof if all local gates passed)"
     exit 2
 }
 if ($r.violations -eq 0) {

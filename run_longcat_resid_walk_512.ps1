@@ -35,6 +35,10 @@ $runDir    = Join-Path $repo ("cpp_resid_walk_" + $tag + "_512")
 # design).
 if ($Mode -in @('inject2','inject3','inject4')) {
     $priorDir = Join-Path $repo 'cpp_resid_walk_inject_b1_512'
+} elseif ($Mode -eq 'injectffn') {
+    # Prior generation for injectffn is the ffn_norm-experiment run; only
+    # the invariant subset is gated against it (see $allow below).
+    $priorDir = Join-Path $repo 'cpp_resid_walk_injectffn_ffnNorm_512'
 } else {
     $priorDir = Join-Path $repo ("cpp_resid_walk_" + $Mode + "_512")
 }
@@ -530,13 +534,22 @@ if ($Mode -eq 'inject2' -and $runDir -ne $dualPrior -and (Test-Path (Join-Path $
 # proving the extended instrumentation inert on all previous surfaces.
 if ($Suffix -ne '' -and (Test-Path (Join-Path $priorDir 'SHA256SUMS.txt'))) {
     $allow = $null
-    if ($Mode -in @('inject2','inject3','inject4')) {
-        # Invariant subset only: the 14 il==0/pre-layer upstream final-row
-        # dumps + the injected-node witnesses. ffn_inp-1 (il=1) is in
-        # $expectedMovedSurfaces - recorded above, not gated here. Downstream
-        # of the second reset differs by design and is data, not a gate.
+    if ($Mode -in @('inject','inject2','inject3','inject4')) {
+        # Invariant subset only: the il==0/pre-layer upstream final-row
+        # dumps + the injected-node witnesses (the l_out-1 landing makes the
+        # logical_00 files oracle-valued in prior and current runs alike).
+        # ffn_inp-1 (il=1) is in $expectedMovedSurfaces - recorded above,
+        # not gated here. Everything downstream of il>=1 arithmetic differs
+        # by design across arithmetic stages and is data, not a gate.
         $allow = @($upstreamRegression.Keys) + @(
             'logical_00.bin','logical_00_full.bin','logical_00_full.json'
+        )
+    }
+    if ($Mode -eq 'injectffn') {
+        # Same invariant-subset principle; the injectffn landing witness is
+        # the ffn_inp-2 dump (oracle-valued in prior and current runs).
+        $allow = @($upstreamRegression.Keys) + @(
+            'block1_attn0_resid_full.bin','block1_attn0_resid_full.json'
         )
     }
     $priorFailed = 0
