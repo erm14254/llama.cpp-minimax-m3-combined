@@ -353,3 +353,27 @@ round re-applies the three proven norm-class corrections together with
 those mechanisms and re-measures. All standing prohibitions unchanged
 (no Gate-4/2050 until 512 parity; never widen frozen criteria; no
 production FA; runtime/toolchain contracts).
+
+**Update 2026-08-18 (N2-only factorial COMPLETE — see the final
+2026-08-18 addendum of `STATUS_2026-08-17.md`): the missing cell is a
+PASS.** With the proven ffn_norm HF chain applied ALONE (N1 absent,
+operator gate `9815422f…` byte-exact), the strict frozen-512 endpoint
+measured **0/131,072 violations — the first PASS-level result** (worst
+ratio 0.9746, top-1 483, top-100 98/100, logits `b8067779…`). Completed
+2×2 (violations): A=1 / N2-only=**0** / N1=18 / N1+N2=17. Continuous
+factorial (float64): the interaction residual ‖I‖₂=56.86 **exceeds** the
+combined effect ‖L11−L00‖₂=47.44 and is 1.31× the larger averaged main
+effect — interaction dominates; counts are descriptive only.
+Interpretation corrections applied per review (no attribution of the
+cancellation to any particular remaining mechanism; ffn_norm is NOT
+independently endpoint-regressing — its solo effect is an improvement to
+PASS). The transient was reverted per the pre-registered
+no-auto-promotion rule; **standing = Stage A** (fifth byte-exact
+`9d8583e3…` restoration proof). **Next decision (NOT begun): the review
+of whether to promote Stage A + N2 (ffn_norm) as the new standing
+production state — requiring its own reviewed promotion protocol
+(re-application, operator gate, endpoint reproduction of `b8067779…`,
+Gate-3 regression) — versus holding Stage A.** All other standing
+prohibitions unchanged (no RoPE/core/MoE/MTP arithmetic, no
+Gate-4/2050 run until 512 parity is resolved and reviewed, never widen
+frozen criteria).
