@@ -624,23 +624,12 @@ llama_model_longcat_flash_ngram::graph::graph(
             cur = ggml_cast(ctx0, cur, GGML_TYPE_BF16);
             cur = ggml_cast(ctx0, cur, GGML_TYPE_F32);
         } else {
-            // LONGCAT_TRUNK_ATTN_NORM_HF_SEMANTICS (production, il >= 1, N1):
-            // the byte-proven il == 0 chain above, extended per the reviewed
-            // trunk-norm plan: HF input_layernorm is byte-closed as
-            // bf16(bf16(x*rsqrt(var+1e-5))*w) at attn_norm-2 under an exact
-            // predecessor (block-1 round, 1572864/1572864), and HF
-            // construction is role-uniform across the trunk. eps unchanged
-            // (f_norm_rms_eps = 1e-5, matching HF); il == 0 branch preserved
-            // literally.
-            cur = ggml_rms_norm(ctx0, inpL, hparams.f_norm_rms_eps);
-
-            cur = ggml_cast(ctx0, cur, GGML_TYPE_BF16);
-            cur = ggml_cast(ctx0, cur, GGML_TYPE_F32);
-
-            cur = ggml_mul(ctx0, cur, model.layers[il].attn_norm);
-
-            cur = ggml_cast(ctx0, cur, GGML_TYPE_BF16);
-            cur = ggml_cast(ctx0, cur, GGML_TYPE_F32);
+            cur = build_norm(
+                inpL,
+                model.layers[il].attn_norm,
+                NULL,
+                LLM_NORM_RMS,
+                il);
         }
 
         cb(cur, "attn_norm", il);
