@@ -34,12 +34,13 @@ $expectedTokensSha     = '4893d78751e8577f817da21a7e00718c7c14e0d80732e1b7e4da36
 $expectedCublasVer     = '6.14.11.1330'
 $standingViolations    = 40   # the pre-change standing FAIL count; not an acceptance threshold
 
-# Stage-A source HEAD 923fad90d (arithmetic 458a03685). exe/ggml-cuda
-# byte-identical to the b98070666 instrumentation set.
+# Stage-B source HEAD 39abf9d49 (stage-A boundaries + LoRA-norm HF cast
+# semantics/eps in llama.dll; 923fad90d dump spec in llama-common.dll).
+# exe/ggml-cuda byte-identical to the b98070666 instrumentation set.
 $expectedBins = @{
     'llama-debug.exe'  = 'df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0'
     'llama-common.dll' = '9367c541149a0969c2f495e5b4f13cbe883967fc4f5df06663c78e73e2ea4888'
-    'llama.dll'        = 'c890671e810d264436f750db5007f3e4513a145aa3c1caa4ac6b50266188bac1'
+    'llama.dll'        = 'a615af01141fe5ab96b90cdd2ec0e28e54ebdfbca0c4f0e5983537604028b247'
     'ggml-cuda.dll'    = '502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48'
 }
 
@@ -196,7 +197,7 @@ Get-ChildItem $outDir -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | So
 $prov = @{
     tag = $Tag
     instrumentation_head = '923fad90d4d34388a14e2a6c83cf1b7dff9b4ba8'
-    arithmetic_head = '458a03685ab259169dff0cf6381f42326ffe85a9'
+    arithmetic_head = '39abf9d49b36df2ccba7cfb31f20b94b83733296'
     binaries = $expectedBins
     cublas_module = $cublasPath
     cublas_version = $cublasVer
