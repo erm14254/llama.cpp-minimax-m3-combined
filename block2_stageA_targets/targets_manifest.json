@@ -1,0 +1,73 @@
+{
+  "inputs": {
+    "b0_kv_a_norm": {
+      "path": "D:\\lc_mla_blackwell\\kv_a_layernorm.bin",
+      "sha256": "b44cc101b03b11d96c0d9c52613f7469141dd7786b8128f93e3b7e912c550373"
+    },
+    "hf_q_b": {
+      "path": "D:\\lc_block2_mla_512\\q_b_proj.bin",
+      "sha256": "ecb70ef6c9bd4d6f28a67467f3b5ec3fc575d4f37cd2e81bce7cc7554323f308"
+    },
+    "quad_kv_scaled_raw": {
+      "path": "D:\\llama.cpp-longcat-claude\\cpp_resid_walk_inject3_b2_512\\block2_kv_cmpr_scaled_full.bin",
+      "sha256": "7450dd4a91683330d2c213370702223abd13e2758995d85fe8fe24dd215dc3a8"
+    },
+    "quad_q_b_raw": {
+      "path": "D:\\llama.cpp-longcat-claude\\cpp_resid_walk_inject3_b2_512\\block2_q_b_proj_full.bin",
+      "sha256": "23257a1e6891f5daaee74e9cdab16e314c37d86da3605c25c6f6018a03d0b60b"
+    }
+  },
+  "known_answer_gates": {
+    "block0_s2b_kv_cmpr_scaled": "BYTE-EXACT (909b7ee75366b0ee1d5a912c103762563236cd07c6fd8385ceb1e549f2a86ce8)",
+    "mla_scale_q_bit_identity": "0x3fb504f3"
+  },
+  "premise": {
+    "description": "T3/T4/T5 are valid stage-A gates only if the stage-A run's old-norm outputs byte-reproduce the committed quad-run norm dumps (checked in-run by the stage comparator)",
+    "quad_norm_hashes": {
+      "block2_kv_a_norm_full.bin": "93d7442a30cd7d742f21b777398783ea00faf0e9012658d37dae7d13a07698a9",
+      "block2_q_a_norm_full.bin": "2b60008293032656185fa55ca5f0bb579855c67998ad7082feee8b3991ec8bb4"
+    }
+  },
+  "targets": {
+    "block2_kv_cmpr_scaled_stageA_target.bin": {
+      "dtype": "float32-le",
+      "name": "block2_kv_cmpr_scaled_stageA_target.bin",
+      "order": "token-major",
+      "sha256": "efef3bc0754e5b463496fd8af381a421794a9c8b6f88bcda3b18ebf451a83dcd",
+      "shape": [
+        512,
+        512
+      ]
+    },
+    "block2_q_b_proj_stageA_target.bin": {
+      "dtype": "float32-le",
+      "name": "block2_q_b_proj_stageA_target.bin",
+      "order": "token-major",
+      "sha256": "c0e3536a7289bad6540315eefa20e2fc77b710ce9b2742ce529f23d467aad301",
+      "shape": [
+        512,
+        6144
+      ]
+    },
+    "block2_q_scaled_stageA_target.bin": {
+      "dtype": "float32-le",
+      "name": "block2_q_scaled_stageA_target.bin",
+      "order": "token-major",
+      "sha256": "152316998b149ea4ed3554ce10fa83f220eb0e2800090ef3e4fc62cb2c34aafa",
+      "shape": [
+        512,
+        6144
+      ]
+    },
+    "block2_q_scaled_stageB_target.bin": {
+      "dtype": "float32-le",
+      "name": "block2_q_scaled_stageB_target.bin",
+      "order": "token-major",
+      "sha256": "d9234fa93a69490a5932c4ba10a5cfef58c96752b094362093ef92336f29da21",
+      "shape": [
+        512,
+        6144
+      ]
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "dtype": "float32-le",
+  "name": "block2_q_scaled_stageB_target.bin",
+  "order": "token-major",
+  "sha256": "d9234fa93a69490a5932c4ba10a5cfef58c96752b094362093ef92336f29da21",
+  "shape": [
+    512,
+    6144
+  ]
+}

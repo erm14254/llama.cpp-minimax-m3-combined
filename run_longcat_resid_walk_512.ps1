@@ -39,12 +39,13 @@ if ($Mode -in @('inject2','inject3','inject4')) {
     $priorDir = Join-Path $repo ("cpp_resid_walk_" + $Mode + "_512")
 }
 
-# Instrumentation HEAD b98070666 (norm-output injector; only
-# llama-common.dll changed; llama.dll carries the 02d9687dc name plumbing).
+# Stage-A source HEAD 923fad90d (458a03685 = il>=1 BF16 output boundaries in
+# llama.dll; 923fad90d = block2_q_scaled_full dump spec in llama-common.dll).
+# exe/ggml-cuda byte-identical to the b98070666 instrumentation set.
 $expectedBins = @{
     'llama-debug.exe'  = 'df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0'
-    'llama-common.dll' = '9476e31f2ad7e820f2d824413a39272931bf39aeccfc71b588bbb16735f9ad8d'
-    'llama.dll'        = '97592bb7ad1338ef36fd608da19709ccd75a39bd04b5609324204e055c99a10c'
+    'llama-common.dll' = '9367c541149a0969c2f495e5b4f13cbe883967fc4f5df06663c78e73e2ea4888'
+    'llama.dll'        = 'c890671e810d264436f750db5007f3e4513a145aa3c1caa4ac6b50266188bac1'
     'ggml-cuda.dll'    = '502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48'
 }
 $expectedOracle5Sha = '4c9792430fee2716b573ccf365617e537adf8305571e2a5a0b1a881c0c4de340'
@@ -74,6 +75,12 @@ $upstreamRegression = @{
     'o_proj.bin'               = 'ac91a8310515ffcbf8802d761028705a371865e553bfc2a9d4dad8f7f416bf3f'
     'logical0_attn0_resid.bin' = '7e05940b5c1b6b8f3bcaf210ac8938a44ea3006052c1f16e20c855df6452f109'
     'logical0_mlp0_resid.bin'  = 'de18420a5b2e0d4e2575d1f597cc67c01ccd6e1b17c03dccfd5a20d687b31cb7'
+}
+# Pre-registered expected-moved surface under the stage-A il>=1 arithmetic:
+# ffn_inp-1 (physical block 1, il=1) is the single il>=1-dependent member of
+# the historical 15-file upstream set. Recorded (old committed hash kept for
+# reference), NOT gated; every il==0/pre-layer surface above stays a hard gate.
+$expectedMovedSurfaces = @{
     'logical0_attn1_resid.bin' = 'af49add8343451d0f9379dd874a5cd9f59cbe43f95179a7a4fca69cce3da0e12'
 }
 $downstreamRegression = @{
@@ -362,7 +369,23 @@ foreach ($name in ($regressionSet.Keys | Sort-Object)) {
     if ($h -ne $regressionSet[$name]) { Write-Host "MISMATCH $name $h"; $failed++ }
 }
 if ($failed -gt 0) { throw "final-row regression FAIL: $failed surface(s)" }
-Write-Host ("final-row regression: " + $regressionSet.Count + "/" + $regressionSet.Count + " match committed attnpath manifest")
+Write-Host ("final-row regression: " + $regressionSet.Count + "/" + $regressionSet.Count + " match committed attnpath manifest (il==0/pre-layer invariants)")
+
+# Expected-moved surfaces: hash and record, never gate. A surface that has
+# NOT moved off its old-arithmetic hash is reported (informational) - it
+# would indicate the il>=1 change did not take effect where expected.
+$movedRecord = @{}
+foreach ($name in ($expectedMovedSurfaces.Keys | Sort-Object)) {
+    $p = Join-Path $runDir $name
+    if (-not (Test-Path $p)) { throw "expected-moved surface missing: $name" }
+    $h = Get-Sha256 $p
+    $movedRecord[$name] = $h
+    if ($h -eq $expectedMovedSurfaces[$name]) {
+        Write-Host "expected-moved surface UNMOVED (informational): $name still $h"
+    } else {
+        Write-Host "expected-moved surface recorded: $name $h (old-arithmetic was $($expectedMovedSurfaces[$name]))"
+    }
+}
 
 if ($Mode -ne 'control') {
     # Landing gates: full-seq dump of the injected node == oracle, and its
@@ -406,7 +429,8 @@ if ($Suffix -ne '') {
         'block1_attn0_resid_full.bin','block1_mlp0_resid_full.bin',
         'block1_attn1_norm_full.bin','block1_attn1_resid_full.bin',
         'block2_q_a_proj_full.bin','block2_q_a_norm_full.bin',
-        'block2_q_b_proj_full.bin','block2_kv_a_proj_full.bin',
+        'block2_q_b_proj_full.bin','block2_q_scaled_full.bin',
+        'block2_kv_a_proj_full.bin',
         'block2_kv_a_norm_full.bin','block2_kv_cmpr_scaled_full.bin',
         'block2_q_pe_rope_full.bin','block2_k_pe_rope_full.bin',
         'block2_kqv_out_full.bin'
@@ -416,6 +440,7 @@ $fullSeqSizes = @{
     'block2_q_a_proj_full.bin'       = 1536 * 512 * 4
     'block2_q_a_norm_full.bin'       = 1536 * 512 * 4
     'block2_q_b_proj_full.bin'       = 6144 * 512 * 4
+    'block2_q_scaled_full.bin'       = 6144 * 512 * 4
     'block2_kv_a_proj_full.bin'      =  576 * 512 * 4
     'block2_kv_a_norm_full.bin'      =  512 * 512 * 4
     'block2_kv_cmpr_scaled_full.bin' =  512 * 512 * 4
@@ -432,26 +457,35 @@ foreach ($name in $expectedFull) {
 }
 Write-Host "full-seq inventory: $($expectedFull.Count) dumps present, sizes OK"
 
-# Mandated endpoint/inertness gate for the block-2 walk: the FULL committed
-# dual-reset manifest (cpp_resid_walk_inject2_b1_512, incl. the attn_out-2
-# endpoint block1_attn0_out_full.bin) must reproduce byte-identically before
-# any localization is trusted.
+# Dual-reset manifest reproduction, re-scoped for the il>=1 arithmetic era
+# (pre-registered in the reviewed stage-A plan): the historical 81/81
+# full-manifest gate is invalid by design once il>=1 arithmetic changes -
+# every surface downstream of an il>=1 operator legitimately moves. The gate
+# now covers exactly the invariant subset (il==0/pre-layer upstream dumps +
+# injected-node landing witnesses); everything else in the committed prior
+# manifest is counted and reported as expected-divergent, never gated.
 $dualPrior = Join-Path $repo 'cpp_resid_walk_inject2_b1_512'
 if ($Mode -eq 'inject2' -and $runDir -ne $dualPrior -and (Test-Path (Join-Path $dualPrior 'SHA256SUMS.txt'))) {
+    $dualInvariantAllow = @($upstreamRegression.Keys) + @(
+        'logical_00.bin','logical_00_full.bin','logical_00_full.json',
+        'block1_attn0_norm_full.bin','block1_attn0_norm_full.json'
+    )
     $dpFailed = 0
     $dpCount = 0
+    $dpSkipped = 0
     foreach ($line in (Get-Content (Join-Path $dualPrior 'SHA256SUMS.txt'))) {
         if ($line.Trim() -eq '') { continue }
         $parts = $line.Trim() -split '\s+', 2
         $sha = $parts[0].ToLower(); $name = $parts[1].Trim()
         if ($name -eq 'run_provenance.json') { continue }
+        if ($dualInvariantAllow -notcontains $name) { $dpSkipped++; continue }
         $dpCount++
         $p = Join-Path $runDir $name
         if (-not (Test-Path $p)) { Write-Host "DUAL-PRIOR MISSING $name"; $dpFailed++; continue }
         if ((Get-Sha256 $p) -ne $sha) { Write-Host "DUAL-PRIOR MISMATCH $name"; $dpFailed++ }
     }
-    if ($dpFailed -gt 0) { throw "dual-reset manifest reproduction FAIL: $dpFailed/$dpCount" }
-    Write-Host "dual-reset manifest reproduction: $dpCount/$dpCount byte-identical (incl. attn_out-2 endpoint)"
+    if ($dpFailed -gt 0) { throw "dual-reset invariant-subset reproduction FAIL: $dpFailed/$dpCount" }
+    Write-Host "dual-reset invariant-subset reproduction: $dpCount/$dpCount byte-identical ($dpSkipped prior surfaces expected-divergent under il>=1 arithmetic, recorded in this run's own manifest)"
 }
 
 # Prior-generation manifest reproduction: every file the previous run of this
@@ -460,9 +494,10 @@ if ($Mode -eq 'inject2' -and $runDir -ne $dualPrior -and (Test-Path (Join-Path $
 if ($Suffix -ne '' -and (Test-Path (Join-Path $priorDir 'SHA256SUMS.txt'))) {
     $allow = $null
     if ($Mode -in @('inject2','inject3','inject4')) {
-        # Upstream-of-attn_norm-2 subset only: 15 upstream final-row dumps +
-        # the injected-node witnesses. Downstream of the second reset differs
-        # by design and is data, not a gate.
+        # Invariant subset only: the 14 il==0/pre-layer upstream final-row
+        # dumps + the injected-node witnesses. ffn_inp-1 (il=1) is in
+        # $expectedMovedSurfaces - recorded above, not gated here. Downstream
+        # of the second reset differs by design and is data, not a gate.
         $allow = @($upstreamRegression.Keys) + @(
             'logical_00.bin','logical_00_full.bin','logical_00_full.json'
         )
@@ -495,8 +530,10 @@ Write-Host "manifest written: $manifest"
 $prov = @{
     mode = $Mode
     suffix = $Suffix
-    instrumentation_head = 'b98070666a72ae44c7704d7a4b328eb1c7238cc0'
+    instrumentation_head = '923fad90d4d34388a14e2a6c83cf1b7dff9b4ba8'
+    arithmetic_head = '458a03685ab259169dff0cf6381f42326ffe85a9'
     binaries = $expectedBins
+    moved_surfaces = $movedRecord
     cublas_module = $cublasPath
     cublas_version = $cublasVer
     oracle_sha256 = $oracleSha
