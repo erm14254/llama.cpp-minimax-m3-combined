@@ -417,3 +417,30 @@ conditional Gate-4 protocol (review-visible future path only — 2050
 assets exist, HF >2048 oracle must be created, acceptance criterion is a
 review decision, FA-off-only certification). All standing prohibitions
 unchanged.
+
+**Update 2026-08-18 (surgical LSA transplant EXECUTED; ≤2048 inertness
+checkpoint adjudicated — STOPPED FOR REVIEW; see the final addendum of
+`STATUS_2026-08-17.md`):** the approved structural transplant landed as
+Commits A `7d2289b97` (additive infrastructure, verbatim hunks,
+diff-identity verified) and B `54f06950b` (DSA two-cache activation +
+semantic model graft; indexer block 201/201 lines byte-identical to
+`98f5dd1cc`; hardened arithmetic untouched — deleted lines = exactly the
+two replacement anchors). **With the DSA two-cache LIVE, frozen-512
+reproduced `b8067779…` BYTE-EXACT (twice: Commit-A tripwire + lsaB) and
+Gate-3 reproduced `8852bd5b…` BYTE-EXACT; 15/15 harness invariants,
+landing `4718460b…`, and the operator surface `9815422f…` all byte-exact;
+only `llama.dll` moved in each build.** The checkpoint nevertheless
+**FAILS on the full-dump-inventory gate: exactly one surface,
+`block1_attn1_norm_full.bin`, is missing** because the verbatim
+historical marker `cb(cur, "lsa_full_reuse", il)` renames odd-block
+`attn_norm-<il>` tensors and the name-keyed dump request for
+`attn_norm-3` never fires (instrumentation name collision; zero numeric
+deviation anywhere). **Per the pre-registered abort rule the round is
+stopped: no fix-forward applied, no >2048 work begun. The review decides
+among: (1) recommended — the single-line instrumentation-only de-clobber
+of the reuse marker inside M5, then the FULL Stage-3 re-run from
+scratch; (2) re-key the dump spec (rejected as default); (3) revert both
+transplant commits (pre-registered default disposition).** Standing
+production arithmetic remains Stage A + N2, byte-preserved. Gate 4
+remains NOT RUN; the >2048 measurement round stays blocked behind a
+clean checkpoint and its own review.
