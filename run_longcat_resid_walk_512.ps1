@@ -81,20 +81,15 @@ $upstreamRegression = @{
     'kqv_out.bin'              = 'fce2bb9840c8eb35977b54f5a3cd56bb31c3da1c3a17620a56087a03383f40ce'
     'o_proj.bin'               = 'ac91a8310515ffcbf8802d761028705a371865e553bfc2a9d4dad8f7f416bf3f'
     'logical0_attn0_resid.bin' = '7e05940b5c1b6b8f3bcaf210ac8938a44ea3006052c1f16e20c855df6452f109'
+    # Standing Stage-A+N2 reference values, graduated from expected-moved on
+    # the 2026-08-18 promotion (recorded from the promoN2 run manifest; they
+    # were expected-moved only relative to the pre-N2 Stage-A state). Future
+    # experiments may reclassify these as expected-to-move when causally
+    # appropriate.
+    'logical0_mlp0_resid.bin'  = '32134b64935064b558daace412f639244e3372e5e00a5639388c72e6bedb00c6'
+    'logical0_attn1_resid.bin' = '398de74cfc5a66d0ed50afb07b208f80817d34993a236bf31d529ea515e660a6'
 }
-# Pre-registered expected-moved surfaces (recorded with their last committed
-# hashes for reference, NOT gated; every surface above stays a hard gate):
-# - ffn_inp-1 (il=1) moved under the stage-A il>=1 arithmetic;
-# - l_out-0 (logical0_mlp0_resid) moves under stage N2, which corrects
-#   ffn_norm-0 - the block-0 FFN half was never part of the block-0
-#   corrective stack, so this is the first arithmetic change inside block 0
-#   since the frozen block-0 gates were established. The 13 surfaces above
-#   (anchors, block-0 MLA six, rope/kqv/o_proj, ffn_inp-0) are all upstream
-#   of ffn_norm-0 and remain hard invariants.
-$expectedMovedSurfaces = @{
-    'logical0_attn1_resid.bin' = 'af49add8343451d0f9379dd874a5cd9f59cbe43f95179a7a4fca69cce3da0e12'
-    'logical0_mlp0_resid.bin'  = 'de18420a5b2e0d4e2575d1f597cc67c01ccd6e1b17c03dccfd5a20d687b31cb7'
-}
+$expectedMovedSurfaces = @{}
 $downstreamRegression = @{
     'logical_00.bin'  = 'fa813b529fba809778497da7b43a5c5dc653dcb5906f9078fa08e8c9b35f1e3b'
     'logical_01.bin'  = 'f6e9e0685a7c7b45f1f85521b641f3dee3b6febeb87963a428fb78a07f5411c0'

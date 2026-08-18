@@ -377,3 +377,24 @@ Gate-3 regression) — versus holding Stage A.** All other standing
 prohibitions unchanged (no RoPE/core/MoE/MTP arithmetic, no
 Gate-4/2050 run until 512 parity is resolved and reviewed, never widen
 frozen criteria).
+
+**Update 2026-08-18 (PROMOTION COMPLETE — see the final 2026-08-18
+addendum of `STATUS_2026-08-17.md` and
+`WIN11_HANDOFF_2026-08-18_DELTA_N2PROMOTION.md`): Stage A + N2 is the
+new standing production arithmetic.** All five promotion hard gates
+passed: diff-identity `fed0370e…`, binary provenance, operator
+`9815422f…` byte-exact, frozen-512 logits `b8067779…` byte-exact
+(**PASS: 0/131,072, worst ratio 0.9746, top-1 483 — first PASS in the
+project; NOT full-model HF parity**), Project Gate-3 PASS (0 violations,
+top-1 444, standing logits `8852bd5b…`). Harness baselines graduated
+(15 hard invariants incl. the standing `32134b64…`/`398de74c…` values);
+future endpoint review baselines run from 0. Known uncorrected
+mechanisms remain (N1 trunk attn_norm il≥1, LoRA cast+eps pair, RoPE
+angles, il≥1 attention core, MLP/MoE, MTP) with no identified
+interaction partner; N1/stage-B proofs preserved in history. **Gate 4
+remains NOT RUN. Next decision (NOT begun): Gate-4 readiness review
+(the 512-parity precondition is now satisfied as a REVIEW QUESTION, not
+an automatic green light — LSA indexer semantics and long-context
+behavior need their own audit), the remaining-mechanism measurement
+rounds, or the full-stack faithfulness round — each with its own
+reviewed plan.**

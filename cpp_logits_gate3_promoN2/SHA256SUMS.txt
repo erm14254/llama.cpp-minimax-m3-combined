@@ -1,0 +1,5 @@
+47f55449a0c2ecdb172e8471e135550712a8059ef9f6b0f6876e84807abee3a1  gate3_promoN2.json
+8852bd5b23356fa202be78f7ee38240d51c591de737ea98fb976f89f4fd6b512  llamacpp-LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-BF16-00001-of-00008.bin
+80b2218628fe76e40aca7370fa5027b25674a0d99d5b510da05d919c3d1757c3  llamacpp-LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-BF16-00001-of-00008.txt
+92f020480b23256d9ccac905baaf38ab640746ec9592e8b04fb590a61f6389eb  llamacpp-LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-BF16-00001-of-00008-prompt.txt
+ad9883df7c21de340e1fea799c2c9746afb5e4097fd0df7a596fda68f634fb0f  llamacpp-LongCat-Flash-Lite-Sparse-Uncensored-Heretic-283-Low-KL-BF16-00001-of-00008-tokens.bin
