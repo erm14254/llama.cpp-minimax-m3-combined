@@ -722,12 +722,16 @@ llama_model_longcat_flash_ngram::graph::graph(
                     // generic "q" label is reused three times otherwise).
                     cb(q, il == 2 ? "q_a_proj" : "q", il);
 
-                    q = build_norm(
-                        q,
-                        model.layers[il].attn_q_a_norm,
-                        nullptr,
-                        LLM_NORM_RMS,
-                        il);
+                    // LONGCAT_BISECT_VEPS (transient diagnostic, il >= 1):
+                    // build_norm's LLM_NORM_RMS body inlined verbatim
+                    // (llama-graph.cpp:1790-1804, including the intermediate
+                    // cb) with ONLY the eps changed 1e-5 -> 1e-6. F32-kept
+                    // semantics preserved; graph structurally identical to
+                    // build_norm's output. To be reverted after the bisect
+                    // measurements per the reviewed plan.
+                    q = ggml_rms_norm(ctx0, q, 1.0e-6f);
+                    cb(q, "norm", il);
+                    q = ggml_mul(ctx0, q, model.layers[il].attn_q_a_norm);
                     cb(q, il == 2 ? "q_a_norm" : "q", il);
 
                     q = ggml_mul_mat(
@@ -963,12 +967,13 @@ llama_model_longcat_flash_ngram::graph::graph(
                 // cache path, exactly as the Q path widens after q_b_proj.
                 kv_cmpr = ggml_cast(ctx0, kv_cmpr, GGML_TYPE_F32);
             } else {
-                kv_cmpr = build_norm(
-                    kv_cmpr,
-                    model.layers[il].attn_kv_a_norm,
-                    nullptr,
-                    LLM_NORM_RMS,
-                    il);
+                // LONGCAT_BISECT_VEPS (transient diagnostic, il >= 1): same
+                // inlined-build_norm-with-eps-1e-6 pattern as the q_a site
+                // above; F32-kept semantics preserved. To be reverted after
+                // the bisect measurements per the reviewed plan.
+                kv_cmpr = ggml_rms_norm(ctx0, kv_cmpr, 1.0e-6f);
+                cb(kv_cmpr, "norm", il);
+                kv_cmpr = ggml_mul(ctx0, kv_cmpr, model.layers[il].attn_kv_a_norm);
                 // LONGCAT_MLA_STAGE_SURFACE: HF kv_a_layernorm boundary, before
                 // the MLA LoRA kv scaling below. Renamed because the pre-norm
                 // view at the top of this block already uses "kv_cmpr".
