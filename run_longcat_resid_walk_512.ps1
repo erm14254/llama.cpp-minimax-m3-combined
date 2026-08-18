@@ -13,7 +13,7 @@
 # regression hashes vs the committed attnpath manifest, landing gate (inject),
 # SHA256SUMS.txt over all dumps.
 param(
-    [Parameter(Mandatory=$true)][ValidateSet('control','inject','inject2','inject3','inject4')] [string]$Mode,
+    [Parameter(Mandatory=$true)][ValidateSet('control','inject','inject2','inject3','inject4','injectffn')] [string]$Mode,
     [string]$Suffix = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -39,15 +39,15 @@ if ($Mode -in @('inject2','inject3','inject4')) {
     $priorDir = Join-Path $repo ("cpp_resid_walk_" + $Mode + "_512")
 }
 
-# Standing state = stage A (stage B reverted by 11d93b56a after the 96-
-# violation endpoint review): source byte-identical to the 458a03685 +
-# 923fad90d pair. The recompiled llama.dll is 99ad8993... (MSVC timestamp
-# embedding; original stage-A build was c890671e...); functional identity is
-# proven by the endpoint reproducing the stage-A logits 9d8583e3... byte-exact.
+# Instrumentation HEAD ac8010739 (ffn_inp-2 injector + ffn_norm-2 dump spec
+# in llama-common.dll 261f08a5...). Production arithmetic = standing stage A
+# (stage B and both bisect variants reverted): llama.dll 84012cc4... is the
+# post-bisect recompile of the 0-diff stage-A source, functional identity
+# proven by the byte-exact 9d8583e3... endpoint reproduction.
 # exe/ggml-cuda byte-identical to the b98070666 instrumentation set.
 $expectedBins = @{
     'llama-debug.exe'  = 'df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0'
-    'llama-common.dll' = '9367c541149a0969c2f495e5b4f13cbe883967fc4f5df06663c78e73e2ea4888'
+    'llama-common.dll' = '261f08a5d3a4db5f0d699b0b99f4d2dfba4f74d11967d6574b5ce68db2ca9894'
     'llama.dll'        = '84012cc489d8864dadca84e1d3f1e426507e5fa5bea9f5fe5283e5b5ead7c343'
     'ggml-cuda.dll'    = '502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48'
 }
@@ -130,7 +130,7 @@ $sweep = @(
     # LONGCAT diagnostics (6)
     'LONGCAT_HIDDEN_DUMP_DIR','LONGCAT_ROPE_INJECT_DIR','LONGCAT_ROPE_ORACLE_DIR',
     'LONGCAT_RESID_WALK_DUMP_DIR','LONGCAT_RESID_INJECT_DIR','LONGCAT_ATTN_NORM2_INJECT_DIR',
-    'LONGCAT_PROJ_INJECT_DIR','LONGCAT_NORM_INJECT_DIR',
+    'LONGCAT_PROJ_INJECT_DIR','LONGCAT_NORM_INJECT_DIR','LONGCAT_FFN_INP2_INJECT_DIR',
     # GGML_CUDA bare getenv (12; incl. P2P, missed by earlier subdir-limited greps)
     'GGML_CUDA_ALLREDUCE','GGML_CUDA_CUBLAS_COMPUTE_TYPE','GGML_CUDA_DEVICES',
     'GGML_CUDA_DISABLE_FUSION','GGML_CUDA_DISABLE_GRAPHS','GGML_CUDA_ENABLE_UNIFIED_MEMORY',
@@ -163,7 +163,8 @@ Write-Host "prompt: $expectedPromptSha OK"
 
 $oracleSha = $null
 $oracle2Sha = $null
-if ($Mode -ne 'control') {
+$oracleFfnSha = $null
+if ($Mode -in @('inject','inject2','inject3','inject4')) {
     $oraclePath = Join-Path $oracleDir 'logical_00_oracle.bin'
     if (-not (Test-Path $oraclePath)) { throw "oracle missing: $oraclePath" }
     if ((Get-Item $oraclePath).Length -ne 6291456) { throw "oracle size FAIL" }
@@ -187,6 +188,22 @@ if ($Mode -in @('inject2','inject3','inject4')) {
     $recorded2 = ($line2 -split '\s+')[0].ToLower()
     if ($recorded2 -ne $oracle2Sha) { throw "oracle2 manifest mismatch" }
     Write-Host "oracle2: $oracle2Sha OK (attn0_norm, matches HF block1 manifest)"
+}
+if ($Mode -eq 'injectffn') {
+    # ffn_norm causal experiment: the exact-predecessor oracle is the HF
+    # layer-1 attn0_resid full-sequence capture (injected at ffn_inp-2).
+    $oFfn = Join-Path $oracle2Dir 'attn0_resid.bin'
+    if (-not (Test-Path $oFfn)) { throw "ffn oracle missing: $oFfn" }
+    if ((Get-Item $oFfn).Length -ne 6291456) { throw "ffn oracle size FAIL" }
+    $oracleFfnSha = Get-Sha256 $oFfn
+    if ($oracleFfnSha -ne '4718460be4d2bb0243c4b9bcf76e20ca4b8d5a0f35ec3717ca6b8dd5cb5f73c3') {
+        throw "ffn oracle SHA FAIL: $oracleFfnSha"
+    }
+    $sumsFfn = Get-Content (Join-Path $oracle2Dir 'SHA256SUMS.txt')
+    $lineFfn = $sumsFfn | Where-Object { $_ -match 'attn0_resid\.bin$' }
+    if (-not $lineFfn) { throw "ffn oracle not in HF block1 SHA256SUMS" }
+    if ((($lineFfn -split '\s+')[0].ToLower()) -ne $oracleFfnSha) { throw "ffn oracle manifest mismatch" }
+    Write-Host "ffn oracle: $oracleFfnSha OK (attn0_resid, matches HF block1 manifest)"
 }
 $oracle3Sha = $null
 $oracle4Sha = $null
@@ -256,8 +273,11 @@ $psi.RedirectStandardError  = $true
 $psi.EnvironmentVariables['PATH'] = $cuda132 + ';' + $env:PATH
 $psi.EnvironmentVariables['LONGCAT_HIDDEN_DUMP_DIR']     = $runDir
 $psi.EnvironmentVariables['LONGCAT_RESID_WALK_DUMP_DIR'] = $runDir
-if ($Mode -ne 'control') {
+if ($Mode -in @('inject','inject2','inject3','inject4')) {
     $psi.EnvironmentVariables['LONGCAT_RESID_INJECT_DIR'] = $oracleDir
+}
+if ($Mode -eq 'injectffn') {
+    $psi.EnvironmentVariables['LONGCAT_FFN_INP2_INJECT_DIR'] = $oracle2Dir
 }
 if ($Mode -in @('inject2','inject3','inject4')) {
     $psi.EnvironmentVariables['LONGCAT_ATTN_NORM2_INJECT_DIR'] = $oracle2Dir
@@ -328,11 +348,17 @@ Write-Host "graphs reused = 0 OK"
 if ($err -notmatch [regex]::Escape('offloaded 29/30 layers')) { throw "offload gate FAIL" }
 Write-Host "offloaded 29/30 OK"
 
-if ($Mode -ne 'control') {
+if ($Mode -in @('inject','inject2','inject3','inject4')) {
     if ($err -notmatch [regex]::Escape('LONGCAT_RESID_INJECT: l_out-1 <- logical_00_oracle.bin (6291456 bytes)')) {
         throw "injection log-line gate FAIL"
     }
     Write-Host "injection log line OK"
+}
+if ($Mode -eq 'injectffn') {
+    if ($err -notmatch [regex]::Escape('LONGCAT_FFN_INP2_INJECT: ffn_inp-2 <- attn0_resid.bin (6291456 bytes)')) {
+        throw "ffn injection log-line gate FAIL"
+    }
+    Write-Host "ffn injection log line OK"
 }
 if ($Mode -in @('inject2','inject3','inject4')) {
     if ($err -notmatch [regex]::Escape('LONGCAT_ATTN_NORM2_INJECT: attn_norm-2 <- attn0_norm.bin (6291456 bytes)')) {
@@ -390,7 +416,7 @@ foreach ($name in ($expectedMovedSurfaces.Keys | Sort-Object)) {
     }
 }
 
-if ($Mode -ne 'control') {
+if ($Mode -in @('inject','inject2','inject3','inject4')) {
     # Landing gates: full-seq dump of the injected node == oracle, and its
     # final-row dump == committed HF logical_00 final-row oracle.
     $landing = Get-Sha256 (Join-Path $runDir 'logical_00_full.bin')
@@ -399,6 +425,13 @@ if ($Mode -ne 'control') {
     $fr = Get-Sha256 (Join-Path $runDir 'logical_00.bin')
     if ($fr -ne $hfLogical00FinalRowSha) { throw "landing final-row gate FAIL: $fr" }
     Write-Host "landing final-row gate: logical_00.bin == HF final-row oracle OK"
+}
+if ($Mode -eq 'injectffn') {
+    # ffn landing gate: the walk dump of the injected ffn_inp-2 node must
+    # equal the HF attn0_resid oracle byte-exactly.
+    $landingFfn = Get-Sha256 (Join-Path $runDir 'block1_attn0_resid_full.bin')
+    if ($landingFfn -ne $oracleFfnSha) { throw "ffn landing gate FAIL: block1_attn0_resid_full $landingFfn != oracle $oracleFfnSha" }
+    Write-Host "ffn landing gate: block1_attn0_resid_full.bin == attn0_resid oracle ($oracleFfnSha) OK"
 }
 if ($Mode -in @('inject2','inject3','inject4')) {
     # Second landing gate: the walk dump of the injected attn_norm-2 node
@@ -429,7 +462,8 @@ $expectedFull = @('result_norm_full.bin') + (0..13 | ForEach-Object { 'logical_{
 if ($Suffix -ne '') {
     $expectedFull += @(
         'block1_attn0_norm_full.bin','block1_attn0_out_full.bin',
-        'block1_attn0_resid_full.bin','block1_mlp0_resid_full.bin',
+        'block1_attn0_resid_full.bin','block1_ffn0_norm_full.bin',
+        'block1_mlp0_resid_full.bin',
         'block1_attn1_norm_full.bin','block1_attn1_resid_full.bin',
         'block2_q_a_proj_full.bin','block2_q_a_norm_full.bin',
         'block2_q_b_proj_full.bin','block2_q_scaled_full.bin',
@@ -533,8 +567,9 @@ Write-Host "manifest written: $manifest"
 $prov = @{
     mode = $Mode
     suffix = $Suffix
-    instrumentation_head = '923fad90d4d34388a14e2a6c83cf1b7dff9b4ba8'
+    instrumentation_head = 'ac8010739a5081ca94fad1363b5d276eb06c90ae'
     arithmetic_head = 'f136453d3f001009c5ee039e37b120f352a5e89d'
+    oracle_ffn_sha256 = $oracleFfnSha
     binaries = $expectedBins
     moved_surfaces = $movedRecord
     cublas_module = $cublasPath
