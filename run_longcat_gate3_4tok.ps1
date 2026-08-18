@@ -37,8 +37,8 @@ $expectedCublasVer     = '6.14.11.1330'
 # build proven by the stageArevert endpoint reproduction).
 $expectedBins = @{
     'llama-debug.exe'  = 'df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0'
-    'llama-common.dll' = '9367c541149a0969c2f495e5b4f13cbe883967fc4f5df06663c78e73e2ea4888'
-    'llama.dll'        = '99ad89937ecbe8344ba4f4a70c45ef99f085a547848aba007c909a4916695aad'
+    'llama-common.dll' = '261f08a5d3a4db5f0d699b0b99f4d2dfba4f74d11967d6574b5ce68db2ca9894'
+    'llama.dll'        = 'f85a02d90bb2998543a7a9e0f2c736d0a75766b26372e42618b8dc67da1425ad'
     'ggml-cuda.dll'    = '502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48'
 }
 
@@ -177,7 +177,7 @@ Get-ChildItem $outDir -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | So
 $prov = @{
     tag = $Tag
     purpose = 'project Gate-3 regression (4-token, established criterion)'
-    arithmetic_head = '11d93b56af0c96ea0d6bdadc7f49c0f5f8d03ed7'
+    arithmetic_head = '6c991c8a58f35732e0742b8b56795e177abee1d2'
     binaries = $expectedBins
     cublas_module = $cublasPath
     cublas_version = $cublasVer
