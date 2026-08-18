@@ -274,3 +274,30 @@ endpoint, and after both stages the Gate-3 4-token regression (oracle
 located: `D:\llama.cpp-longcat-mtp\longcat_sparse_gate3_hf_v4_logits.bin`
 = `2c178ea5…`; historical run dir `longcat_sparse_gate3_default_cache_after_fix`
 prompt "Hello, world!").
+
+**Update 2026-08-18 (session complete — stage A landed and standing; stage
+B executed, measured, and reverted by review; Gate 3 re-verified):** see
+the four 2026-08-18 addenda of `STATUS_2026-08-17.md` and
+`WIN11_HANDOFF_2026-08-18_DELTA_STAGEAB.md`. Standing production
+arithmetic = **stage A** (five il≥1 MLA BF16 output boundaries; source
+`458a03685`+`923fad90d`, restored by revert `11d93b56a`). Strict
+frozen-512 criterion: **FAIL 1/131,072** (id 14720, ratio 1.0586, top-1
+483 agrees) — from 40. **Project Gate 3 PASS re-verified (0 violations,
+top-1 444); Gate 4 NOT RUN.** Stage-B evidence committed and preserved:
+per-operator byte-exactness proven (q_a_norm byte-closed in-graph;
+kv_a_norm == D6 model byte-exact with the documented 7-element near-tie,
+token 177), endpoint regressed 1 → 96 (cancellation with the
+still-uncorrected mechanisms), reverted per review.
+
+**Next objective (a plan question, NOT begun):** close the final
+violation (id 14720) and/or the wider mechanism set — candidate rounds,
+each needing its own reviewed plan: (a) the cast-vs-eps endpoint bisect
+of the stage-B interaction (first designed measurement); (b) trunk
+RMSNorm cast semantics at il≥1 (standing prohibition; `attn_norm-2`
+measured, `ffn_norm` unmeasured); (c) production RoPE angle generation;
+(d) il≥1 attention-core measurement; (e) MLP/MoE per-operator
+measurement (measurement-only already authorized); (f) MTP twins;
+(g) stage-B re-application contingent on (b)-(e). Standing prohibitions
+otherwise unchanged: no Gate-4/2050 run until 512 parity is resolved,
+never widen any frozen criterion, no production FA, `.venv`/toolchain/
+reference trees immutable, cuBLAS 13.2 child-runtime contract mandatory.
