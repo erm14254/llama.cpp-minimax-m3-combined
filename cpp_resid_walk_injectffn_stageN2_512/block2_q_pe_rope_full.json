@@ -1,0 +1,11 @@
+{
+  "tensor": "q_pe_rope-2",
+  "shape": [512, 2048],
+  "order": "token-major",
+  "dtype": "float32-le",
+  "bytes": 4194304,
+  "source_type": "f32",
+  "source_contiguous": true,
+  "source_ne": [2048, 512, 1, 1],
+  "source_nb": [4, 8192, 4194304, 4194304]
+}
