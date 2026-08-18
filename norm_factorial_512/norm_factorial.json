@@ -1,0 +1,70 @@
+{
+  "averaged_main_effects": {
+    "N1_main = 0.5*((L10-L00)+(L11-L01))": {
+      "l2": 43.399223971096234,
+      "max_abs": 0.6500072479248047,
+      "rmse": 0.11987455300076527
+    },
+    "N2_main = 0.5*((L01-L00)+(L11-L10))": {
+      "l2": 23.928206668137953,
+      "max_abs": 0.3301553726196289,
+      "rmse": 0.0660929577995059
+    }
+  },
+  "combined_effect_L11-L00": {
+    "l2": 47.43496414791935,
+    "max_abs": 0.7063007354736328,
+    "rmse": 0.13102181568099427
+  },
+  "conditional_simple_effects": {
+    "N1_given_ffn_HF (L11-L01)": {
+      "l2": 60.642903856218695,
+      "max_abs": 0.8346672058105469,
+      "rmse": 0.16750393963896903
+    },
+    "N1_given_ffn_current (L10-L00)": {
+      "l2": 41.304483467808666,
+      "max_abs": 0.541597843170166,
+      "rmse": 0.11408859513084044
+    },
+    "N2_given_attn_HF (L11-L10)": {
+      "l2": 40.17547099987382,
+      "max_abs": 0.49629974365234375,
+      "rmse": 0.11097010930224321
+    },
+    "N2_given_attn_current (L01-L00)": {
+      "l2": 33.877522617730726,
+      "max_abs": 0.4021739959716797,
+      "rmse": 0.09357432020624233
+    }
+  },
+  "description": "continuous 2x2 factorial over the trunk-norm frozen-512 logits (float64)",
+  "inputs": {
+    "L00_stageA": {
+      "dir": "cpp_logits_512_stageA",
+      "sha256": "9d8583e33bc177c0e458a4568da29556206ee1496baabb842c892850f494498a"
+    },
+    "L01_N2only": {
+      "dir": "cpp_logits_512_stageN2only",
+      "sha256": "b8067779da58fda3c8ea8472b3f5121562f1599488a0503589feb50293b4c514"
+    },
+    "L10_N1only": {
+      "dir": "cpp_logits_512_stageN1",
+      "sha256": "69dece2db09fb1512cc609de89c3486f638dcb279c3006b6cd9860ecbc7ab9a6"
+    },
+    "L11_N1N2": {
+      "dir": "cpp_logits_512_stageN2",
+      "sha256": "9a19fce83bbbbfc9ac49fe99e0fed361b176fa64b21d04084e209afec262c963"
+    }
+  },
+  "interaction_residual_I = L11-L10-L01+L00": {
+    "l2": 56.86188284027035,
+    "max_abs": 0.6639213562011719,
+    "rmse": 0.15706024588824277
+  },
+  "normalized_interaction": {
+    "l2_I_over_l2_L11_minus_L00": 1.1987335473250165,
+    "l2_I_over_larger_main_l2": 1.3102050598448536
+  },
+  "reading_rule": "factorial interaction magnitude is inferred from these continuous vectors, never solely from the thresholded violation counts; the four-cell count/metric table is descriptive endpoint data only"
+}
