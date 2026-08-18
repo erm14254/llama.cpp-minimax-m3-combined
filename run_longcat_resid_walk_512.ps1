@@ -39,14 +39,16 @@ if ($Mode -in @('inject2','inject3','inject4')) {
     $priorDir = Join-Path $repo ("cpp_resid_walk_" + $Mode + "_512")
 }
 
-# Stage-B source HEAD 39abf9d49 (il>=1 LoRA-norm HF cast semantics + eps
-# 1e-6 in llama.dll, on top of the stage-A boundaries 458a03685 and the
-# 923fad90d dump spec in llama-common.dll). exe/ggml-cuda byte-identical to
-# the b98070666 instrumentation set.
+# Standing state = stage A (stage B reverted by 11d93b56a after the 96-
+# violation endpoint review): source byte-identical to the 458a03685 +
+# 923fad90d pair. The recompiled llama.dll is 99ad8993... (MSVC timestamp
+# embedding; original stage-A build was c890671e...); functional identity is
+# proven by the endpoint reproducing the stage-A logits 9d8583e3... byte-exact.
+# exe/ggml-cuda byte-identical to the b98070666 instrumentation set.
 $expectedBins = @{
     'llama-debug.exe'  = 'df2a57f6f99428d0735ceea88af2fdd8d8c59f7453b0b994d869020f007eddb0'
     'llama-common.dll' = '9367c541149a0969c2f495e5b4f13cbe883967fc4f5df06663c78e73e2ea4888'
-    'llama.dll'        = 'a615af01141fe5ab96b90cdd2ec0e28e54ebdfbca0c4f0e5983537604028b247'
+    'llama.dll'        = '99ad89937ecbe8344ba4f4a70c45ef99f085a547848aba007c909a4916695aad'
     'ggml-cuda.dll'    = '502e50e8855d5fc4f23758afa9c4ba277be3339b4159527ff1ae41268f7c1d48'
 }
 $expectedOracle5Sha = '4c9792430fee2716b573ccf365617e537adf8305571e2a5a0b1a881c0c4de340'
@@ -532,7 +534,7 @@ $prov = @{
     mode = $Mode
     suffix = $Suffix
     instrumentation_head = '923fad90d4d34388a14e2a6c83cf1b7dff9b4ba8'
-    arithmetic_head = '39abf9d49b36df2ccba7cfb31f20b94b83733296'
+    arithmetic_head = '11d93b56af0c96ea0d6bdadc7f49c0f5f8d03ed7'
     binaries = $expectedBins
     moved_surfaces = $movedRecord
     cublas_module = $cublasPath
