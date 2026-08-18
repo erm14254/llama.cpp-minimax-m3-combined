@@ -398,3 +398,22 @@ an automatic green light — LSA indexer semantics and long-context
 behavior need their own audit), the remaining-mechanism measurement
 rounds, or the full-stack faithfulness round — each with its own
 reviewed plan.**
+
+**Update 2026-08-18 (Gate-4 readiness audit COMPLETE — VERDICT: BLOCKED;
+see `AUDIT_GATE4_READINESS_2026-08-18.md` and the final addendum of
+`STATUS_2026-08-17.md`):** the LSA implementation is absent from the
+standing branch (`98f5dd1cc` is not an ancestor; a >2048 run today would
+silently run dense attention). **Gate 4 cannot be executed or
+protocol-frozen against the standing branch and remains NOT RUN.**
+Next decision (NOT begun; each its own reviewed plan): (a) the
+**surgical LSA semantic transplant** round — feature-delta-only onto the
+Stage-A+N2 standing source, ≤2048 byte-exact inertness gates
+(`b8067779…`, `8852bd5b…`, `9815422f…`, 15 invariants); (b) the
+**first-owner >2048 HF indexer capture** resolving the four recorded
+indexer blockers (K-norm cast ordering, rope/nope layout, YaRN
+attn_factor, top-K determinism probe with separated
+membership/ordering/mask/logits comparison); (c) thereafter the
+conditional Gate-4 protocol (review-visible future path only — 2050
+assets exist, HF >2048 oracle must be created, acceptance criterion is a
+review decision, FA-off-only certification). All standing prohibitions
+unchanged.
