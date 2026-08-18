@@ -722,12 +722,25 @@ llama_model_longcat_flash_ngram::graph::graph(
                     // generic "q" label is reused three times otherwise).
                     cb(q, il == 2 ? "q_a_proj" : "q", il);
 
-                    q = build_norm(
+                    // LONGCAT_MLA_LORA_NORM_HF_SEMANTICS (production, il >= 1, B):
+                    // HF q_a_layernorm runs the RMS reduction in F32 with the
+                    // LongcatFlashRMSNorm default eps = 1e-6 (constructed
+                    // without an eps override; the GGUF metadata carries only
+                    // the trunk 1e-5), rounds the normalized activation to
+                    // BF16 BEFORE the weight multiply, and stores the product
+                    // in BF16 (modeling_longcat_flash.py:57-62). Mirror of
+                    // the byte-proven il == 0 chain above; the quad reset
+                    // measured the cast ordering dominant (~2.3e-3) and the
+                    // eps mismatch secondary but independently real.
+                    q = ggml_rms_norm(ctx0, q, 1.0e-6f);
+                    q = ggml_cast(ctx0, q, GGML_TYPE_BF16);
+                    q = ggml_cast(ctx0, q, GGML_TYPE_F32);
+                    q = ggml_mul(
+                        ctx0,
                         q,
-                        model.layers[il].attn_q_a_norm,
-                        nullptr,
-                        LLM_NORM_RMS,
-                        il);
+                        model.layers[il].attn_q_a_norm);
+                    q = ggml_cast(ctx0, q, GGML_TYPE_BF16);
+                    q = ggml_cast(ctx0, q, GGML_TYPE_F32);
                     cb(q, il == 2 ? "q_a_norm" : "q", il);
 
                     q = ggml_mul_mat(
@@ -963,12 +976,20 @@ llama_model_longcat_flash_ngram::graph::graph(
                 // cache path, exactly as the Q path widens after q_b_proj.
                 kv_cmpr = ggml_cast(ctx0, kv_cmpr, GGML_TYPE_F32);
             } else {
-                kv_cmpr = build_norm(
+                // LONGCAT_MLA_LORA_NORM_HF_SEMANTICS (production, il >= 1, B):
+                // same mechanism as the q_a chain above - eps = 1e-6 (the HF
+                // LongcatFlashRMSNorm class default; the GGUF metadata
+                // carries only the trunk 1e-5) plus the HF cast ordering,
+                // mirroring the byte-proven il == 0 branch.
+                kv_cmpr = ggml_rms_norm(ctx0, kv_cmpr, 1.0e-6f);
+                kv_cmpr = ggml_cast(ctx0, kv_cmpr, GGML_TYPE_BF16);
+                kv_cmpr = ggml_cast(ctx0, kv_cmpr, GGML_TYPE_F32);
+                kv_cmpr = ggml_mul(
+                    ctx0,
                     kv_cmpr,
-                    model.layers[il].attn_kv_a_norm,
-                    nullptr,
-                    LLM_NORM_RMS,
-                    il);
+                    model.layers[il].attn_kv_a_norm);
+                kv_cmpr = ggml_cast(ctx0, kv_cmpr, GGML_TYPE_BF16);
+                kv_cmpr = ggml_cast(ctx0, kv_cmpr, GGML_TYPE_F32);
                 // LONGCAT_MLA_STAGE_SURFACE: HF kv_a_layernorm boundary, before
                 // the MLA LoRA kv scaling below. Renamed because the pre-norm
                 // view at the top of this block already uses "kv_cmpr".
