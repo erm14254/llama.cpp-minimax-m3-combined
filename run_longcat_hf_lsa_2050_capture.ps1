@@ -37,9 +37,9 @@ $captureDir = Join-Path $repo 'hf_lsa_2050_capture'
 # this machine; the committed blobs are LF-normalized -- same class as
 # the historical d267bf29/dfda8836 line-ending twin).
 $expectedScripts = @{
-    $runBScript = '6fed7c41e37bd1f4cdaff577541d9a5640bf86839141e6ce1947c70adb75aebc'
+    $runBScript = '68290b517d5cb3712d3a41a7ff149494ef3c38402dc3e9d7670ad099b1fbd2f5'
     $runAScript = '18fcc5e191e39bf23489e4848ad6ec7659c638c341cd8a919b96c36bd9b9e18f'
-    $cmpScript  = '4cbdd82cd53917ec3a3a9530e36dd69007f7fd72ed4dfe3bb6fbe35f74334037'
+    $cmpScript  = 'f0d07f598253fb67b4492025d71c90a7a5fbcd2ca3e6d5f844b686974cb2c458'
 }
 $expectedCoreSha    = 'bb82bcb6c3bc1d21685221a884dac3b39dc7af06f54fea6187f606dddf4213cb'
 $expectedRuntimeSha = 'a3bc31616c1f0ddff9f195cbc78f4561a40187c50fe3bf29e2e98d9228947428'
