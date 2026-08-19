@@ -210,11 +210,38 @@ foreach ($name in $expectedRunABins.Keys) {
 foreach ($aux in @('summary.json', 'SHA256SUMS.txt')) {
     if (-not (Test-Path (Join-Path $captureDir $aux))) { throw "Run A aux missing: $aux" }
 }
+
+# Manifest verification: exact expected inventory, every listed artifact
+# rehashed against its manifest value.
+$sumsPath = Join-Path $captureDir 'SHA256SUMS.txt'
+$manifest = @{}
+Get-Content $sumsPath | Where-Object { $_.Trim() } | ForEach-Object {
+    if ($_ -match '^([0-9a-f]{64})\s+(.+)$') { $manifest[$Matches[2]] = $Matches[1] }
+    else { throw "malformed SHA256SUMS.txt line: $_" }
+}
+$expectedNames = @($expectedRunABins.Keys) + @('summary.json')
+foreach ($name in $expectedNames) {
+    if (-not $manifest.ContainsKey($name)) { throw "SHA256SUMS.txt missing entry: $name" }
+}
+foreach ($name in @($manifest.Keys)) {
+    if ($expectedNames -notcontains $name) { throw "SHA256SUMS.txt unexpected entry: $name" }
+    $actual = Get-Sha256 (Join-Path $captureDir $name)
+    if ($actual -ne $manifest[$name]) {
+        throw "manifest rehash mismatch: $name`n  got      $actual`n  manifest $($manifest[$name])"
+    }
+}
+Write-Host "Run A manifest verified: $($manifest.Count) entries rehashed OK"
+
 $runALogitsSha = Get-Sha256 (Join-Path $captureDir 'hf_logits_2050_runA.bin')
 if ($runALogitsSha -ne $canonicalSha) {
     throw "Run A logits != Run B canonical (runner re-verification): $runALogitsSha vs $canonicalSha"
 }
 Write-Host "A==B logits re-verified by runner: $runALogitsSha"
+
+$runAManifestSha = Get-Sha256 $sumsPath
+$runASummarySha  = Get-Sha256 (Join-Path $captureDir 'summary.json')
+$runBCoreJsonSha = Get-Sha256 $canonicalJson
+$runBProofSha    = Get-Sha256 $proofJson
 
 # ---- provenance ----
 $prov = [ordered]@{
@@ -231,6 +258,11 @@ $prov = [ordered]@{
     runA_logits_sha256  = $runALogitsSha
     a_equals_b          = $true
     engagement_proof    = 'PASS'
+    runA_manifest_sha256 = $runAManifestSha
+    runA_summary_sha256  = $runASummarySha
+    runB_core_json_sha256 = $runBCoreJsonSha
+    runB_engagement_proof_sha256 = $runBProofSha
+    interception_seams  = $proof.meta.interception_seams
     runB                = $runBInfo
     runA                = $runAInfo
     python              = $py

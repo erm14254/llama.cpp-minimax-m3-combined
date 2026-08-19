@@ -16,15 +16,26 @@ Deltas vs the 512 sibling (all wrapper-side; the core is never edited):
     base-module SHA gates (the LongCat base classes carry half the
     load-bearing numerics), kernels-package absence, cudnn.allow_tf32
     hardening (the core sets matmul.allow_tf32 itself).
-  * Sparse-engagement observation shim: before module.main() the
-    transformers.AutoModelForCausalLM module attribute is swapped for a
-    pass-through class whose from_pretrained() delegates to the real
-    class, registers OBSERVATION-ONLY forward hooks on all 28 attention
-    sublayers of the returned (unchanged) model, and returns it. Hooks
-    record python primitives only (mode strings, sequence length,
-    valid-topk ranges, top-K tensor structure, owner-0 structural
-    reductions) and return None -- no tensor is altered or replaced, no
-    arithmetic touched. The attribute swap is reverted in finally.
+  * Sparse-engagement observation shim with a PROVEN interception seam:
+    after exec_module the wrapper inspects the bindings module.main()
+    can actually use. It fails closed unless it can prove the binding:
+    a core module-global `AutoModelForCausalLM` (patched only after an
+    identity gate against the real transformers class), and/or the
+    deferred `from transformers import AutoModelForCausalLM` inside
+    main() proven by a source-pattern check against the SHA-gated core
+    text (that import resolves the transformers module attribute at
+    call time, so the attribute is patched). Every patched binding is
+    restored in finally and the resolved seam list is recorded in the
+    engagement proof. The pass-through class delegates from_pretrained
+    to the real class, registers OBSERVATION-ONLY forward hooks on all
+    28 attention sublayers of the returned (unchanged) model, and
+    returns it. Hooks record python primitives only (mode strings,
+    sequence length, valid-topk ranges, top-K structure, and the FULL
+    owner-0 structural battery: range [-1,2050), exact per-row filler
+    counts, per-row unique nonnegative entries, causal indices only,
+    zero fillers at rows 2047/2048/2049, forced containment at rows
+    2048/2049) and return None -- no tensor is altered or replaced, no
+    arithmetic touched.
   * Post-main() collector validation: even when the core prints PASS,
     this wrapper independently validates 14x "sparse-owner" +
     14x "sparse-reuse", seq-len 2050 everywhere, valid ranges (1, 2048),
@@ -211,6 +222,50 @@ def main() -> int:
     collector: list[dict] = []
     meta: dict = {"installed": False, "install_error": None}
 
+    def _owner0_battery(topk) -> dict:
+        """Full approved structural battery, observation-only: read-only
+        torch reductions on the production top-K tensor; primitives out."""
+        import torch as _t
+
+        t = topk[0]  # [2050, 2048] int64, production tensor (never mutated)
+        out: dict = {}
+        pos = _t.arange(t.shape[0], device=t.device, dtype=t.dtype)
+        out["range_min"] = int(t.min().item())
+        out["range_max"] = int(t.max().item())
+        out["range_ok"] = bool(
+            out["range_min"] >= -1 and out["range_max"] < EXPECTED_TOKEN_COUNT
+        )
+        neg1 = (t == -1).sum(dim=1)
+        expected = _t.clamp(EXPECTED_INDEX_TOPK - (pos + 1), min=0)
+        out["filler_counts_exact"] = bool(_t.equal(neg1, expected))
+        if not out["filler_counts_exact"]:
+            bad = (neg1 != expected).nonzero()
+            out["filler_first_bad_row"] = int(bad[0, 0].item())
+        out["fillers_2047_2049_zero"] = bool(
+            int(neg1[2047].item()) == 0
+            and int(neg1[2048].item()) == 0
+            and int(neg1[2049].item()) == 0
+        )
+        s, _ = _t.sort(t, dim=1)
+        dup = (s[:, 1:] == s[:, :-1]) & (s[:, 1:] >= 0)
+        out["unique_nonneg"] = not bool(dup.any().item())
+        causal_bad = (t > pos[:, None]) & (t >= 0)
+        out["causal_only"] = not bool(causal_bad.any().item())
+        forced_ok = {}
+        for p in (2048, 2049):
+            row = t[p]
+            needed = _t.cat(
+                (
+                    _t.arange(0, INIT_TOKENS, device=t.device, dtype=t.dtype),
+                    _t.arange(
+                        p - LOCAL_TOKENS + 1, p + 1, device=t.device, dtype=t.dtype
+                    ),
+                )
+            )
+            forced_ok[str(p)] = bool(_t.isin(needed, row).all().item())
+        out["forced_containment"] = forced_ok
+        return out
+
     def _record_hook(layer_idx: int, sub: int):
         def hook(mod, args, kwargs, output):
             rec: dict = {"layer": layer_idx, "sublayer": sub}
@@ -232,29 +287,7 @@ def main() -> int:
                     rec["topk_shape"] = [int(x) for x in topk.shape]
                     rec["topk_dtype"] = str(topk.dtype)
                     if layer_idx == 0 and sub == 0:
-                        neg1 = {}
-                        for p in (2047, 2048, 2049):
-                            neg1[str(p)] = int((topk[0, p] == -1).sum().item())
-                        rec["owner0_neg1_counts"] = neg1
-                        forced_ok = {}
-                        for p in (2048, 2049):
-                            row = topk[0, p]
-                            import torch as _t  # same module object; local alias
-
-                            needed = _t.cat(
-                                (
-                                    _t.arange(0, INIT_TOKENS, device=row.device),
-                                    _t.arange(
-                                        p - LOCAL_TOKENS + 1,
-                                        p + 1,
-                                        device=row.device,
-                                    ),
-                                )
-                            )
-                            forced_ok[str(p)] = bool(
-                                _t.isin(needed, row).all().item()
-                            )
-                        rec["owner0_forced_containment"] = forced_ok
+                        rec["owner0_battery"] = _owner0_battery(topk)
             except Exception as exc:  # noqa: BLE001 - recorded, validated later
                 rec["error"] = f"{type(exc).__name__}: {exc}"
             collector.append(rec)
@@ -276,11 +309,51 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001 - recorded, validated later
             meta["install_error"] = f"{type(exc).__name__}: {exc}"
 
+    # ---- interception-seam proof (fail-closed BEFORE any GPU work) ----
+    # module.main() can only reach AutoModelForCausalLM through (a) a
+    # module-global binding created at exec time, and/or (b) a deferred
+    # `from transformers import AutoModelForCausalLM` inside main(),
+    # which resolves the transformers module attribute at call time.
+    # Prove which bindings exist, identity-gate them against the real
+    # class, patch exactly those, and restore every patched binding.
     real_auto = transformers.AutoModelForCausalLM
+    if not hasattr(real_auto, "from_pretrained"):
+        stop("transformers.AutoModelForCausalLM lacks from_pretrained")
+
+    core_source = ORIGINAL_CAPTURE.read_text(encoding="utf-8")
+    deferred_import_proven = (
+        "from transformers import AutoModelForCausalLM" in core_source
+    )
+    module_global = module.__dict__.get("AutoModelForCausalLM", None)
+
+    seams: list[str] = []
+    if module_global is not None:
+        if module_global is not real_auto:
+            stop(
+                "core module-global AutoModelForCausalLM is not identical "
+                "to transformers.AutoModelForCausalLM - refusing to patch "
+                "an unproven binding"
+            )
+        seams.append("core_module_global")
+    if deferred_import_proven:
+        seams.append("transformers_module_attribute")
+    if not seams:
+        stop(
+            "cannot prove which AutoModelForCausalLM binding module.main() "
+            "uses (no module-global binding after exec_module, and no "
+            "deferred 'from transformers import AutoModelForCausalLM' in "
+            "the SHA-gated core source) - refusing to run"
+        )
+    meta["interception_seams"] = seams
+    meta["core_deferred_import_proven"] = deferred_import_proven
+    meta["core_module_global_present"] = module_global is not None
+    meta["from_pretrained_calls"] = 0
+    print(f"interception_seams={seams}")
 
     class _ObservingAutoModelForCausalLM:
         @classmethod
         def from_pretrained(cls, *args, **kwargs):
+            meta["from_pretrained_calls"] += 1
             model = real_auto.from_pretrained(*args, **kwargs)
             _install_observers(model)
             return model
@@ -295,11 +368,17 @@ def main() -> int:
         ns.out_json,
     ]
 
-    transformers.AutoModelForCausalLM = _ObservingAutoModelForCausalLM
     try:
+        if "core_module_global" in seams:
+            module.AutoModelForCausalLM = _ObservingAutoModelForCausalLM
+        if "transformers_module_attribute" in seams:
+            transformers.AutoModelForCausalLM = _ObservingAutoModelForCausalLM
         rc = int(module.main())
     finally:
-        transformers.AutoModelForCausalLM = real_auto
+        if "transformers_module_attribute" in seams:
+            transformers.AutoModelForCausalLM = real_auto
+        if "core_module_global" in seams:
+            module.AutoModelForCausalLM = real_auto
 
     print(f"core_rc={rc}")
 
@@ -310,6 +389,12 @@ def main() -> int:
         failures.append(
             "observation shim never installed "
             f"(install_error={meta['install_error']!r})"
+        )
+    if meta.get("from_pretrained_calls") != 1:
+        failures.append(
+            "observing from_pretrained fired "
+            f"{meta.get('from_pretrained_calls')}x != exactly 1 "
+            "(interception seam not exercised as proven)"
         )
     if meta.get("n_layers") != EXPECTED_NUM_LAYERS:
         failures.append(f"unexpected layer count: {meta.get('n_layers')}")
@@ -350,17 +435,26 @@ def main() -> int:
         if rec.get("topk_dtype") != "torch.int64":
             failures.append(f"{tag}: topk_dtype {rec.get('topk_dtype')}")
         if rec.get("layer") == 0 and rec.get("sublayer") == 0:
-            neg1 = rec.get("owner0_neg1_counts") or {}
-            for p in ("2047", "2048", "2049"):
-                if neg1.get(p) != 0:
+            bat = rec.get("owner0_battery") or {}
+            if not bat:
+                failures.append("owner0: structural battery missing")
+            for key in (
+                "range_ok",
+                "filler_counts_exact",
+                "fillers_2047_2049_zero",
+                "unique_nonneg",
+                "causal_only",
+            ):
+                if bat.get(key) is not True:
                     failures.append(
-                        f"owner0 row {p}: -1 filler count {neg1.get(p)} != 0"
+                        f"owner0 battery {key}={bat.get(key)!r} != True"
                     )
-            forced = rec.get("owner0_forced_containment") or {}
+            forced = bat.get("forced_containment") or {}
             for p in ("2048", "2049"):
                 if forced.get(p) is not True:
                     failures.append(
-                        f"owner0 row {p}: forced containment {forced.get(p)}"
+                        f"owner0 battery forced containment row {p}: "
+                        f"{forced.get(p)}"
                     )
 
     for key in sorted(
