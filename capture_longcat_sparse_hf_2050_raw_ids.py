@@ -35,11 +35,19 @@ Deltas vs the 512 sibling (all wrapper-side; the core is never edited):
     main.__globals__ verified to BE the core module namespace, before
     that exact binding is patched; the deferred seam patches the
     transformers module attribute the import resolves at call time).
-    The wrapper fails closed BEFORE module.main() if no exclusive
-    binding is provable. Every patched binding is restored to its
-    exact original object in finally, and the full bytecode-scan
-    evidence plus the resolved seam list are recorded in the
-    engagement proof. The pass-through class delegates from_pretrained
+    The proof further connects the binding to the ACTUAL CALL SITES:
+    every LOAD_ATTR/LOAD_METHOD "from_pretrained" in main's code
+    object must be immediately fed by a load of the proven binding
+    (LOAD_FAST/LOAD_FAST_CHECK of the name for the deferred-local
+    seam; LOAD_GLOBAL/LOAD_NAME for the module-global seam; only
+    EXTENDED_ARG/NOP/CACHE bookkeeping is skipped) -- zero sites, any
+    foreign-receiver site (e.g. other.AutoModelForCausalLM
+    .from_pretrained), or mixed receiver kinds fail closed BEFORE
+    module.main(). Every patched binding is restored to its exact
+    original object in finally, and the full bytecode-scan evidence
+    (site counts, per-site receiver opcode/name, rejected sites, the
+    call-site-proof flags) plus the resolved seam list are recorded in
+    the engagement proof. The pass-through class delegates from_pretrained
     to the real class, registers OBSERVATION-ONLY forward hooks on all
     28 attention sublayers of the returned (unchanged) model, and
     returns it. Hooks record python primitives only (mode strings,
@@ -137,9 +145,26 @@ def _scan_main_bindings(code) -> dict:
     Any other combination (a foreign import, a rebinding store, a
     delete, ``import *``, closure capture, or a broken import->store
     adjacency) makes the receiver provenance ambiguous and BOTH
-    exclusivity flags stay False, so the caller fails closed. Comments,
-    docstrings, helper functions and unrelated scopes emit none of
-    these instructions in this code object.
+    exclusivity flags stay False, so the caller fails closed.
+
+    The scan additionally proves the CALL-SITE USE: every direct
+    ``LOAD_ATTR``/``LOAD_METHOD "from_pretrained"`` in this code object
+    is located and the instruction immediately feeding it (only the
+    harmless EXTENDED_ARG/NOP/CACHE interpreter bookkeeping is skipped)
+    must be a load of the proven binding -- ``LOAD_FAST``/
+    ``LOAD_FAST_CHECK "AutoModelForCausalLM"`` for the deferred-local
+    seam (LOAD_FAST_CHECK is the same local read plus an unboundedness
+    check; no broader receiver pattern is accepted), or ``LOAD_GLOBAL``
+    /``LOAD_NAME`` of the name for the module-global seam.
+    ``callsite_proof_deferred`` / ``callsite_proof_global`` are True
+    only when the corresponding exclusive binding is proven AND at
+    least one from_pretrained site exists AND every site's receiver is
+    that binding. A site with any other receiver (e.g.
+    ``other.AutoModelForCausalLM.from_pretrained``), a mix of receiver
+    kinds, or zero sites leaves both flags False, so the caller fails
+    closed BEFORE module.main(). Comments, docstrings, helper
+    functions and unrelated scopes emit none of these instructions in
+    this code object.
     """
     import dis
 
@@ -147,6 +172,12 @@ def _scan_main_bindings(code) -> dict:
     store_ops = {"STORE_FAST", "STORE_NAME", "STORE_GLOBAL", "STORE_DEREF"}
     delete_ops = {"DELETE_FAST", "DELETE_NAME", "DELETE_GLOBAL", "DELETE_DEREF"}
     skip_ops = {"EXTENDED_ARG", "NOP", "CACHE"}
+    local_load_ops = {"LOAD_FAST", "LOAD_FAST_CHECK"}
+    global_load_ops = {"LOAD_GLOBAL", "LOAD_NAME"}
+
+    real_ins = [
+        ins for ins in dis.get_instructions(code) if ins.opname not in skip_ops
+    ]
 
     approved_imports = 0
     foreign_imports = 0
@@ -159,10 +190,8 @@ def _scan_main_bindings(code) -> dict:
     pending_approved_store = False
     adjacency_broken = False
 
-    for ins in dis.get_instructions(code):
+    for ins in real_ins:
         op = ins.opname
-        if op in skip_ops:
-            continue
         if pending_approved_store:
             pending_approved_store = False
             if op in store_ops and ins.argval == name:
@@ -183,10 +212,39 @@ def _scan_main_bindings(code) -> dict:
             extra_stores += 1
         elif op in delete_ops and ins.argval == name:
             deletes += 1
-        elif op in ("LOAD_GLOBAL", "LOAD_NAME") and ins.argval == name:
+        elif op in global_load_ops and ins.argval == name:
             loads_global = True
     if pending_approved_store:
         adjacency_broken = True
+
+    # ---- call-site receiver proof for from_pretrained ----
+    fp_receivers: list[dict] = []
+    fp_approved_local = 0
+    fp_approved_global = 0
+    fp_rejected: list[dict] = []
+    for i, ins in enumerate(real_ins):
+        if ins.opname in ("LOAD_ATTR", "LOAD_METHOD") and ins.argval == "from_pretrained":
+            recv = real_ins[i - 1] if i > 0 else None
+            entry = {
+                "receiver_opname": recv.opname if recv is not None else None,
+                "receiver_name": str(recv.argval) if recv is not None else None,
+            }
+            fp_receivers.append(entry)
+            if (
+                recv is not None
+                and recv.opname in local_load_ops
+                and recv.argval == name
+            ):
+                fp_approved_local += 1
+            elif (
+                recv is not None
+                and recv.opname in global_load_ops
+                and recv.argval == name
+            ):
+                fp_approved_global += 1
+            else:
+                fp_rejected.append(entry)
+    fp_total = len(fp_receivers)
 
     cell_or_free = name in (tuple(code.co_cellvars) + tuple(code.co_freevars))
     no_ambiguity = (
@@ -208,6 +266,20 @@ def _scan_main_bindings(code) -> dict:
         and approved_stores == 0
         and no_ambiguity
     )
+    callsite_proof_deferred = (
+        exclusive_deferred
+        and fp_total >= 1
+        and not fp_rejected
+        and fp_approved_global == 0
+        and fp_approved_local == fp_total
+    )
+    callsite_proof_global = (
+        exclusive_global_read
+        and fp_total >= 1
+        and not fp_rejected
+        and fp_approved_local == 0
+        and fp_approved_global == fp_total
+    )
     return {
         "deferred_from_transformers_import": approved_imports >= 1,
         "loads_global": loads_global,
@@ -221,6 +293,13 @@ def _scan_main_bindings(code) -> dict:
         "import_store_adjacency_broken": adjacency_broken,
         "exclusive_deferred_binding": exclusive_deferred,
         "exclusive_global_read": exclusive_global_read,
+        "from_pretrained_sites_total": fp_total,
+        "from_pretrained_sites_approved_local": fp_approved_local,
+        "from_pretrained_sites_approved_global": fp_approved_global,
+        "from_pretrained_receivers": fp_receivers,
+        "from_pretrained_rejected_sites": fp_rejected,
+        "callsite_proof_deferred": callsite_proof_deferred,
+        "callsite_proof_global": callsite_proof_global,
     }
 
 
@@ -455,7 +534,7 @@ def main() -> int:
     module_global = module.__dict__.get("AutoModelForCausalLM", None)
 
     seams: list[str] = []
-    if scan["exclusive_global_read"]:
+    if scan["callsite_proof_global"]:
         if module_global is None:
             stop(
                 "core main() bytecode reads a global AutoModelForCausalLM "
@@ -469,15 +548,17 @@ def main() -> int:
                 "an unproven binding"
             )
         seams.append("core_module_global")
-    if scan["exclusive_deferred_binding"]:
+    if scan["callsite_proof_deferred"]:
         seams.append("transformers_module_attribute")
     if not seams:
         stop(
-            "EXCLUSIVE binding provenance for AutoModelForCausalLM cannot "
-            "be proven from module.main's executable bytecode (no approved "
-            "seam, or a competing import/rebinding store/deletion/"
-            "import-star/closure-capture/broken import-store adjacency "
-            f"makes the receiver ambiguous; scan={scan}) - refusing to run"
+            "the binding actually used by the from_pretrained call site(s) "
+            "in module.main cannot be proven to be an EXCLUSIVE approved "
+            "AutoModelForCausalLM seam (no approved seam; a competing "
+            "import/rebinding store/deletion/import-star/closure-capture/"
+            "broken import-store adjacency; zero from_pretrained sites; or "
+            "a from_pretrained site whose receiver is not the proven "
+            f"binding; scan={scan}) - refusing to run"
         )
     meta["interception_seams"] = seams
     meta["seam_bytecode_scan"] = scan
