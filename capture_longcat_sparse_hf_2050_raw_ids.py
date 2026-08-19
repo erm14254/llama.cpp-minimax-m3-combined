@@ -17,16 +17,22 @@ Deltas vs the 512 sibling (all wrapper-side; the core is never edited):
     load-bearing numerics), kernels-package absence, cudnn.allow_tf32
     hardening (the core sets matmul.allow_tf32 itself).
   * Sparse-engagement observation shim with a PROVEN interception seam:
-    after exec_module the wrapper inspects the bindings module.main()
-    can actually use. It fails closed unless it can prove the binding:
-    a core module-global `AutoModelForCausalLM` (patched only after an
-    identity gate against the real transformers class), and/or the
-    deferred `from transformers import AutoModelForCausalLM` inside
-    main() proven by a source-pattern check against the SHA-gated core
-    text (that import resolves the transformers module attribute at
-    call time, so the attribute is patched). Every patched binding is
-    restored in finally and the resolved seam list is recorded in the
-    engagement proof. The pass-through class delegates from_pretrained
+    after exec_module the wrapper proves, from module.main's OWN
+    executable bytecode (dis over main.__code__; nested code objects,
+    comments, docstrings and unrelated scopes cannot satisfy the
+    detector), how main() can bind `AutoModelForCausalLM`:
+    a LOAD_GLOBAL/LOAD_NAME of the name proves use of the module-global
+    binding (identity-gated against the real transformers class, with
+    main.__globals__ verified to BE the core module namespace, before
+    that exact binding is patched); an IMPORT_NAME "transformers"
+    followed by IMPORT_FROM "AutoModelForCausalLM" proves the deferred
+    `from transformers import AutoModelForCausalLM` inside main(),
+    which resolves the transformers module attribute at call time (so
+    that attribute is patched). The wrapper fails closed BEFORE
+    module.main() if no binding is provable. Every patched binding is
+    restored to its exact original object in finally, and the bytecode
+    scan plus the resolved seam list are recorded in the engagement
+    proof. The pass-through class delegates from_pretrained
     to the real class, registers OBSERVATION-ONLY forward hooks on all
     28 attention sublayers of the returned (unchanged) model, and
     returns it. Hooks record python primitives only (mode strings,
@@ -99,6 +105,46 @@ def sha256_file(path: Path) -> str:
 
 def stop(msg: str) -> None:
     raise SystemExit(f"STOP: {msg}")
+
+
+def _scan_main_bindings(code) -> dict:
+    """Prove, from a function's OWN executable bytecode (its code object
+    only; nested code objects are deliberately excluded), how it can
+    bind the name ``AutoModelForCausalLM``:
+
+    - ``deferred_from_transformers_import``: an ``IMPORT_NAME
+      "transformers"`` followed by ``IMPORT_FROM "AutoModelForCausalLM"``
+      within the same import statement -- i.e. the function executes
+      ``from transformers import AutoModelForCausalLM`` at call time,
+      which resolves the *transformers module attribute*;
+    - ``loads_global``: a ``LOAD_GLOBAL``/``LOAD_NAME`` of the name --
+      the function reads the *module-global binding*.
+
+    Comments, docstrings, helper functions and unrelated scopes cannot
+    satisfy either condition (they emit no such instructions in this
+    code object).
+    """
+    import dis
+
+    deferred = False
+    loads_global = False
+    current_import = None
+    for ins in dis.get_instructions(code):
+        if ins.opname == "IMPORT_NAME":
+            current_import = ins.argval
+        elif ins.opname == "IMPORT_FROM":
+            if (
+                ins.argval == "AutoModelForCausalLM"
+                and current_import == "transformers"
+            ):
+                deferred = True
+        elif ins.opname in ("LOAD_GLOBAL", "LOAD_NAME"):
+            if ins.argval == "AutoModelForCausalLM":
+                loads_global = True
+    return {
+        "deferred_from_transformers_import": deferred,
+        "loads_global": loads_global,
+    }
 
 
 def main() -> int:
@@ -310,24 +356,35 @@ def main() -> int:
             meta["install_error"] = f"{type(exc).__name__}: {exc}"
 
     # ---- interception-seam proof (fail-closed BEFORE any GPU work) ----
-    # module.main() can only reach AutoModelForCausalLM through (a) a
-    # module-global binding created at exec time, and/or (b) a deferred
-    # `from transformers import AutoModelForCausalLM` inside main(),
-    # which resolves the transformers module attribute at call time.
-    # Prove which bindings exist, identity-gate them against the real
-    # class, patch exactly those, and restore every patched binding.
+    # Prove, from module.main's OWN executable bytecode, how main() can
+    # bind AutoModelForCausalLM; identity-gate and patch exactly the
+    # proven binding(s); restore every patched binding in finally. A raw
+    # source-substring is NOT accepted as proof (a comment, docstring,
+    # helper or unrelated scope could satisfy it).
     real_auto = transformers.AutoModelForCausalLM
     if not hasattr(real_auto, "from_pretrained"):
         stop("transformers.AutoModelForCausalLM lacks from_pretrained")
 
-    core_source = ORIGINAL_CAPTURE.read_text(encoding="utf-8")
-    deferred_import_proven = (
-        "from transformers import AutoModelForCausalLM" in core_source
-    )
+    main_fn = getattr(module, "main", None)
+    if not callable(main_fn) or not hasattr(main_fn, "__code__"):
+        stop("core module.main is not an inspectable python function")
+    if main_fn.__globals__ is not module.__dict__:
+        stop(
+            "core main().__globals__ is not the core module namespace - "
+            "cannot reason about its global bindings; refusing to run"
+        )
+
+    scan = _scan_main_bindings(main_fn.__code__)
     module_global = module.__dict__.get("AutoModelForCausalLM", None)
 
     seams: list[str] = []
-    if module_global is not None:
+    if scan["loads_global"]:
+        if module_global is None:
+            stop(
+                "core main() bytecode loads a global AutoModelForCausalLM "
+                "but no such module-global exists after exec_module - "
+                "the seam cannot be proven; refusing to run"
+            )
         if module_global is not real_auto:
             stop(
                 "core module-global AutoModelForCausalLM is not identical "
@@ -335,20 +392,22 @@ def main() -> int:
                 "an unproven binding"
             )
         seams.append("core_module_global")
-    if deferred_import_proven:
+    if scan["deferred_from_transformers_import"]:
         seams.append("transformers_module_attribute")
     if not seams:
         stop(
-            "cannot prove which AutoModelForCausalLM binding module.main() "
-            "uses (no module-global binding after exec_module, and no "
-            "deferred 'from transformers import AutoModelForCausalLM' in "
-            "the SHA-gated core source) - refusing to run"
+            "cannot prove from module.main's executable bytecode how it "
+            "binds AutoModelForCausalLM (no LOAD_GLOBAL/LOAD_NAME of the "
+            "name and no deferred 'from transformers import "
+            "AutoModelForCausalLM' instruction sequence) - refusing to run"
         )
     meta["interception_seams"] = seams
-    meta["core_deferred_import_proven"] = deferred_import_proven
+    meta["seam_bytecode_scan"] = scan
     meta["core_module_global_present"] = module_global is not None
+    meta["main_globals_is_module_dict"] = True
     meta["from_pretrained_calls"] = 0
     print(f"interception_seams={seams}")
+    print(f"seam_bytecode_scan={scan}")
 
     class _ObservingAutoModelForCausalLM:
         @classmethod
