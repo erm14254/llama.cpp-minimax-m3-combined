@@ -72,8 +72,10 @@ Failure taxonomy (frozen; four disjoint classes; precedence):
      size/shape/carrier; banked top-K carrier not exactly integral;
      BF16-lattice violation on ANY of the four captured post-RoPE Q/K
      surfaces (C++ Q, C++ K, HF Q, HF K); non-finite loaded scoring value
-     or non-finite pre-mask reconstructed score in ANY branch;
-     environment/backend binding failure; mapping self-test failure;
+     or non-finite pre-mask reconstructed score in ANY branch (enforced by
+     the registered post-scorer finite_max gate before any tie or verdict
+     interpretation); environment/backend binding failure; mapping
+     self-test failure;
      unexpected exception). verdict.json is preserved with reasons/anomaly;
      under the frozen late-abort policy NO substituted result from an
      aborted run retains an adjudicated verdict (already-computed entries
@@ -90,7 +92,10 @@ Failure taxonomy (frozen; four disjoint classes; precedence):
      float64 score tie spanning the TOPK cut in a substituted branch makes
      only that branch/row NOT ADJUDICATED (TIE-AT-CUT). The stable-argsort
      order keeps the computation deterministic but never grants causal
-     authority at a tie.
+     authority at a tie. Tie rows carry the complete frozen observational
+     schema (margins and the complete entering/dropped/symmetric-difference
+     lists) under diagnostic_only, strictly subordinate to the
+     non-adjudicating verdict.
 
 Environment/backend contract (frozen; single-thread for repeatability, not
 a relaxation of any gate): the five registered thread variables are set to
@@ -512,6 +517,28 @@ def report_membership(
     }
 
 
+def tie_entry(
+    banked: set[int], variant: set[int], margin: float, finite_max: float
+) -> dict:
+    """NOT ADJUDICATED (TIE-AT-CUT) branch/row entry carrying the COMPLETE
+    frozen observational schema, derived from the deterministic registered
+    offline reconstruction and clearly subordinate to the non-adjudicating
+    verdict: the stable-argsort order grants no scientific or causal
+    authority, and no diagnostic field modifies any verdict. No list is
+    truncated."""
+    rep = report_membership(banked, variant, margin, finite_max)
+    return {
+        "verdict": "NOT ADJUDICATED (TIE-AT-CUT)",
+        "diagnostic_only": {
+            "sym_diff_size": rep["sym_diff_size"],
+            "sym_diff": rep["sym_diff"],
+            "entering": rep["entering"],
+            "dropped": rep["dropped"],
+            "observational": rep["observational"],
+        },
+    }
+
+
 # ---- CLASS-D semantic validation of an owner00 index row ----
 
 def banked_row_failures(side: str, row_vals: np.ndarray, p: int) -> list[str]:
@@ -721,13 +748,36 @@ def mapping_gate_captured(cpp_q2d: np.ndarray, hf_q2d: np.ndarray) -> dict:
 
 # ---- scoring orchestration ----
 
+def assert_finite_scores(context: str, finite_max: float) -> None:
+    """Registered CLASS-G gate: `finite_max` is max(abs(scores)) over the
+    PRE-mask score vector, so a NaN or +/-inf anywhere in the scores makes
+    it non-finite. A non-finite value means the run is scientifically
+    untrustworthy: CLASS G via stop(), never a branch- or direction-level
+    result, and never an adjudicated membership verdict. No tolerance."""
+    if not np.isfinite(finite_max):
+        stop(
+            f"non-finite pre-mask score vector (CLASS G) at {context}: "
+            f"max|score| = {finite_max!r}"
+        )
+
+
 def score_row(
-    q2d: np.ndarray, w2d: np.ndarray, k2d: np.ndarray, p: int
+    context: str,
+    q2d: np.ndarray,
+    w2d: np.ndarray,
+    k2d: np.ndarray,
+    p: int,
 ) -> tuple[set[int], float, float]:
+    """The ONLY scientific entry point to the frozen verbatim rescore_row:
+    every baseline (CF-D0) and substituted (D1/D2/D3) score passes the
+    non-finite CLASS-G gate BEFORE any tie classification or membership
+    reporting. rescore_row itself is never modified."""
     q3 = q2d.reshape(N_TOKENS, N_HEADS, HEAD_DIM)
-    return rescore_row(
+    rset, margin, fmax = rescore_row(
         p, q3[p].astype(np.float64), w2d[p].astype(np.float64), k2d
     )
+    assert_finite_scores(context, fmax)
+    return rset, margin, fmax
 
 
 def evaluate_direction(
@@ -738,15 +788,22 @@ def evaluate_direction(
     k2d: np.ndarray,
     banked_ints: np.ndarray,
     branches: dict[str, tuple[np.ndarray, np.ndarray]],
-) -> dict:
+    res: dict,
+) -> None:
     """Runs CF-D0 (CLASS-D gate) and, if VALID, the three substituted
-    branches of one receiving direction. All inputs already passed CLASS G."""
-    res: dict = {
-        "receiving_frame": side,
-        "baseline": {"rows": {}},
-        "invalid_clauses": [],
-        "branches": {},
-    }
+    branches of one receiving direction. All inputs already passed CLASS G.
+
+    Late-abort retention contract: `res` MUST already be attached to
+    verdict["directions"][dname] BEFORE this call; every branch container
+    is attached to `res` BEFORE its row loop begins, and every completed
+    row entry is inserted immediately after it is safely formed -- so a
+    later CLASS-G failure finds all safely completed substituted results
+    in place for the frozen late-abort policy. Nothing here catches and
+    continues past a CLASS-G stop()."""
+    res["receiving_frame"] = side
+    res["baseline"] = {"rows": {}}
+    res["invalid_clauses"] = []
+    res["branches"] = {}
     banked_sets: dict[int, set[int]] = {}
     valid = True
     tie_in_baseline = False
@@ -755,11 +812,12 @@ def evaluate_direction(
         bfails = banked_row_failures(side, brow, p)
         bset = set(int(x) for x in brow)
         banked_sets[p] = bset
-        rset, margin, fmax = rescore_row(
-            p,
-            q2d.reshape(N_TOKENS, N_HEADS, HEAD_DIM)[p].astype(np.float64),
-            w2d[p].astype(np.float64),
+        rset, margin, fmax = score_row(
+            f"direction {dname} baseline CF-{dname}0 row {p}",
+            q2d,
+            w2d,
             k2d,
+            p,
         )
         rarr = np.fromiter(sorted(rset), dtype=np.int64, count=len(rset))
         rfails = banked_row_failures("recon", rarr, p)
@@ -801,6 +859,7 @@ def evaluate_direction(
         )
     for bname, (bq, bw) in branches.items():
         rows: dict = {}
+        res["branches"][bname] = {"rows": rows}
         for p in ROWS:
             if not valid:
                 rows[str(p)] = {
@@ -808,21 +867,14 @@ def evaluate_direction(
                     "reason": res["status"],
                 }
                 continue
-            rset, margin, fmax = score_row(bq, bw, k2d, p)
-            if tie_at_cut(margin):
-                rows[str(p)] = {
-                    "verdict": "NOT ADJUDICATED (TIE-AT-CUT)",
-                    "observational": {
-                        "boundary_margin": margin,
-                        "margin_floor": MARGIN_FLOOR_REL * fmax,
-                    },
-                }
-                continue
-            rows[str(p)] = report_membership(
-                banked_sets[p], rset, margin, fmax
+            rset, margin, fmax = score_row(
+                f"direction {dname} branch {bname} row {p}", bq, bw, k2d, p
             )
-        res["branches"][bname] = {"rows": rows}
-    return res
+            if tie_at_cut(margin):
+                entry = tie_entry(banked_sets[p], rset, margin, fmax)
+            else:
+                entry = report_membership(banked_sets[p], rset, margin, fmax)
+            rows[str(p)] = entry
 
 
 def joint_only_effect(dname: str, dres: dict) -> dict:
@@ -904,7 +956,9 @@ def run_self_test() -> int:
         "<f4"
     )
     p = ROWS[0]
-    base_set, base_margin, base_fmax = score_row(q, w, k, p)
+    base_set, base_margin, base_fmax = score_row(
+        "self-test synthetic baseline", q, w, k, p
+    )
     forced = set(int(x) for x in forced_positions(p))
     check(
         "baseline structural (size/range/forced)",
@@ -950,7 +1004,9 @@ def run_self_test() -> int:
             k2[target] = (k[top_unforced].astype(np.float64) * 2.0).astype(
                 "<f4"
             )
-            var_set, var_margin, var_fmax = score_row(q, w, k2, p)
+            var_set, var_margin, var_fmax = score_row(
+                "self-test synthetic boost", q, w, k2, p
+            )
             rep = report_membership(base_set, var_set, var_margin, var_fmax)
             ok_target = (
                 rep["verdict"] == "MEMBERSHIP-AFFECTING (2 positions)"
@@ -1092,6 +1148,103 @@ def run_self_test() -> int:
         jo_yes["assigned"]
         and not jo_no["assigned"]
         and not jo_tie["assigned"],
+    )
+
+    # 12: non-finite pre-mask-score CLASS-G gate (helper level, synthetic).
+    n_reasons0 = len(REASONS)
+    gate_finite_ok = True
+    try:
+        assert_finite_scores("self-test finite", 1.0)
+    except SystemExit:
+        gate_finite_ok = False
+    gate_trips = 0
+    for badval in (float("nan"), float("inf"), float("-inf")):
+        try:
+            assert_finite_scores("self-test non-finite", badval)
+        except SystemExit:
+            gate_trips += 1
+    context_ok = all(
+        "non-finite pre-mask score vector" in r
+        for r in REASONS[n_reasons0:]
+    )
+    del REASONS[n_reasons0:]
+    check(
+        "assert_finite_scores CLASS-G gate",
+        gate_finite_ok and gate_trips == 3 and context_ok,
+    )
+
+    # 13: complete tie-entry observational schema, subordinate to the
+    # NOT ADJUDICATED verdict.
+    tset = set(range(TOPK))
+    tvar = (tset - {5}) | {9999}
+    te = tie_entry(tset, tvar, 0.0, 10.0)
+    dgo = te.get("diagnostic_only") or {}
+    check(
+        "tie_entry complete schema (subordinate to NOT ADJUDICATED)",
+        te["verdict"] == "NOT ADJUDICATED (TIE-AT-CUT)"
+        and dgo.get("sym_diff_size") == 2
+        and dgo.get("sym_diff") == [5, 9999]
+        and dgo.get("entering") == [9999]
+        and dgo.get("dropped") == [5]
+        and dgo.get("observational", {}).get("boundary_margin") == 0.0
+        and dgo.get("observational", {}).get("below_floor") is True
+        and "verdict" not in dgo,
+    )
+
+    # 14: pre-attached orchestration retention under a simulated late
+    # CLASS-G abort (fully synthetic direction evaluation; no file access).
+    q_s = rng.standard_normal((N_TOKENS, N_HEADS * HEAD_DIM)).astype("<f4")
+    k_s = rng.standard_normal((N_TOKENS, HEAD_DIM)).astype("<f4")
+    w_s = (np.abs(rng.standard_normal((N_TOKENS, N_HEADS))) + 0.1).astype(
+        "<f4"
+    )
+    bank_s = np.zeros((N_TOKENS, TOPK), dtype=np.int64)
+    for p_s in ROWS:
+        sset, _sm, _sf = score_row(
+            "self-test synthetic bank", q_s, w_s, k_s, p_s
+        )
+        bank_s[p_s] = np.fromiter(sorted(sset), dtype=np.int64, count=TOPK)
+    verdict_s: dict = {"directions": {}}
+    res_s: dict = {}
+    verdict_s["directions"]["X"] = res_s
+    evaluate_direction(
+        "X",
+        "cpp",
+        q_s,
+        w_s,
+        k_s,
+        bank_s,
+        {
+            "1_weights_only": (q_s, w_s),
+            "2_q_only": (q_s, w_s),
+            "3_both": (q_s, w_s),
+        },
+        res_s,
+    )
+    attached = verdict_s["directions"]["X"] is res_s
+    base_valid = str(res_s.get("status", "")).startswith(
+        "BASELINE RECONSTRUCTION VALID"
+    )
+    pre_entry = (
+        res_s.get("branches", {})
+        .get("1_weights_only", {})
+        .get("rows", {})
+        .get("2048", {})
+    )
+    pre_ok = pre_entry.get("verdict") == "MEMBERSHIP-INVARIANT"
+    n_rw2 = apply_global_abort_policy(verdict_s)
+    post_entry = verdict_s["directions"]["X"]["branches"][
+        "1_weights_only"
+    ]["rows"]["2048"]
+    check(
+        "pre-attached rows survive simulated late CLASS-G abort",
+        attached
+        and base_valid
+        and pre_ok
+        and n_rw2 == 6
+        and post_entry["verdict"] == "NOT ADJUDICATED (GLOBAL ABORT)"
+        and post_entry["diagnostic_only"]["verdict"]
+        == "MEMBERSHIP-INVARIANT",
     )
 
     n_fail = sum(1 for _, ok in results if not ok)
@@ -1532,8 +1685,14 @@ def main() -> int:
         q_cpp_in_hf_layout = pi_full_q(q_cpp)
 
         # ========= CLASS D gates + branches, per direction =========
+        # Late-abort retention: each direction container is attached to
+        # the verdict BEFORE its evaluation begins, so a later CLASS-G
+        # abort preserves every safely completed entry for the frozen
+        # late-abort policy.
         verdict["directions"] = {}
-        verdict["directions"]["C"] = evaluate_direction(
+        res_c: dict = {}
+        verdict["directions"]["C"] = res_c
+        evaluate_direction(
             "C",
             "cpp",
             q_cpp,
@@ -1545,8 +1704,11 @@ def main() -> int:
                 "2_q_only": (q_hf_in_cpp_layout, w_cpp_eff),
                 "3_both": (q_hf_in_cpp_layout, w_hf_eff),
             },
+            res_c,
         )
-        verdict["directions"]["H"] = evaluate_direction(
+        res_h: dict = {}
+        verdict["directions"]["H"] = res_h
+        evaluate_direction(
             "H",
             "hf",
             q_hf,
@@ -1558,6 +1720,7 @@ def main() -> int:
                 "2_q_only": (q_cpp_in_hf_layout, w_hf_eff),
                 "3_both": (q_cpp_in_hf_layout, w_cpp_eff),
             },
+            res_h,
         )
         verdict["joint_only_membership_effect"] = {
             dname: joint_only_effect(dname, dres)
