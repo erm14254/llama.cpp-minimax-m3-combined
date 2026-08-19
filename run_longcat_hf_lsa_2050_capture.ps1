@@ -101,6 +101,12 @@ foreach ($s in $expectedScripts.Keys) {
     Write-Host "script OK: $(Split-Path $s -Leaf) $sha"
 }
 
+# Comparator self-test in the pinned venv (cheap; confirms the actual
+# numpy/python execution environment of the round BEFORE any GPU work).
+& $py $cmpScript --self-test
+if ($LASTEXITCODE -ne 0) { throw "comparator --self-test failed in the pinned venv (exit $LASTEXITCODE)" }
+Write-Host 'comparator --self-test: PASS (pinned venv)'
+
 # Frozen core + frozen HF runtime gates (re-gated inside the wrappers too).
 foreach ($pair in @(
         @($coreScript, $expectedCoreSha),
@@ -216,7 +222,10 @@ foreach ($aux in @('summary.json', 'SHA256SUMS.txt')) {
 $sumsPath = Join-Path $captureDir 'SHA256SUMS.txt'
 $manifest = @{}
 Get-Content $sumsPath | Where-Object { $_.Trim() } | ForEach-Object {
-    if ($_ -match '^([0-9a-f]{64})\s+(.+)$') { $manifest[$Matches[2]] = $Matches[1] }
+    if ($_ -match '^([0-9a-f]{64})\s+(.+)$') {
+        if ($manifest.ContainsKey($Matches[2])) { throw "duplicate SHA256SUMS.txt entry: $($Matches[2])" }
+        $manifest[$Matches[2]] = $Matches[1]
+    }
     else { throw "malformed SHA256SUMS.txt line: $_" }
 }
 $expectedNames = @($expectedRunABins.Keys) + @('summary.json')

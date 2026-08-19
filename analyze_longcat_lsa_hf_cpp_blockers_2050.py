@@ -2,8 +2,10 @@
 """Offline C++<->HF blocker-1/2/3 comparator for the 2050 first-owner bank.
 
 CPU + numpy + stdlib only. No GPU, no model, no torch. Consumes the
-byte-identical C++ S-family capture (cpp_lsa_2050_S1) and the HF Run A
-capture (hf_lsa_2050_capture); emits <out-dir>/verdict.json.
+byte-identical C++ S-family capture (--cpp-s-dir, cpp_lsa_2050_S1), the
+HF Run A capture (--hf-dir, hf_lsa_2050_capture) and the HF runner
+provenance dir (--hf-run-dir, hf_logits_2050_v1); emits
+<out-dir>/verdict.json.
 
 Exit codes: 0 = analysis completed with every integrity/known-answer/
 validity gate passed (dependency flags and CONDITIONAL labels are
@@ -19,10 +21,20 @@ execution; the comparator implements them and never re-decides them):
   determinism comparator's Phase-0 discipline): parse and reverify both
   capture manifests (rehash every consumed C++ artifact against the
   S-dir SHA256SUMS.txt AND the eight frozen byte-stable hashes; rehash
-  the complete expected HF SHA256SUMS.txt inventory), bind the C++
-  run_provenance.json (git_head = the 2050 protocol commit, token
-  stream eb04e101...) and the HF summary.json gates (runA==runB logits,
-  frozen runtime/token SHAs). Any integrity failure aborts.
+  the complete expected HF SHA256SUMS.txt inventory; duplicate manifest
+  names are a hard failure), bind the C++ run_provenance.json
+  (git_head = the 2050 protocol commit, token stream eb04e101...), and
+  reverify the COMPLETE HF runner-provenance chain from
+  <hf-run-dir>/run_provenance.json (BOM-tolerant utf-8-sig reads):
+  a_equals_b, engagement_proof PASS, frozen token/core/script SHA
+  fields against the current protocol constants (the comparator
+  self-hashes __file__ for its own pin), runA manifest/summary and
+  runB core-json/engagement-proof SHA bindings against the actual
+  files, canonical and Run-A logits SHAs (and their equality), the
+  Run-B proof contents (PASS, core rc 0, frozen core/token hashes,
+  28-record complete collector with the full owner0 battery), and all
+  four stdout/stderr log SHA+byte bindings rehashed from the recorded
+  paths. Any integrity failure aborts before scientific analysis.
 
   Phase 0 (cross-side upstream attribution guard; guards all blocker
   analyses): compare, in causal order,
@@ -79,8 +91,16 @@ execution; the comparator implements them and never re-decides them):
   the pre-registered BF16-class residual (0.01) and the reference
   separation is < 2e-3, the SCHEDULE outcome is "NOT EMPIRICALLY
   DISTINGUISHABLE at captured BF16 precision" -- formula discrimination
-  is never overclaimed. Membership impact of the angle-set swap is
-  reported separately.
+  is never overclaimed. ROUNDING-CLASS is a GATED verdict adjudicated
+  separately for the K mapped surface, the Q mapped surface, and the
+  HF captured cos/sin: ROUNDING-CLASS CONSISTENT only when the
+  attribution-eligible surface is within ROUNDING_CLASS_MAX_ULP = 4;
+  BEYOND PRE-REGISTERED ROUNDING CLASS when an eligible residual
+  exceeds it; CONDITIONAL / NOT ADJUDICATED when blocker-1 K-input
+  contamination, a Phase-0 upstream mismatch, or a standing ROPE-SLICE
+  MISMATCH applies -- one contaminated surface never forces a global
+  conclusion, and the 4-ulp bound is never changed after data.
+  Membership impact of the angle-set swap is reported separately.
 
   Section 11: exact top-K membership sets, rows 2048/2049, all 14
   owners. Causal blocker-1/2/3 attribution is authorized for owner00
@@ -128,6 +148,18 @@ EXPECTED_TOKEN_SHA256 = (
 )
 EXPECTED_RUNTIME_SHA256 = (
     "a3bc31616c1f0ddff9f195cbc78f4561a40187c50fe3bf29e2e98d9228947428"
+)
+# Current protocol constants for the HF runner-provenance chain (CRLF
+# checkout-form script hashes; the comparator verifies its OWN hash
+# against the provenance by self-hashing __file__ at analysis time).
+EXPECTED_CORE_SHA256 = (
+    "bb82bcb6c3bc1d21685221a884dac3b39dc7af06f54fea6187f606dddf4213cb"
+)
+EXPECTED_RUNB_SCRIPT_SHA256 = (
+    "68290b517d5cb3712d3a41a7ff149494ef3c38402dc3e9d7670ad099b1fbd2f5"
+)
+EXPECTED_RUNA_SCRIPT_SHA256 = (
+    "18fcc5e191e39bf23489e4848ad6ec7659c638c341cd8a919b96c36bd9b9e18f"
 )
 
 # Frozen byte-stable C++ S-family surfaces (V-input table of the
@@ -266,14 +298,25 @@ def parse_sums(path: Path) -> dict[str, str]:
     if not path.is_file():
         stop(f"manifest missing: {path}")
     entries: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
         if not line.strip():
             continue
         m = re.match(r"^([0-9a-f]{64})\s+(.+)$", line.strip())
         if not m:
             stop(f"malformed manifest line in {path.name}: {line!r}")
-        entries[m.group(2)] = m.group(1)
+        name = m.group(2)
+        if name in entries:
+            stop(f"duplicate manifest entry in {path.name}: {name}")
+        entries[name] = m.group(1)
     return entries
+
+
+def read_json(path: Path) -> dict:
+    """BOM-tolerant JSON read (PowerShell 5.1 Out-File -Encoding utf8
+    writes a BOM; utf-8-sig also reads BOM-less files)."""
+    if not path.is_file():
+        stop(f"json missing: {path}")
+    return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
 # ---------------- angle references ----------------
@@ -583,18 +626,23 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--cpp-s-dir")
     ap.add_argument("--hf-dir")
+    ap.add_argument("--hf-run-dir")
     ap.add_argument("--out-dir")
     ap.add_argument("--self-test", action="store_true")
     ns = ap.parse_args()
 
     if ns.self_test:
         return run_self_test()
-    if not (ns.cpp_s_dir and ns.hf_dir and ns.out_dir):
-        print("STOP: --cpp-s-dir, --hf-dir and --out-dir are required")
+    if not (ns.cpp_s_dir and ns.hf_dir and ns.hf_run_dir and ns.out_dir):
+        print(
+            "STOP: --cpp-s-dir, --hf-dir, --hf-run-dir and --out-dir are "
+            "required"
+        )
         return 1
 
     cpp_dir = Path(ns.cpp_s_dir).resolve()
     hf_dir = Path(ns.hf_dir).resolve()
+    hf_run_dir = Path(ns.hf_run_dir).resolve()
     out_dir = Path(ns.out_dir).resolve()
 
     # Fresh-dir contract: never overwrite an earlier verdict. This is a
@@ -649,10 +697,7 @@ def main() -> int:
                     f"C++ surface {name} SHA {got} != frozen byte-stable "
                     f"{CPP_STABLE_SHA256[name]}"
                 )
-        cpp_prov_path = cpp_dir / "run_provenance.json"
-        if not cpp_prov_path.is_file():
-            stop(f"C++ run_provenance.json missing: {cpp_prov_path}")
-        cpp_prov = json.loads(cpp_prov_path.read_text(encoding="utf-8"))
+        cpp_prov = read_json(cpp_dir / "run_provenance.json")
         if cpp_prov.get("git_head") != EXPECTED_CPP_GIT_HEAD:
             stop(
                 "C++ provenance git_head "
@@ -661,6 +706,126 @@ def main() -> int:
         if cpp_prov.get("token_stream_sha256_reconstructed") != EXPECTED_TOKEN_SHA256:
             stop("C++ provenance token stream SHA mismatch")
         integrity["cpp_provenance_git_head"] = cpp_prov.get("git_head")
+
+        # ---- HF runner-provenance chain (before any scientific work) ----
+        hf_prov_path = hf_run_dir / "run_provenance.json"
+        hf_prov = read_json(hf_prov_path)
+        integrity["hf_run_provenance_sha256"] = sha256_file(hf_prov_path)
+
+        if hf_prov.get("a_equals_b") is not True:
+            stop("HF provenance a_equals_b is not True")
+        if hf_prov.get("engagement_proof") != "PASS":
+            stop("HF provenance engagement_proof != PASS")
+        if hf_prov.get("tokens_bin_sha256") != EXPECTED_TOKEN_SHA256:
+            stop("HF provenance token stream SHA mismatch")
+        if hf_prov.get("core_script_sha256") != EXPECTED_CORE_SHA256:
+            stop("HF provenance frozen-core SHA mismatch")
+        if hf_prov.get("runB_script_sha256") != EXPECTED_RUNB_SCRIPT_SHA256:
+            stop("HF provenance Run-B script SHA != current protocol constant")
+        if hf_prov.get("runA_script_sha256") != EXPECTED_RUNA_SCRIPT_SHA256:
+            stop("HF provenance Run-A script SHA != current protocol constant")
+        self_sha = sha256_file(Path(__file__).resolve())
+        integrity["cmp_self_sha256"] = self_sha
+        if hf_prov.get("cmp_script_sha256") != self_sha:
+            stop(
+                "HF provenance cmp_script_sha256 != this comparator's own "
+                "hash (protocol drift between capture and analysis)"
+            )
+
+        canon_bin = hf_run_dir / "hf_sparse_2050_v1.bin"
+        canon_json_path = hf_run_dir / "hf_sparse_2050_v1.json"
+        proof_path = hf_run_dir / "sparse_engagement_proof.json"
+        for p in (canon_bin, canon_json_path, proof_path):
+            if not p.is_file():
+                stop(f"HF run artifact missing: {p}")
+        canon_sha = sha256_file(canon_bin)
+        if hf_prov.get("canonical_logits_sha256") != canon_sha:
+            stop("HF provenance canonical logits SHA != actual Run-B bin")
+        if hf_prov.get("runB_core_json_sha256") != sha256_file(canon_json_path):
+            stop("HF provenance runB_core_json_sha256 != actual core json")
+        if hf_prov.get("runB_engagement_proof_sha256") != sha256_file(proof_path):
+            stop("HF provenance runB_engagement_proof_sha256 != actual proof")
+        runa_logits_path = hf_dir / "hf_logits_2050_runA.bin"
+        if not runa_logits_path.is_file():
+            stop(f"HF Run-A logits missing: {runa_logits_path}")
+        runa_logits_sha = sha256_file(runa_logits_path)
+        if hf_prov.get("runA_logits_sha256") != runa_logits_sha:
+            stop("HF provenance runA_logits_sha256 != actual Run-A bin")
+        if runa_logits_sha != canon_sha:
+            stop("Run-A logits != canonical Run-B logits at analysis time "
+                 "(A==B violated)")
+        integrity["canonical_logits_sha256"] = canon_sha
+
+        core_json = read_json(canon_json_path)
+        if core_json.get("logits_bin_sha256") != canon_sha:
+            stop("Run-B core json logits_bin_sha256 != actual canonical bin")
+        if core_json.get("runtime_sha256") != EXPECTED_RUNTIME_SHA256:
+            stop("Run-B core json frozen runtime SHA mismatch")
+
+        proof = read_json(proof_path)
+        if proof.get("engagement_proof") != "PASS":
+            stop("Run-B engagement proof contents != PASS")
+        if proof.get("core_rc") != 0:
+            stop(f"Run-B engagement proof core_rc {proof.get('core_rc')} != 0")
+        if proof.get("original_capture_sha256") != EXPECTED_CORE_SHA256:
+            stop("Run-B engagement proof frozen-core SHA mismatch")
+        if proof.get("tokens_bin_sha256") != EXPECTED_TOKEN_SHA256:
+            stop("Run-B engagement proof token SHA mismatch")
+        if proof.get("failures"):
+            stop(f"Run-B engagement proof lists failures: {proof['failures']}")
+        coll = proof.get("collector") or []
+        if len(coll) != 28:
+            stop(f"Run-B engagement collector has {len(coll)} records != 28")
+        seen_ls: set = set()
+        for rec in coll:
+            if "error" in rec:
+                stop(f"Run-B engagement record error: {rec['error']}")
+            key = (rec.get("layer"), rec.get("sublayer"))
+            if key in seen_ls:
+                stop(f"Run-B engagement duplicate record {key}")
+            seen_ls.add(key)
+            want_mode = "sparse-owner" if rec.get("sublayer") == 0 else "sparse-reuse"
+            if rec.get("mode") != want_mode:
+                stop(f"Run-B engagement record {key} mode {rec.get('mode')!r}")
+        if seen_ls != {(i, s) for i in range(14) for s in (0, 1)}:
+            stop("Run-B engagement collector does not cover all 28 sublayers")
+        bat = next(
+            (r.get("owner0_battery") for r in coll
+             if r.get("layer") == 0 and r.get("sublayer") == 0),
+            None,
+        )
+        if not bat:
+            stop("Run-B engagement proof lacks the owner0 battery")
+        for key in (
+            "range_ok",
+            "filler_counts_exact",
+            "fillers_2047_2049_zero",
+            "unique_nonneg",
+            "causal_only",
+        ):
+            if bat.get(key) is not True:
+                stop(f"Run-B engagement owner0 battery {key} is not True")
+        for pkey in ("2048", "2049"):
+            if (bat.get("forced_containment") or {}).get(pkey) is not True:
+                stop(f"Run-B engagement forced containment row {pkey} failed")
+
+        # Log bindings: rehash the paths recorded in provenance.
+        for run_key in ("runB", "runA"):
+            info = hf_prov.get(run_key) or {}
+            for stream in ("stdout", "stderr"):
+                lp = info.get(f"{stream}_log")
+                lsha = info.get(f"{stream}_log_sha256")
+                lbytes = info.get(f"{stream}_log_bytes")
+                if not lp or not lsha or lbytes is None:
+                    stop(f"HF provenance {run_key} {stream} log binding missing")
+                p = Path(lp)
+                if not p.is_file():
+                    stop(f"HF provenance-bound log missing: {p}")
+                if p.stat().st_size != int(lbytes):
+                    stop(f"HF provenance-bound log size mismatch: {p}")
+                if sha256_file(p) != lsha:
+                    stop(f"HF provenance-bound log SHA mismatch: {p}")
+        integrity["hf_log_bindings"] = "4/4 rehash OK"
 
         # HF manifest: exact expected inventory, every entry rehashed.
         hf_sums_path = hf_dir / "SHA256SUMS.txt"
@@ -682,7 +847,14 @@ def main() -> int:
                 stop(f"HF artifact missing: {p}")
             if sha256_file(p) != sha:
                 stop(f"HF manifest rehash mismatch: {name}")
-        hf_summary = json.loads((hf_dir / "summary.json").read_text(encoding="utf-8"))
+        # Provenance <-> manifest/summary cross-bindings (every listed
+        # entry was just rehashed, so the manifest values are verified).
+        if hf_prov.get("runA_manifest_sha256") != integrity["hf_manifest_sha256"]:
+            stop("HF provenance runA_manifest_sha256 != actual SHA256SUMS.txt")
+        if hf_prov.get("runA_summary_sha256") != hf_sums["summary.json"]:
+            stop("HF provenance runA_summary_sha256 != actual summary.json")
+
+        hf_summary = read_json(hf_dir / "summary.json")
         integrity["hf_summary_sha256"] = hf_sums["summary.json"]
         gates = hf_summary.get("gates", {})
         if gates.get("runA_logits_byte_equal_runB") is not True:
@@ -1226,26 +1398,95 @@ def main() -> int:
         }
         b3["hf_captured_cos_sin"] = cchk
 
-        # ROUNDING-CLASS sub-verdict (elementwise-chain magnitude summary).
-        b3["rounding_class_verdict"] = {
-            "k_under_pi_max_ulp": b2["k_mapping"]["ulp_hist_under_pi"]["max"],
-            "q_under_pi_max_ulp": b2["q_mapping"]["ulp_hist_under_pi"]["max"],
-            "hf_cos_vs_best_ref_max_ulp": min(
-                cchk["cos_vs_hf_ref_bf16"]["max"],
-                cchk["cos_vs_ggml_ref_bf16"]["max"],
+        # ROUNDING-CLASS sub-verdict: a GATED per-surface adjudication.
+        # Pre-registered branches (bound ROUNDING_CLASS_MAX_ULP = 4, fixed
+        # before data and never changed after):
+        #   ROUNDING-CLASS CONSISTENT          max ulp <= 4 on an
+        #                                      attribution-eligible surface;
+        #   BEYOND PRE-REGISTERED ROUNDING CLASS  max ulp > 4 there;
+        #   CONDITIONAL / NOT ADJUDICATED      the surface is contaminated
+        #                                      (blocker-1 K inputs, Phase-0
+        #                                      upstream mismatch, or a
+        #                                      standing ROPE-SLICE MISMATCH).
+        # K, Q and captured cos/sin are adjudicated separately; one
+        # contaminated surface never forces a global conclusion.
+        def rounding_branch(max_ulp: int, eligible: bool, reason: str) -> dict:
+            if not eligible:
+                return {
+                    "max_ulp": int(max_ulp),
+                    "verdict": f"CONDITIONAL / NOT ADJUDICATED ({reason})",
+                }
+            if max_ulp <= ROUNDING_CLASS_MAX_ULP:
+                return {
+                    "max_ulp": int(max_ulp),
+                    "verdict": "ROUNDING-CLASS CONSISTENT",
+                }
+            return {
+                "max_ulp": int(max_ulp),
+                "verdict": (
+                    "BEYOND PRE-REGISTERED ROUNDING CLASS "
+                    f"(max {int(max_ulp)} > {ROUNDING_CLASS_MAX_ULP})"
+                ),
+            }
+
+        k_eligible = bool(k_branch_ok and pre_k_equal)
+        k_reason = (
+            "pre-RoPE K-norm surfaces differ (blocker-1 contamination)"
+            if k_branch_ok
+            else "Phase-0 K-branch upstream mismatch"
+        )
+        q_eligible = bool(q_branch_ok and not slice_anomalies)
+        q_reason = (
+            "ROPE-SLICE MISMATCH stands"
+            if slice_anomalies
+            else "Phase-0 Q-branch upstream mismatch"
+        )
+        cs_max = max(
+            min(cchk["cos_vs_hf_ref_bf16"]["max"],
+                cchk["cos_vs_ggml_ref_bf16"]["max"]),
+            min(cchk["sin_vs_hf_ref_bf16"]["max"],
+                cchk["sin_vs_ggml_ref_bf16"]["max"]),
+        )
+        rc = {
+            "bound_max_ulp": ROUNDING_CLASS_MAX_ULP,
+            "k_mapped": rounding_branch(
+                b2["k_mapping"]["ulp_hist_under_pi"]["max"], k_eligible, k_reason
             ),
-            "hf_sin_vs_best_ref_max_ulp": min(
-                cchk["sin_vs_hf_ref_bf16"]["max"],
-                cchk["sin_vs_ggml_ref_bf16"]["max"],
+            "q_mapped": rounding_branch(
+                b2["q_mapping"]["ulp_hist_under_pi"]["max"], q_eligible, q_reason
             ),
-            "verdict": (
-                "ROUNDING-CLASS: BF16-elementwise-vs-F32-chain effects; "
-                "max observed "
-                f"{max(b2['k_mapping']['ulp_hist_under_pi']['max'], b2['q_mapping']['ulp_hist_under_pi']['max'])} "
-                "bf16 ulp on mapped roped surfaces "
-                f"(rounding-class bound {ROUNDING_CLASS_MAX_ULP})"
-            ),
+            # HF captured cos/sin vs the protocol references is a per-side
+            # observation with no cross-side upstream dependency.
+            "hf_cos_sin": rounding_branch(cs_max, True, ""),
         }
+        adjudicated = [
+            name for name in ("k_mapped", "q_mapped", "hf_cos_sin")
+            if not rc[name]["verdict"].startswith("CONDITIONAL")
+        ]
+        not_adjudicated = [
+            name for name in ("k_mapped", "q_mapped", "hf_cos_sin")
+            if name not in adjudicated
+        ]
+        if adjudicated:
+            if all(
+                rc[name]["verdict"] == "ROUNDING-CLASS CONSISTENT"
+                for name in adjudicated
+            ):
+                overall = (
+                    "ROUNDING-CLASS CONSISTENT on adjudicated surfaces "
+                    f"{adjudicated}"
+                )
+            else:
+                overall = (
+                    "BEYOND PRE-REGISTERED ROUNDING CLASS on at least one "
+                    f"adjudicated surface {adjudicated}"
+                )
+            if not_adjudicated:
+                overall += f"; NOT ADJUDICATED: {not_adjudicated}"
+        else:
+            overall = "CONDITIONAL / NOT ADJUDICATED (no eligible surface)"
+        rc["overall"] = overall
+        b3["rounding_class_verdict"] = rc
 
         # Membership impact of the angle set (rows 2048/2049).
         k_angle_swap = rotate_cpp_class(c_raw, rne_bf16(hf_cos_ref), rne_bf16(hf_sin_ref))
