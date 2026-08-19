@@ -99,6 +99,42 @@ Failure taxonomy (frozen; four disjoint classes; precedence):
      lists) under diagnostic_only, strictly subordinate to the
      non-adjudicating verdict.
 
+Frozen verdict scope: every scientific verdict/conclusion record carries the
+immutable VERDICT_SCOPE preamble ("under the registered offline
+reconstruction, in the receiving frame of this branch, at rows 2048/2049,
+owner00, for the frozen 2050-token capture state.") as metadata only; it
+never affects any branch, tie, margin, set-comparison, or aggregate-pattern
+decision.
+
+Frozen attribution rules (authority metadata, fixed at Stage P):
+- weight-only MEMBERSHIP-AFFECTING: the scoring-weight substitution changes
+  owner00 membership under the registered offline reconstruction in that
+  receiving frame -- a surface-level offline effect only, not a
+  production-level claim and not a claim about any deeper cause of the
+  weight difference;
+- Q-only MEMBERSHIP-AFFECTING: the mapped post-RoPE Q substitution changes
+  membership under the registered offline reconstruction; attribution is to
+  the RoPE-stage numerical surface only, with NO CUDA-trig/mechanism claim
+  and NO production-level claim; blocker-3 angle-swap membership remains
+  NOT ADJUDICATED regardless;
+- both individual substitutions affecting: both are individually
+  offline-membership-sensitive; no dominance or ranking inference;
+- weights-only and Q-only invariant but the both-branch affecting:
+  JOINT-ONLY MEMBERSHIP EFFECT (direction D), with no unique attribution;
+- all other combined patterns: per-branch results only, no aggregate causal
+  inference;
+- all branches invariant in a VALID direction: a bounded offline null only
+  -- no production-irrelevance claim, no generalization, and no
+  strengthening of the observed owner00 equality into causal proof;
+- cross-direction disagreement: both receiving-frame results are reported
+  side by side; no frame-free claim and no inference about which held-fixed
+  contextual surface explains the difference;
+- INVALID direction baseline: no transfer from the other direction;
+- blocker-1 membership impact and blocker-3 angle-swap membership impact
+  remain NOT ADJUDICATED; production-level causal attribution remains
+  UNRESOLVED; owners 02..26 remain OBSERVATIONAL ONLY;
+  Gate 4 remains NOT RUN.
+
 Environment/backend contract (frozen; single-thread for repeatability, not
 a relaxation of any gate): the five registered thread variables are set to
 "1" BEFORE numpy is imported (see the module top); NumPy must be exactly
@@ -169,6 +205,15 @@ LOCAL_TOKENS = 1024
 MARGIN_FLOOR_REL = 1e-4
 
 ROWS = (2048, 2049)
+
+# Frozen verdict-scope preamble (immutable; carried as metadata on every
+# scientific verdict/conclusion record; never participates in any branch,
+# tie, margin, set-comparison, or aggregate-pattern decision).
+VERDICT_SCOPE = (
+    "under the registered offline reconstruction, in the receiving frame "
+    "of this branch, at rows 2048/2049, owner00, for the frozen "
+    "2050-token capture state."
+)
 
 # ---------------- registered Stage-E absolute path contract ----------------
 
@@ -507,6 +552,7 @@ def report_membership(
     floor = MARGIN_FLOOR_REL * finite_max
     return {
         "verdict": v,
+        "scope": VERDICT_SCOPE,
         "sym_diff_size": len(diff),
         "sym_diff": sorted(int(x) for x in diff),
         "entering": sorted(int(x) for x in (variant - banked)),
@@ -531,6 +577,7 @@ def tie_entry(
     rep = report_membership(banked, variant, margin, finite_max)
     return {
         "verdict": "NOT ADJUDICATED (TIE-AT-CUT)",
+        "scope": VERDICT_SCOPE,
         "diagnostic_only": {
             "sym_diff_size": rep["sym_diff_size"],
             "sym_diff": rep["sym_diff"],
@@ -652,9 +699,9 @@ def apply_global_abort_policy(verdict: dict) -> int:
     NOT ADJUDICATED (GLOBAL ABORT) -- membership-adjudicated entries,
     NOT ADJUDICATED (TIE-AT-CUT) entries, and direction-invalid
     NOT ADJUDICATED entries alike -- is replaced by
-    {"verdict": "NOT ADJUDICATED (GLOBAL ABORT)", "diagnostic_only":
-    <the entire prior entry>}, retained losslessly and with no
-    adjudicating authority. Baseline rows/status and empty or
+    {"verdict": "NOT ADJUDICATED (GLOBAL ABORT)", "scope": VERDICT_SCOPE,
+    "diagnostic_only": <the entire prior entry>}, retained losslessly and
+    with no adjudicating authority (the scope field is metadata only). Baseline rows/status and empty or
     not-yet-computed branch rows are never touched. Idempotent: an entry
     already carrying the GLOBAL ABORT verdict is not wrapped again.
     Returns the number of newly wrapped entries."""
@@ -670,6 +717,7 @@ def apply_global_abort_policy(verdict: dict) -> int:
                 ):
                     rows[key] = {
                         "verdict": "NOT ADJUDICATED (GLOBAL ABORT)",
+                        "scope": VERDICT_SCOPE,
                         "diagnostic_only": entry,
                     }
                     rewritten += 1
@@ -812,6 +860,7 @@ def evaluate_direction(
     in place for the frozen late-abort policy. Nothing here catches and
     continues past a CLASS-G stop()."""
     res["receiving_frame"] = side
+    res["scope"] = VERDICT_SCOPE
     res["baseline"] = {"rows": {}}
     res["invalid_clauses"] = []
     res["branches"] = {}
@@ -876,6 +925,7 @@ def evaluate_direction(
                 rows[str(p)] = {
                     "verdict": "NOT ADJUDICATED",
                     "reason": res["status"],
+                    "scope": VERDICT_SCOPE,
                 }
                 continue
             rset, margin, fmax = score_row(
@@ -894,7 +944,7 @@ def joint_only_effect(dname: str, dres: dict) -> dict:
     rows while D3 is MEMBERSHIP-AFFECTING at any row, with a VALID baseline
     and no tie-unadjudicated branch/row in the pattern. Every other pattern
     is reported per-branch only, with no aggregate label."""
-    out = {"assigned": False, "label": None}
+    out = {"assigned": False, "label": None, "scope": VERDICT_SCOPE}
     if not str(dres.get("status", "")).startswith(
         "BASELINE RECONSTRUCTION VALID"
     ):
@@ -1306,6 +1356,67 @@ def run_self_test() -> int:
         and post_entry["diagnostic_only"]["verdict"]
         == "MEMBERSHIP-INVARIANT",
     )
+
+    # 16: frozen verdict-scope metadata on every scientific record --
+    # report_membership, tie_entry, the direction container, the
+    # joint-only descriptor, GLOBAL-ABORT wrappers, and direction-invalid
+    # branch rows -- always metadata, never logic.
+    scope_ok = (
+        report_membership({1}, {1}, 1.0, 1.0).get("scope") == VERDICT_SCOPE
+        and tie_entry({1}, {2}, 0.0, 1.0).get("scope") == VERDICT_SCOPE
+        and jo_yes.get("scope") == VERDICT_SCOPE
+        and jo_no.get("scope") == VERDICT_SCOPE
+        and res_s.get("scope") == VERDICT_SCOPE
+        and post_entry.get("scope") == VERDICT_SCOPE
+    )
+    wrap_probe = {
+        "directions": {
+            "W": {
+                "branches": {
+                    "b": {
+                        "rows": {
+                            "2048": {"verdict": "MEMBERSHIP-INVARIANT"}
+                        }
+                    }
+                }
+            }
+        }
+    }
+    apply_global_abort_policy(wrap_probe)
+    wentry = wrap_probe["directions"]["W"]["branches"]["b"]["rows"]["2048"]
+    scope_ok = (
+        scope_ok
+        and wentry.get("scope") == VERDICT_SCOPE
+        and wentry["diagnostic_only"]
+        == {"verdict": "MEMBERSHIP-INVARIANT"}
+    )
+    bank_bad = np.zeros((N_TOKENS, TOPK), dtype=np.int64)
+    res_bad: dict = {}
+    evaluate_direction(
+        "Y",
+        "cpp",
+        q_s,
+        w_s,
+        k_s,
+        bank_bad,
+        {
+            "1_weights_only": (q_s, w_s),
+            "2_q_only": (q_s, w_s),
+            "3_both": (q_s, w_s),
+        },
+        res_bad,
+    )
+    inval_row = res_bad["branches"]["1_weights_only"]["rows"]["2048"]
+    scope_ok = (
+        scope_ok
+        and str(res_bad.get("status", "")).startswith(
+            "BASELINE RECONSTRUCTION INVALID"
+        )
+        and res_bad.get("scope") == VERDICT_SCOPE
+        and inval_row.get("verdict") == "NOT ADJUDICATED"
+        and inval_row.get("scope") == VERDICT_SCOPE
+    )
+    check("verdict-scope metadata on every scientific record", scope_ok)
 
     n_fail = sum(1 for _, ok in results if not ok)
     print(f"SELF-TEST SUMMARY: {len(results) - n_fail}/{len(results)} PASS")
