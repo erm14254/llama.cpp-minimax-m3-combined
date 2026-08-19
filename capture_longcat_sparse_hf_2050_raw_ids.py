@@ -16,23 +16,30 @@ Deltas vs the 512 sibling (all wrapper-side; the core is never edited):
     base-module SHA gates (the LongCat base classes carry half the
     load-bearing numerics), kernels-package absence, cudnn.allow_tf32
     hardening (the core sets matmul.allow_tf32 itself).
-  * Sparse-engagement observation shim with a PROVEN interception seam:
-    after exec_module the wrapper proves, from module.main's OWN
-    executable bytecode (dis over main.__code__; nested code objects,
-    comments, docstrings and unrelated scopes cannot satisfy the
-    detector), how main() can bind `AutoModelForCausalLM`:
-    a LOAD_GLOBAL/LOAD_NAME of the name proves use of the module-global
-    binding (identity-gated against the real transformers class, with
+  * Sparse-engagement observation shim with a PROVEN, EXCLUSIVE
+    interception seam: after exec_module the wrapper proves, from
+    module.main's OWN executable bytecode (dis over main.__code__;
+    nested code objects, comments, docstrings and unrelated scopes
+    cannot satisfy the detector), that the name reaching
+    `.from_pretrained()` is bound EXCLUSIVELY by an approved seam.
+    The deferred seam requires the IMPORT_NAME "transformers" ->
+    IMPORT_FROM "AutoModelForCausalLM" sequence with each import's own
+    adjacent store, and REJECTS competing definitions/rebindings:
+    IMPORT_FROM of the name from any non-transformers module, any
+    additional STORE_FAST/STORE_NAME/STORE_GLOBAL/STORE_DEREF of the
+    name beyond the approved import stores, any DELETE of the name,
+    IMPORT_STAR, closure (cell/free) capture, or broken import->store
+    adjacency. The module-global seam requires a pure LOAD_GLOBAL/
+    LOAD_NAME read with ZERO binding-capable instructions on the name
+    (identity-gated against the real transformers class, with
     main.__globals__ verified to BE the core module namespace, before
-    that exact binding is patched); an IMPORT_NAME "transformers"
-    followed by IMPORT_FROM "AutoModelForCausalLM" proves the deferred
-    `from transformers import AutoModelForCausalLM` inside main(),
-    which resolves the transformers module attribute at call time (so
-    that attribute is patched). The wrapper fails closed BEFORE
-    module.main() if no binding is provable. Every patched binding is
-    restored to its exact original object in finally, and the bytecode
-    scan plus the resolved seam list are recorded in the engagement
-    proof. The pass-through class delegates from_pretrained
+    that exact binding is patched; the deferred seam patches the
+    transformers module attribute the import resolves at call time).
+    The wrapper fails closed BEFORE module.main() if no exclusive
+    binding is provable. Every patched binding is restored to its
+    exact original object in finally, and the full bytecode-scan
+    evidence plus the resolved seam list are recorded in the
+    engagement proof. The pass-through class delegates from_pretrained
     to the real class, registers OBSERVATION-ONLY forward hooks on all
     28 attention sublayers of the returned (unchanged) model, and
     returns it. Hooks record python primitives only (mode strings,
@@ -109,41 +116,111 @@ def stop(msg: str) -> None:
 
 def _scan_main_bindings(code) -> dict:
     """Prove, from a function's OWN executable bytecode (its code object
-    only; nested code objects are deliberately excluded), how it can
-    bind the name ``AutoModelForCausalLM``:
+    only; nested code objects are deliberately excluded), that the name
+    ``AutoModelForCausalLM`` reaching ``.from_pretrained()`` can be
+    bound EXCLUSIVELY by an approved seam:
 
-    - ``deferred_from_transformers_import``: an ``IMPORT_NAME
-      "transformers"`` followed by ``IMPORT_FROM "AutoModelForCausalLM"``
-      within the same import statement -- i.e. the function executes
-      ``from transformers import AutoModelForCausalLM`` at call time,
-      which resolves the *transformers module attribute*;
-    - ``loads_global``: a ``LOAD_GLOBAL``/``LOAD_NAME`` of the name --
-      the function reads the *module-global binding*.
+    - ``exclusive_deferred_binding``: at least one ``IMPORT_NAME
+      "transformers"`` -> ``IMPORT_FROM "AutoModelForCausalLM"``
+      sequence (the deferred ``from transformers import ...``, which
+      resolves the *transformers module attribute* at call time), each
+      immediately followed by its own store of the name, AND no
+      competing binding path exists: no ``IMPORT_FROM`` of the name
+      from any other module, no additional ``STORE_FAST``/``STORE_NAME``
+      /``STORE_GLOBAL``/``STORE_DEREF`` of the name beyond the approved
+      import stores, no ``DELETE_*`` of the name, no ``IMPORT_STAR``,
+      and the name is not a cell/free variable of this code object;
+    - ``exclusive_global_read``: the function only READS the name
+      (``LOAD_GLOBAL``/``LOAD_NAME``) -- the *module-global binding* --
+      with zero binding-capable instructions on the name.
 
-    Comments, docstrings, helper functions and unrelated scopes cannot
-    satisfy either condition (they emit no such instructions in this
-    code object).
+    Any other combination (a foreign import, a rebinding store, a
+    delete, ``import *``, closure capture, or a broken import->store
+    adjacency) makes the receiver provenance ambiguous and BOTH
+    exclusivity flags stay False, so the caller fails closed. Comments,
+    docstrings, helper functions and unrelated scopes emit none of
+    these instructions in this code object.
     """
     import dis
 
-    deferred = False
+    name = "AutoModelForCausalLM"
+    store_ops = {"STORE_FAST", "STORE_NAME", "STORE_GLOBAL", "STORE_DEREF"}
+    delete_ops = {"DELETE_FAST", "DELETE_NAME", "DELETE_GLOBAL", "DELETE_DEREF"}
+    skip_ops = {"EXTENDED_ARG", "NOP", "CACHE"}
+
+    approved_imports = 0
+    foreign_imports = 0
+    approved_stores = 0
+    extra_stores = 0
+    deletes = 0
+    import_star = False
     loads_global = False
     current_import = None
+    pending_approved_store = False
+    adjacency_broken = False
+
     for ins in dis.get_instructions(code):
-        if ins.opname == "IMPORT_NAME":
+        op = ins.opname
+        if op in skip_ops:
+            continue
+        if pending_approved_store:
+            pending_approved_store = False
+            if op in store_ops and ins.argval == name:
+                approved_stores += 1
+                continue  # consumed as the approved import's own store
+            adjacency_broken = True
+        if op == "IMPORT_NAME":
             current_import = ins.argval
-        elif ins.opname == "IMPORT_FROM":
-            if (
-                ins.argval == "AutoModelForCausalLM"
-                and current_import == "transformers"
-            ):
-                deferred = True
-        elif ins.opname in ("LOAD_GLOBAL", "LOAD_NAME"):
-            if ins.argval == "AutoModelForCausalLM":
-                loads_global = True
+        elif op == "IMPORT_STAR":
+            import_star = True
+        elif op == "IMPORT_FROM" and ins.argval == name:
+            if current_import == "transformers":
+                approved_imports += 1
+                pending_approved_store = True
+            else:
+                foreign_imports += 1
+        elif op in store_ops and ins.argval == name:
+            extra_stores += 1
+        elif op in delete_ops and ins.argval == name:
+            deletes += 1
+        elif op in ("LOAD_GLOBAL", "LOAD_NAME") and ins.argval == name:
+            loads_global = True
+    if pending_approved_store:
+        adjacency_broken = True
+
+    cell_or_free = name in (tuple(code.co_cellvars) + tuple(code.co_freevars))
+    no_ambiguity = (
+        foreign_imports == 0
+        and extra_stores == 0
+        and deletes == 0
+        and not import_star
+        and not cell_or_free
+        and not adjacency_broken
+    )
+    exclusive_deferred = (
+        approved_imports >= 1
+        and approved_stores == approved_imports
+        and no_ambiguity
+    )
+    exclusive_global_read = (
+        loads_global
+        and approved_imports == 0
+        and approved_stores == 0
+        and no_ambiguity
+    )
     return {
-        "deferred_from_transformers_import": deferred,
+        "deferred_from_transformers_import": approved_imports >= 1,
         "loads_global": loads_global,
+        "approved_transformers_imports": approved_imports,
+        "approved_import_stores": approved_stores,
+        "foreign_imports_of_name": foreign_imports,
+        "extra_stores_of_name": extra_stores,
+        "deletes_of_name": deletes,
+        "import_star_present": import_star,
+        "name_is_cell_or_free": cell_or_free,
+        "import_store_adjacency_broken": adjacency_broken,
+        "exclusive_deferred_binding": exclusive_deferred,
+        "exclusive_global_read": exclusive_global_read,
     }
 
 
@@ -378,10 +455,10 @@ def main() -> int:
     module_global = module.__dict__.get("AutoModelForCausalLM", None)
 
     seams: list[str] = []
-    if scan["loads_global"]:
+    if scan["exclusive_global_read"]:
         if module_global is None:
             stop(
-                "core main() bytecode loads a global AutoModelForCausalLM "
+                "core main() bytecode reads a global AutoModelForCausalLM "
                 "but no such module-global exists after exec_module - "
                 "the seam cannot be proven; refusing to run"
             )
@@ -392,14 +469,15 @@ def main() -> int:
                 "an unproven binding"
             )
         seams.append("core_module_global")
-    if scan["deferred_from_transformers_import"]:
+    if scan["exclusive_deferred_binding"]:
         seams.append("transformers_module_attribute")
     if not seams:
         stop(
-            "cannot prove from module.main's executable bytecode how it "
-            "binds AutoModelForCausalLM (no LOAD_GLOBAL/LOAD_NAME of the "
-            "name and no deferred 'from transformers import "
-            "AutoModelForCausalLM' instruction sequence) - refusing to run"
+            "EXCLUSIVE binding provenance for AutoModelForCausalLM cannot "
+            "be proven from module.main's executable bytecode (no approved "
+            "seam, or a competing import/rebinding store/deletion/"
+            "import-star/closure-capture/broken import-store adjacency "
+            f"makes the receiver ambiguous; scan={scan}) - refusing to run"
         )
     meta["interception_seams"] = seams
     meta["seam_bytecode_scan"] = scan
