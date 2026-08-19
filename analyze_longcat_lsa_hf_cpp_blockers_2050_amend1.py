@@ -19,7 +19,11 @@ while this file's own hash is recorded separately; (c) the invalid
 post-RoPE CPU known-answer gate is retained ONLY as explicitly labeled
 invalid-oracle characterization and never adjudicates or aborts;
 (d) blocker-1 membership reconstruction and the blocker-3 membership
-angle swap are NOT ADJUDICATED (no substitute oracle is introduced).
+angle swap are NOT ADJUDICATED (no substitute oracle is introduced);
+(e) Section-11 owner00 mechanism attribution to blockers 1-3 is NOT
+ADJUDICATED under this amendment -- Phase-0 upstream agreement is
+still recomputed from the data and reported, but neither branch
+asserts causal mechanism attribution.
 No numerical threshold, class, or scientific criterion is loosened,
 widened, retuned, or data-selected. The original failed run
 (lsa_hf_blockers_2050/) is permanent evidence and is never overwritten.
@@ -1667,12 +1671,29 @@ def main() -> int:
                     "attribution-eligible (owner00 upstream surfaces "
                     "captured and Phase-0 gated)"
                 )
-                entry["attribution"] = (
-                    "attributable to blockers 1-3"
-                    if all_upstream_ok
-                    else "CONDITIONAL - NOT uniquely attributable "
-                    "(upstream dependency flag set; see phase0)"
-                )
+                # POST-DATA AMENDMENT: with blocker-1 membership and the
+                # blocker-3 membership angle swap NOT ADJUDICATED (invalid
+                # CPU analytic CUDA-RoPE oracle), Phase-0 agreement alone
+                # can no longer grant causal mechanism attribution to
+                # blockers 1-3. The upstream-agreement outcome is still
+                # recomputed from the data and reported; neither branch
+                # asserts mechanism attribution.
+                entry["phase0_upstream_agreement"] = bool(all_upstream_ok)
+                if all_upstream_ok:
+                    entry["attribution"] = (
+                        "upstream Phase-0 agreement holds, but mechanism "
+                        "attribution to blockers 1-3 is NOT ADJUDICATED "
+                        "under post-data amendment 1 (invalid CPU analytic "
+                        "CUDA-RoPE oracle; see blocker1.membership and "
+                        "blocker3.membership_angle_swap)"
+                    )
+                else:
+                    entry["attribution"] = (
+                        "CONDITIONAL - NOT uniquely attributable "
+                        "(upstream dependency flag set; see phase0); "
+                        "mechanism attribution additionally NOT ADJUDICATED "
+                        "under post-data amendment 1"
+                    )
             else:
                 entry["scope"] = (
                     "cross-owner semantic observation ONLY (no upstream "
