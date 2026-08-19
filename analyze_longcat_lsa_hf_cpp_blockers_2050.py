@@ -28,13 +28,16 @@ execution; the comparator implements them and never re-decides them):
   <hf-run-dir>/run_provenance.json (BOM-tolerant utf-8-sig reads):
   a_equals_b, engagement_proof PASS, frozen token/core/script SHA
   fields against the current protocol constants (the comparator
-  self-hashes __file__ for its own pin), runA manifest/summary and
-  runB core-json/engagement-proof SHA bindings against the actual
-  files, canonical and Run-A logits SHAs (and their equality), the
-  Run-B proof contents (PASS, core rc 0, frozen core/token hashes,
-  28-record complete collector with the full owner0 battery), and all
-  four stdout/stderr log SHA+byte bindings rehashed from the recorded
-  paths. Any integrity failure aborts before scientific analysis.
+  self-hashes __file__ for its own pin, and rehashes the sibling
+  runner script against the runner_script_sha256 the runner recorded
+  dynamically for itself -- all four protocol files are thus bound),
+  runA manifest/summary and runB core-json/engagement-proof SHA
+  bindings against the actual files, canonical and Run-A logits SHAs
+  (and their equality), the Run-B proof contents (PASS, core rc 0,
+  frozen core/token hashes, 28-record complete collector with the full
+  owner0 battery), and all four stdout/stderr log SHA+byte bindings
+  rehashed from the recorded paths. Any integrity failure aborts
+  before scientific analysis.
 
   Phase 0 (cross-side upstream attribution guard; guards all blocker
   analyses): compare, in causal order,
@@ -156,7 +159,7 @@ EXPECTED_CORE_SHA256 = (
     "bb82bcb6c3bc1d21685221a884dac3b39dc7af06f54fea6187f606dddf4213cb"
 )
 EXPECTED_RUNB_SCRIPT_SHA256 = (
-    "68290b517d5cb3712d3a41a7ff149494ef3c38402dc3e9d7670ad099b1fbd2f5"
+    "1748b73f43962a0309aa5872628c7b29f5108e0977ca511307de788b88b5db81"
 )
 EXPECTED_RUNA_SCRIPT_SHA256 = (
     "18fcc5e191e39bf23489e4848ad6ec7659c638c341cd8a919b96c36bd9b9e18f"
@@ -729,6 +732,21 @@ def main() -> int:
         if hf_prov.get("cmp_script_sha256") != self_sha:
             stop(
                 "HF provenance cmp_script_sha256 != this comparator's own "
+                "hash (protocol drift between capture and analysis)"
+            )
+        # Runner self-binding: the runner records its OWN checkout-form
+        # hash dynamically at run time; reverify it against the actual
+        # runner file on disk (sibling of this comparator).
+        runner_path = (
+            Path(__file__).resolve().parent / "run_longcat_hf_lsa_2050_capture.ps1"
+        )
+        if not runner_path.is_file():
+            stop(f"runner script missing for provenance reverification: {runner_path}")
+        runner_sha = sha256_file(runner_path)
+        integrity["runner_script_sha256"] = runner_sha
+        if hf_prov.get("runner_script_sha256") != runner_sha:
+            stop(
+                "HF provenance runner_script_sha256 != actual runner script "
                 "hash (protocol drift between capture and analysis)"
             )
 
