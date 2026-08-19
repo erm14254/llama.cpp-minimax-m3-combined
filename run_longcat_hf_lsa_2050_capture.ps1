@@ -37,9 +37,9 @@ $captureDir = Join-Path $repo 'hf_lsa_2050_capture'
 # this machine; the committed blobs are LF-normalized -- same class as
 # the historical d267bf29/dfda8836 line-ending twin).
 $expectedScripts = @{
-    $runBScript = '68290b517d5cb3712d3a41a7ff149494ef3c38402dc3e9d7670ad099b1fbd2f5'
+    $runBScript = '1748b73f43962a0309aa5872628c7b29f5108e0977ca511307de788b88b5db81'
     $runAScript = '18fcc5e191e39bf23489e4848ad6ec7659c638c341cd8a919b96c36bd9b9e18f'
-    $cmpScript  = '005bbf73c85e7bcfb28954bbb7f5f2d8a7414c3b61fc0d97719e5a05b907e244'
+    $cmpScript  = 'a019ef776155cf4446674a0e0a76bc698c3fd875163863d28e66cfca1eec77ed'
 }
 $expectedCoreSha    = 'bb82bcb6c3bc1d21685221a884dac3b39dc7af06f54fea6187f606dddf4213cb'
 $expectedRuntimeSha = 'a3bc31616c1f0ddff9f195cbc78f4561a40187c50fe3bf29e2e98d9228947428'
@@ -90,6 +90,12 @@ try {
     if ($dirty) { throw "tracked tree not clean:`n$($dirty -join "`n")" }
 } finally { Pop-Location }
 Write-Host "git_head=$gitHead"
+
+# Runner self-hash (computed dynamically at runtime -- a self-referential
+# expected value cannot be embedded; the offline comparator reverifies
+# this provenance field against the actual runner file on disk).
+$runnerSelfSha = Get-Sha256 $PSCommandPath
+Write-Host "runner_self_sha256=$runnerSelfSha ($PSCommandPath)"
 
 # Script SHA + py_compile gates.
 foreach ($s in $expectedScripts.Keys) {
@@ -263,6 +269,7 @@ $prov = [ordered]@{
     runB_script_sha256  = $expectedScripts[$runBScript]
     runA_script_sha256  = $expectedScripts[$runAScript]
     cmp_script_sha256   = $expectedScripts[$cmpScript]
+    runner_script_sha256 = $runnerSelfSha
     canonical_logits_sha256 = $canonicalSha
     runA_logits_sha256  = $runALogitsSha
     a_equals_b          = $true
