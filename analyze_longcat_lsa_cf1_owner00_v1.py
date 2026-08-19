@@ -77,10 +77,12 @@ Failure taxonomy (frozen; four disjoint classes; precedence):
      interpretation); environment/backend binding failure; mapping
      self-test failure;
      unexpected exception). verdict.json is preserved with reasons/anomaly;
-     under the frozen late-abort policy NO substituted result from an
-     aborted run retains an adjudicated verdict (already-computed entries
-     become NOT ADJUDICATED (GLOBAL ABORT) with raw measurements retained
-     as diagnostic_only data).
+     under the frozen late-abort policy NO already-computed substituted
+     branch/row entry retains its prior status: every completed entry
+     (membership-adjudicated, TIE-AT-CUT, or direction-invalid alike) is
+     wrapped as NOT ADJUDICATED (GLOBAL ABORT) with the ENTIRE prior entry
+     retained losslessly under diagnostic_only; baseline rows/status and
+     not-yet-computed rows are untouched, and the wrapping is idempotent.
   -> CLASS D  DIRECTION INVALIDATION: begins only after all CLASS-G gates
      pass; direction-local semantic validity of the otherwise well-formed
      banked/reconstructed owner00 sets (reconstructed != banked; set size
@@ -644,19 +646,28 @@ def collect_environment() -> dict:
 # ---- frozen late-abort result policy (CLASS G) ----
 
 def apply_global_abort_policy(verdict: dict) -> int:
-    """After CLASS G, no substituted result retains an adjudicated verdict:
-    every already-computed substituted branch/row entry carrying a
-    MEMBERSHIP-* verdict is rewritten to NOT ADJUDICATED (GLOBAL ABORT),
-    with its raw measurements retained under diagnostic_only (no
-    adjudicating authority). Returns the number of rewritten entries."""
+    """Frozen late-abort rule: after CLASS G, NO already-computed
+    substituted branch/row entry from the aborted run retains its prior
+    status. EVERY completed entry whose verdict is not already
+    NOT ADJUDICATED (GLOBAL ABORT) -- membership-adjudicated entries,
+    NOT ADJUDICATED (TIE-AT-CUT) entries, and direction-invalid
+    NOT ADJUDICATED entries alike -- is replaced by
+    {"verdict": "NOT ADJUDICATED (GLOBAL ABORT)", "diagnostic_only":
+    <the entire prior entry>}, retained losslessly and with no
+    adjudicating authority. Baseline rows/status and empty or
+    not-yet-computed branch rows are never touched. Idempotent: an entry
+    already carrying the GLOBAL ABORT verdict is not wrapped again.
+    Returns the number of newly wrapped entries."""
     rewritten = 0
     for dres in (verdict.get("directions") or {}).values():
         for branch in (dres.get("branches") or {}).values():
             rows = branch.get("rows") or {}
             for key, entry in list(rows.items()):
-                if isinstance(entry, dict) and str(
-                    entry.get("verdict", "")
-                ).startswith("MEMBERSHIP"):
+                if (
+                    isinstance(entry, dict)
+                    and "verdict" in entry
+                    and entry["verdict"] != "NOT ADJUDICATED (GLOBAL ABORT)"
+                ):
                     rows[key] = {
                         "verdict": "NOT ADJUDICATED (GLOBAL ABORT)",
                         "diagnostic_only": entry,
@@ -1080,32 +1091,81 @@ def run_self_test() -> int:
         ),
     )
 
-    # 10: frozen late-abort policy on a synthetic verdict.
+    # 10: frozen late-abort policy wraps EVERY completed substituted entry
+    # (membership-adjudicated, TIE-AT-CUT, and direction-invalid alike),
+    # losslessly and idempotently, and never touches baseline rows/status
+    # or empty/not-yet-computed rows.
+    e_inv = {"verdict": "MEMBERSHIP-INVARIANT", "sym_diff_size": 0}
+    e_aff = {
+        "verdict": "MEMBERSHIP-AFFECTING (2 positions)",
+        "sym_diff": [1, 2],
+    }
+    e_tie = tie_entry(
+        set(range(TOPK)), (set(range(TOPK)) - {7}) | {8888}, 0.0, 10.0
+    )
+    e_dirinv = {
+        "verdict": "NOT ADJUDICATED",
+        "reason": "BASELINE RECONSTRUCTION INVALID (direction X)",
+    }
+    e_empty: dict = {}
+    base_block = {"rows": {"2048": {"reproduces_banked": True}}}
     synth_verdict = {
         "directions": {
             "C": {
+                "status": "BASELINE RECONSTRUCTION VALID (direction C)",
+                "baseline": base_block,
                 "branches": {
                     "1_weights_only": {
-                        "rows": {
-                            "2048": {
-                                "verdict": "MEMBERSHIP-INVARIANT",
-                                "sym_diff_size": 0,
-                            }
-                        }
-                    }
-                }
+                        "rows": {"2048": e_inv, "2049": e_aff}
+                    },
+                    "2_q_only": {"rows": {"2048": e_tie}},
+                    "3_both": {"rows": {"2048": e_dirinv, "2049": e_empty}},
+                },
             }
         }
     }
     n_rw = apply_global_abort_policy(synth_verdict)
-    entry = synth_verdict["directions"]["C"]["branches"]["1_weights_only"][
-        "rows"
-    ]["2048"]
+    br = synth_verdict["directions"]["C"]["branches"]
+    w_inv = br["1_weights_only"]["rows"]["2048"]
+    w_aff = br["1_weights_only"]["rows"]["2049"]
+    w_tie = br["2_q_only"]["rows"]["2048"]
+    w_dirinv = br["3_both"]["rows"]["2048"]
+    w_empty = br["3_both"]["rows"]["2049"]
+    ga = "NOT ADJUDICATED (GLOBAL ABORT)"
+    first_ok = (
+        n_rw == 4
+        and w_inv["verdict"] == ga
+        and w_inv["diagnostic_only"] is e_inv
+        and e_inv["verdict"] == "MEMBERSHIP-INVARIANT"
+        and w_aff["verdict"] == ga
+        and w_aff["diagnostic_only"] is e_aff
+        and w_tie["verdict"] == ga
+        and w_tie["diagnostic_only"] is e_tie
+        and e_tie["verdict"] == "NOT ADJUDICATED (TIE-AT-CUT)"
+        and e_tie["diagnostic_only"]["sym_diff"] == [7, 8888]
+        and w_dirinv["verdict"] == ga
+        and w_dirinv["diagnostic_only"] is e_dirinv
+        and e_dirinv["reason"]
+        == "BASELINE RECONSTRUCTION INVALID (direction X)"
+        and w_empty is e_empty
+        and w_empty == {}
+        and synth_verdict["directions"]["C"]["baseline"] is base_block
+        and base_block["rows"]["2048"] == {"reproduces_banked": True}
+        and synth_verdict["directions"]["C"]["status"]
+        == "BASELINE RECONSTRUCTION VALID (direction C)"
+        and synth_verdict["class_g_late_abort_rewritten_entries"] == 4
+    )
+    n_rw2 = apply_global_abort_policy(synth_verdict)
+    second_ok = (
+        n_rw2 == 0
+        and br["1_weights_only"]["rows"]["2048"] is w_inv
+        and w_inv["diagnostic_only"] is e_inv
+        and synth_verdict["class_g_late_abort_rewritten_entries"] == 4
+    )
     check(
-        "apply_global_abort_policy",
-        n_rw == 1
-        and entry["verdict"] == "NOT ADJUDICATED (GLOBAL ABORT)"
-        and entry["diagnostic_only"]["verdict"] == "MEMBERSHIP-INVARIANT",
+        "apply_global_abort_policy frozen rule (all entries, lossless, "
+        "idempotent, baseline untouched)",
+        first_ok and second_ok,
     )
 
     # 11: joint-only pattern helper on synthetic direction results.
